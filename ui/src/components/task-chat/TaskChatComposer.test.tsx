@@ -2838,3 +2838,42 @@ describe("composer Stop", () => {
     expect(sendButton().disabled).toBe(failed);
   });
 });
+
+describe("TaskChatComposer shared host commands", () => {
+  const hostCommands = [
+    { id: "host-command:echo", kind: "action" as const, command: "echo", name: "Echo", description: "Echo text back", aliases: ["echo"] },
+  ];
+
+  it("dispatches a listed host command instead of posting a comment and shows the reply", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const onHostCommand = vi.fn().mockResolvedValue({ success: true, message: "Echo: hello" });
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" hostCommands={hostCommands} onHostCommand={onHostCommand} />);
+
+    typeText("/echo hello");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    await flushAsync();
+
+    expect(onHostCommand).toHaveBeenCalledWith("echo", "hello");
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="task-chat-command-reply"]')?.textContent).toBe("Echo: hello");
+  });
+
+  it("surfaces a failed command result as an error and still posts unlisted slash text", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const onHostCommand = vi.fn().mockResolvedValue({ success: false, message: "Usage: /echo <text>" });
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" hostCommands={hostCommands} onHostCommand={onHostCommand} />);
+
+    typeText("/echo");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-goal-error"]')?.textContent).toBe("Usage: /echo <text>");
+
+    typeText("/deploy now");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    await flushAsync();
+    expect(onHostCommand).toHaveBeenCalledTimes(1);
+    expect(onAdd).toHaveBeenCalledWith("/deploy now", undefined, undefined, undefined, expect.any(String));
+  });
+});

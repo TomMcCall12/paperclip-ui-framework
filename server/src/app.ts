@@ -51,6 +51,7 @@ import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { folderRoutes } from "./routes/folders.js";
 import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
+import { commandRoutes } from "./routes/commands.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
@@ -149,6 +150,7 @@ import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
+import { createCommandDispatcher } from "./services/command-dispatcher.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { enqueueChatRunMilestones } from "./services/chat-run-publications.js";
 import {
@@ -581,7 +583,11 @@ export async function createApp(
   const connectionIntentHeartbeat = heartbeatService(db, {
     pluginWorkerManager: workerManager,
   });
+  // One dispatcher per app so the board API and chat channels share a single
+  // command registry.
+  const commandDispatcher = createCommandDispatcher();
   const chatChannels = chatChannelService(db, {
+    commandDispatcher,
     deferWebhookProcessing: true,
     heartbeat: connectionIntentHeartbeat,
     publicBaseUrl: opts.authPublicBaseUrl,
@@ -661,6 +667,7 @@ export async function createApp(
   api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));
   api.use(statusCardRoutes(db));
+  api.use(commandRoutes(db, commandDispatcher));
   api.use(teamsCatalogRoutes(db));
   // The setup-token login session service. The router builds it and hands it
   // back through the callback below, so the shutdown hook can cancel every live

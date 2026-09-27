@@ -26,6 +26,7 @@ import {
 import { Activity, ArrowDown, History, MessageSquarePlus, X } from "lucide-react";
 import { ActivityFeed } from "../components/ActivityFeed";
 import { ChatComposer, type ChatComposerHandle } from "../components/ChatComposer";
+import { useHostCommands } from "../components/task-chat/host-commands";
 import {
   AgentBubbleActionRow,
   agentBubbleDateLabel,
@@ -89,6 +90,8 @@ function TypingBubble() {
 
 export function BoardChat() {
   const { selectedCompanyId, selectedCompany } = useCompany();
+  // Shared host commands (TOM-17): same registry and dispatcher as task chat.
+  const hostCommands = useHostCommands(selectedCompanyId, null);
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
@@ -961,6 +964,8 @@ export function BoardChat() {
               disabled={sending}
               sendLabel="Send message"
               className="pointer-events-auto"
+              actionCommands={hostCommands.options}
+              onActionCommand={hostCommands.execute}
             />
           </div>
         </div>

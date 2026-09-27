@@ -75,6 +75,14 @@ import {
   readChatControlChronology,
   teamsConversationId,
 } from "./chat-control-chronology.js";
+import {
+  createCommandDispatcher,
+  type CommandDispatcher,
+} from "./command-dispatcher.js";
+import {
+  dispatchExternalChatCommand,
+  telegramSyntheticCommandText,
+} from "./chat-command-dispatch.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -1424,6 +1432,11 @@ function providerEffectPayload(
 }
 
 export interface ChatChannelServiceOptions {
+  /**
+   * Shared command registry and dispatcher (TOM-17). The app passes its
+   * singleton so chat channels and the board API resolve the same commands.
+   */
+  commandDispatcher?: CommandDispatcher;
   /**
    * Provider webhooks await only the durable ingress write, then finish task
    * processing outside the provider response budget. Tests may leave this off
@@ -2997,6 +3010,8 @@ export async function hydrateOutboundAttachment(input: {
 }
 
 export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
+  const commandDispatcher =
+    options.commandDispatcher ?? createCommandDispatcher();
   const runtime = options.runtime ?? createChatSdkRuntime();
   const githubManualMessages = new WeakMap<object, { policy: GitHubReviewPolicy; revision: number; event: "mention" | "comment" }>();
   const githubAutomaticMessages = new WeakMap<object, { context: GitHubReviewEventContext; revision: number; policy: GitHubReviewPolicy }>();
@@ -15804,6 +15819,25 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
 
       if (guidanceCommand) {
+        // Unknown Telegram commands resolve through the shared registry
+        // before falling back to generic guidance. Built-in controls were
+        // classified above and never reach the dispatcher.
+        const sharedCommandReply =
+          guidanceCommand === "unknown"
+            ? await dispatchExternalChatCommand(commandDispatcher, {
+                companyId: endpoint.companyId,
+                text: message.text,
+                botUsername: endpoint.botUsername ?? null,
+                actor: {
+                  type: "external",
+                  id: principalResolution.principal.id,
+                  name: message.author.fullName ?? null,
+                },
+                conversationId: existingConversation?.id ?? null,
+                issueId: existingIssue?.id ?? null,
+                channelId: thread.id,
+              })
+            : null;
         const assignedAgentName =
           guidanceCommand === "start"
             ? await db
@@ -15818,11 +15852,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 .then((rows) => rows[0]?.name ?? "this agent")
             : null;
         const responseText =
-          guidanceCommand === "start"
+          sharedCommandReply ??
+          (guidanceCommand === "start"
             ? `Send a direct message to start work with ${assignedAgentName}. In a group, use /task@${endpoint.botUsername ?? "your_bot"} followed by your request. Use /status, /new, or /close to manage the active task in this chat.`
             : guidanceCommand === "task"
               ? `Please include a request after /task@${endpoint.botUsername ?? "your_bot"}.`
-              : `Available commands: /task@${endpoint.botUsername ?? "your_bot"} followed by your request, /status, /new, and /close.`;
+              : `Available commands: /task@${endpoint.botUsername ?? "your_bot"} followed by your request, /status, /new, and /close.`);
         const publicationBinding =
           existingConversation && existingIssue
             ? { conversation: existingConversation, issue: existingIssue }
@@ -15849,7 +15884,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               endpointId: endpoint.id,
               conversationId: publicationBinding.conversation.id,
               issueId: publicationBinding.issue.id,
-              idempotencyKey: `control:guidance:${activeDelivery.id}`,
+              idempotencyKey: `control:${sharedCommandReply !== null ? "command" : "guidance"}:${activeDelivery.id}`,
               payload: projectSafeChatPublication({
                 classification: "external",
                 source: "task_control",
@@ -23327,7 +23362,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // group. /task@bot <request> is therefore the provider-native root
         // activation path; direct replies and later /task commands can
         // continue the same active group/topic task.
-        text: command === "/task" && text ? text : command,
+        // Shared commands (e.g. /echo) keep their arguments; reserved
+        // controls keep the exact bare command.
+        text: telegramSyntheticCommandText(command, text),
         formatted: { type: "root", children: [] },
         raw: event.event.raw,
         author: event.event.user,

@@ -69,9 +69,10 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
-import type { RunnerGoalCapability } from "@paperclipai/shared";
+import type { CommandExecutionResult, RunnerGoalCapability } from "@paperclipai/shared";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
+import { matchHostCommand } from "./host-commands";
 
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPausedTakeover";
 
@@ -154,6 +155,9 @@ interface TaskChatComposerProps {
   onRunnerGoalReassign?: (
     reassignment: CommentReassignment,
   ) => Promise<void> | void;
+  /** Shared host commands (TOM-17) advertised for this company, e.g. /echo. */
+  hostCommands?: ActionCommandOption[];
+  onHostCommand?: (command: string, args: string) => Promise<CommandExecutionResult>;
 }
 
 export type RunnerGoalComposerCommand =
@@ -411,6 +415,8 @@ export function TaskChatComposer({
   runnerGoalCapability = null,
   onRunnerGoalCommand,
   onRunnerGoalReassign,
+  hostCommands = [],
+  onHostCommand,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
   const stopControl = useComposerStop(onStop, stopPending);
@@ -439,6 +445,7 @@ export function TaskChatComposer({
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [commandReply, setCommandReply] = useState<string | null>(null);
   const [attachments, setAttachmentState] = useState<ComposerAttachment[]>(
     () =>
       draftKey
@@ -915,6 +922,43 @@ export function TaskChatComposer({
       }
       return;
     }
+    const hostCommand =
+      queuedEdit || !onHostCommand
+        ? null
+        : matchHostCommand(submittedBody, hostCommands);
+    if (hostCommand) {
+      if (submitting) return;
+      if (attachmentsRef.current.length > 0) {
+        setActionError(`Remove attachments before using /${hostCommand.command}.`);
+        return;
+      }
+      setSubmitting(true);
+      setCommandReply(null);
+      try {
+        const result = await onHostCommand!(hostCommand.command, hostCommand.args);
+        bodyRef.current = "";
+        if (draftTimer.current) clearTimeout(draftTimer.current);
+        draftTimer.current = null;
+        if (draftKey) clearDraft(draftKey);
+        setBody("");
+        editorRef.current?.clear();
+        if (result.success) {
+          setActionError(null);
+          setCommandReply(result.message);
+        } else {
+          setActionError(result.message ?? `/${hostCommand.command} failed.`);
+        }
+      } catch (error) {
+        setActionError(
+          error instanceof Error
+            ? error.message
+            : `/${hostCommand.command} could not be run.`,
+        );
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
     if (
       (!trimmed && attachedRefs.length === 0) ||
       uploadPending ||
@@ -1320,7 +1364,7 @@ export function TaskChatComposer({
                 id: "action:new", kind: "action", command: "new", name: "New session",
                 description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
                 disabled,
-              }] : [goalCommandOption]}
+              }, ...hostCommands] : [goalCommandOption, ...hostCommands]}
               onSubmit={() => void submit()}
               imageUploadHandler={
                 canAcceptFiles ? uploadInlineImage : undefined
@@ -1343,6 +1387,15 @@ export function TaskChatComposer({
               data-testid="task-chat-goal-error"
             >
               {actionError}
+            </p>
+          ) : null}
+          {commandReply && !actionError ? (
+            <p
+              className="px-1 text-xs text-muted-foreground"
+              role="status"
+              data-testid="task-chat-command-reply"
+            >
+              {commandReply}
             </p>
           ) : null}
 

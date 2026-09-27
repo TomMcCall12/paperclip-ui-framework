@@ -346,6 +346,9 @@ export * from "./types/chat-channels.js";
 export * from "./types/chat-github.js";
 export * from "./validators/chat-github.js";
 export * from "./validators/chat-channels.js";
+export * from "./types/commands.js";
+export * from "./validators/commands.js";
+export * from "./commands.js";
 export {
   humanizeConnectionDisplayName,
   connectionDisplaySecondaryHint,

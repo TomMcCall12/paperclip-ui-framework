@@ -981,6 +981,7 @@ export * from "./skill-policy.js";
 export * from "./provider-trace.js";
 export * from "./app-definition.js";
 export * from "./chat-channels.js";
+export * from "./commands.js";
 export * from "./chat-github.js";
 
 export * from "./email.js";

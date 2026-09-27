@@ -251,4 +251,131 @@ describe("ChatComposer", () => {
     expect(container.querySelector('[data-testid="chat-composer-drop-overlay"]')).toBeTruthy();
     act(() => root.unmount());
   });
+
+  describe("shared action commands", () => {
+    const commands = [
+      { id: "host-command:echo", kind: "action" as const, command: "echo", name: "Echo", description: "Echo text back", aliases: ["echo"] },
+      { id: "host-command:estimate", kind: "action" as const, command: "estimate", name: "Estimate", description: "Estimate work", aliases: ["estimate"] },
+    ];
+    const menu = () => container.querySelector('[data-testid="chat-composer-command-menu"]');
+    const menuOptions = () => Array.from(container.querySelectorAll<HTMLLIElement>('[role="option"]'));
+    const feedback = () => container.querySelector<HTMLElement>('[data-testid="chat-composer-command-feedback"]');
+    const key = (k: string) =>
+      act(() => {
+        input().dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+      });
+    async function flush() {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    it("shows and filters listed commands on /, and selects with the keyboard", () => {
+      const onSubmit = vi.fn();
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness onSubmit={onSubmit} submitKey="enter" actionCommands={commands} onActionCommand={vi.fn()} />);
+      });
+      expect(menu()).toBeNull();
+      act(() => typeInput(input(), "/"));
+      expect(menuOptions().map((o) => o.textContent)).toEqual(["/echoEcho text back", "/estimateEstimate work"]);
+      expect(input().getAttribute("aria-expanded")).toBe("true");
+      act(() => typeInput(input(), "/es"));
+      expect(menuOptions().map((o) => o.textContent)).toEqual(["/estimateEstimate work"]);
+      act(() => typeInput(input(), "/e"));
+      key("ArrowDown");
+      expect(menuOptions()[1]!.getAttribute("aria-selected")).toBe("true");
+      expect(input().getAttribute("aria-activedescendant")).toBe(menuOptions()[1]!.id);
+      key("Enter");
+      expect(input().value).toBe("/estimate ");
+      expect(menu()).toBeNull();
+      expect(onSubmit).not.toHaveBeenCalled();
+      act(() => root.unmount());
+    });
+
+    it("selects with the mouse and dismisses with Escape", () => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness actionCommands={commands} onActionCommand={vi.fn()} />);
+      });
+      act(() => typeInput(input(), "/"));
+      key("Escape");
+      expect(menu()).toBeNull();
+      act(() => typeInput(input(), "/ec"));
+      act(() => {
+        menuOptions()[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(input().value).toBe("/echo ");
+      act(() => root.unmount());
+    });
+
+    it("runs a listed command instead of posting, then clears and shows the reply", async () => {
+      const onSubmit = vi.fn();
+      const onActionCommand = vi.fn().mockResolvedValue({ success: true, message: "Echo: hello" });
+      const onChange = vi.fn();
+      const root = createRoot(container);
+      act(() => {
+        root.render(
+          <Harness initial="/echo hello" submitKey="enter" onSubmit={onSubmit} onChange={onChange} actionCommands={commands} onActionCommand={onActionCommand} />,
+        );
+      });
+      key("Enter");
+      await flush();
+      expect(onActionCommand).toHaveBeenCalledWith("echo", "hello");
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(input().value).toBe("");
+      expect(feedback()?.getAttribute("role")).toBe("status");
+      expect(feedback()?.textContent).toBe("Echo: hello");
+      act(() => typeInput(input(), "n"));
+      expect(feedback()).toBeNull();
+      act(() => root.unmount());
+    });
+
+    it("shows command failures as alerts and keeps the draft on transport errors", async () => {
+      const onActionCommand = vi
+        .fn()
+        .mockResolvedValueOnce({ success: false, message: "Usage: /echo <text>" })
+        .mockRejectedValueOnce(new Error("Network down"));
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness initial="/echo" actionCommands={commands} onActionCommand={onActionCommand} />);
+      });
+      act(() => {
+        sendButton().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+      expect(feedback()?.getAttribute("role")).toBe("alert");
+      expect(feedback()?.textContent).toBe("Usage: /echo <text>");
+      act(() => typeInput(input(), "/echo retry"));
+      act(() => {
+        sendButton().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+      expect(feedback()?.textContent).toBe("Network down");
+      expect(input().value).toBe("/echo retry");
+      act(() => root.unmount());
+    });
+
+    it("posts unlisted slash text and ordinary messages normally, and stays bare without a handler", () => {
+      const onSubmit = vi.fn();
+      const onActionCommand = vi.fn();
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness initial="/unknown thing" submitKey="enter" onSubmit={onSubmit} actionCommands={commands} onActionCommand={onActionCommand} />);
+      });
+      key("Enter");
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onActionCommand).not.toHaveBeenCalled();
+      act(() => root.unmount());
+
+      const bare = createRoot(container);
+      act(() => {
+        bare.render(<Harness actionCommands={commands} />);
+      });
+      act(() => typeInput(input(), "/"));
+      expect(menu()).toBeNull();
+      expect(input().getAttribute("role")).toBeNull();
+      act(() => bare.unmount());
+    });
+  });
 });

@@ -91,6 +91,7 @@ import {
   RunnerGoalWidget,
   useRunnerGoalControl,
 } from "@/components/task-chat/RunnerGoalWidget";
+import { useHostCommands } from "@/components/task-chat/host-commands";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
 import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
@@ -590,6 +591,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         ? pendingComposerAssignee.slice("agent:".length) || null
         : null;
   const runnerGoal = useRunnerGoalControl(issueId, effectiveGoalAgentId);
+  const hostCommands = useHostCommands(companyId, issueId);
 
   useEffect(() => {
     setPendingComposerAssignee(null);
@@ -3093,6 +3095,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       runnerGoalCapability={runnerGoal.data?.capability ?? null}
                       onRunnerGoalCommand={runnerGoal.executeComposerCommand}
                       onRunnerGoalReassign={reassignForRunnerGoal}
+                      hostCommands={hostCommands.options}
+                      onHostCommand={hostCommands.execute}
                       pendingTakeover={
                         pendingComposerInputs.length > 0
                           ? {

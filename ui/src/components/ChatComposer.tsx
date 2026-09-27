@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -10,7 +11,13 @@ import {
   type ReactNode,
 } from "react";
 import { AlertTriangle, Check, Loader2, Paperclip, Send } from "lucide-react";
+import type { CommandExecutionResult } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
+import type { ActionCommandOption } from "../context/EditorAutocompleteContext";
+import {
+  filterActionCommandOptions,
+  matchHostCommand,
+} from "./task-chat/host-commands";
 
 /**
  * Shared chat composer (PAP-95a / PAP-96).
@@ -26,6 +33,8 @@ import { cn } from "../lib/utils";
  * `trailingTools` props (wired by PAP-95b). The @project/@task picker layers on
  * through PAP-95f. The conference room adopts this bare: textarea + send (+ attach
  * when a handler is supplied), no mode chip, since the room has no task lifecycle.
+ * Shared host commands (TOM-17) layer on through `actionCommands` +
+ * `onActionCommand`: a `/` listbox over the textarea and command dispatch.
  */
 
 export interface ChatComposerAttachment {
@@ -91,6 +100,13 @@ export interface ChatComposerProps {
   textareaClassName?: string;
   /** test id for the textarea (defaults to "chat-composer-input"). */
   inputTestId?: string;
+  /**
+   * Shared host commands (TOM-17). Typing `/` offers them in a listbox, and
+   * submitting a listed command calls `onActionCommand` instead of `onSubmit`.
+   * Both must be provided to enable commands.
+   */
+  actionCommands?: ActionCommandOption[];
+  onActionCommand?: (command: string, args: string) => Promise<CommandExecutionResult>;
 }
 
 const MAX_TEXTAREA_HEIGHT_PX = 200;
@@ -132,6 +148,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     className,
     textareaClassName,
     inputTestId = "chat-composer-input",
+    actionCommands,
+    onActionCommand,
   },
   forwardedRef,
 ) {
@@ -139,11 +157,24 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const [isDragOver, setIsDragOver] = useState(false);
+  const listboxId = useId();
+  const [menuDismissedFor, setMenuDismissedFor] = useState<string | null>(null);
+  const [highlightIndex, setHighlightIndex] = useState(0);
+  const [commandRunning, setCommandRunning] = useState(false);
+  const [commandFeedback, setCommandFeedback] = useState<
+    { kind: "reply" | "error"; text: string } | null
+  >(null);
+
+  const commands = onActionCommand ? (actionCommands ?? []) : [];
+  const menuOptions =
+    menuDismissedFor === value ? [] : filterActionCommandOptions(value, commands);
+  const menuOpen = !disabled && menuOptions.length > 0;
+  const activeIndex = Math.min(highlightIndex, menuOptions.length - 1);
 
   const canAttach = typeof onAttachFiles === "function";
   const isAsk = tone === "ask";
   const isPlanning = tone === "planning";
-  const canSend = !disabled && !submitting && value.trim().length > 0;
+  const canSend = !disabled && !submitting && !commandRunning && value.trim().length > 0;
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => textareaRef.current?.focus(),
@@ -160,10 +191,72 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
   function handleChange(evt: ChangeEvent<HTMLTextAreaElement>) {
     const next = singleLine ? evt.target.value.replace(/\r?\n/g, " ") : evt.target.value;
+    setHighlightIndex(0);
+    if (next) setCommandFeedback(null);
     onChange(next);
   }
 
+  function selectCommand(option: ActionCommandOption) {
+    if (option.disabled) return;
+    setHighlightIndex(0);
+    onChange(`/${option.command} `);
+    textareaRef.current?.focus();
+  }
+
+  async function runCommand(command: string, args: string) {
+    setCommandRunning(true);
+    setCommandFeedback(null);
+    try {
+      const result = await onActionCommand!(command, args);
+      onChange("");
+      setCommandFeedback(
+        result.success
+          ? result.message
+            ? { kind: "reply", text: result.message }
+            : null
+          : { kind: "error", text: result.message ?? `/${command} failed.` },
+      );
+    } catch (error) {
+      // Keep the draft so the user can retry after a transport failure.
+      setCommandFeedback({
+        kind: "error",
+        text: error instanceof Error ? error.message : `/${command} could not be run.`,
+      });
+    } finally {
+      setCommandRunning(false);
+    }
+  }
+
+  function submit() {
+    if (!canSend) return;
+    const hostCommand = onActionCommand ? matchHostCommand(value, commands) : null;
+    if (hostCommand) {
+      void runCommand(hostCommand.command, hostCommand.args);
+      return;
+    }
+    setCommandFeedback(null);
+    onSubmit();
+  }
+
   function handleKeyDown(evt: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (menuOpen) {
+      if (evt.key === "ArrowDown" || evt.key === "ArrowUp") {
+        evt.preventDefault();
+        const step = evt.key === "ArrowDown" ? 1 : -1;
+        setHighlightIndex((activeIndex + step + menuOptions.length) % menuOptions.length);
+        return;
+      }
+      if (evt.key === "Escape") {
+        evt.preventDefault();
+        setMenuDismissedFor(value);
+        return;
+      }
+      if ((evt.key === "Enter" && !evt.shiftKey) || evt.key === "Tab") {
+        evt.preventDefault();
+        selectCommand(menuOptions[activeIndex]!);
+        return;
+      }
+    }
     if (evt.key !== "Enter") return;
     const wantsSubmit =
       submitKey === "mod-enter"
@@ -171,7 +264,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         : !evt.shiftKey && !evt.metaKey && !evt.ctrlKey;
     if (!wantsSubmit) return;
     evt.preventDefault();
-    if (canSend) onSubmit();
+    submit();
   }
 
   function triggerFilePicker() {
@@ -259,9 +352,47 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         </div>
       ) : null}
 
+      {menuOpen ? (
+        <ul
+          id={listboxId}
+          role="listbox"
+          aria-label="Commands"
+          data-testid="chat-composer-command-menu"
+          className="absolute inset-x-0 bottom-full z-30 mb-2 max-h-60 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+        >
+          {menuOptions.map((option, index) => (
+            <li
+              key={option.id}
+              id={`${listboxId}-${index}`}
+              role="option"
+              aria-selected={index === activeIndex}
+              aria-disabled={option.disabled || undefined}
+              title={option.disabled ? (option.disabledReason ?? undefined) : undefined}
+              // Keep focus in the textarea so typing continues after selection.
+              onMouseDown={(evt) => evt.preventDefault()}
+              onMouseEnter={() => setHighlightIndex(index)}
+              onClick={() => selectCommand(option)}
+              className={cn(
+                "flex cursor-pointer items-baseline gap-2 rounded-md px-2 py-1.5 text-sm",
+                index === activeIndex && "bg-accent",
+                option.disabled && "cursor-not-allowed opacity-50",
+              )}
+            >
+              <span className="font-medium text-foreground">/{option.command}</span>
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{option.description}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       <textarea
         ref={textareaRef}
         data-testid={inputTestId}
+        role={commands.length > 0 ? "combobox" : undefined}
+        aria-autocomplete={commands.length > 0 ? "list" : undefined}
+        aria-expanded={commands.length > 0 ? menuOpen : undefined}
+        aria-controls={menuOpen ? listboxId : undefined}
+        aria-activedescendant={menuOpen ? `${listboxId}-${activeIndex}` : undefined}
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
@@ -322,6 +453,19 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         </div>
       ) : null}
 
+      {commandFeedback ? (
+        <p
+          role={commandFeedback.kind === "error" ? "alert" : "status"}
+          data-testid="chat-composer-command-feedback"
+          className={cn(
+            "mt-2 text-xs",
+            commandFeedback.kind === "error" ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {commandFeedback.text}
+        </p>
+      ) : null}
+
       {hint ? (
         <div className="mt-2 inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
           {hint}
@@ -359,9 +503,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
         <button
           type="button"
-          onClick={() => {
-            if (canSend) onSubmit();
-          }}
+          onClick={submit}
           disabled={!canSend}
           aria-label={sendLabel}
           title={sendLabel}
@@ -372,7 +514,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               : "bg-accent text-muted-foreground",
           )}
         >
-          {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+          {submitting || commandRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
         </button>
       </div>
     </div>

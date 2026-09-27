@@ -422,6 +422,9 @@ export const queryKeys = {
     fileResourceAvailability: (issueId: string, refKeys: readonly string[]) =>
       ["issues", "file-resources", issueId, "availability", refKeys] as const,
   },
+  commands: {
+    list: (companyId: string) => ["commands", companyId] as const,
+  },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>
       [
