@@ -47,6 +47,34 @@ const support = await getEmbeddedPostgresTestSupport();
       actorType: "user", actorId: "board", reason: "issue_commented" };
   }
   type Fixture = Awaited<ReturnType<typeof seed>>;
+  it("admits a fresh Hermes Gateway turn after terminal legacy recovery without replaying a provider process", async () => {
+    const f = await seed();
+    await db.update(agents).set({ adapterType: "hermes_gateway" }).where(eq(agents.id, f.agentId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy",
+      nativeIssueId: null,
+      processPid: null,
+      processGroupId: null,
+      startedAt: new Date("2026-09-11T09:30:00Z"),
+      errorCode: "execution_reconciliation_required",
+      runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+
+    const result = await db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      return admitExplicitNativeContinuation({
+        ...f,
+        db: tx as unknown as typeof db,
+        reason: "issue_commented",
+        dryRun: true,
+      });
+    });
+
+    expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
+  });
   it.each(["handoff", "foreign_task", "running_source", "different_owner", "mention", "interaction", "chat"])("adopts former-owner comments only during an authorized handoff (%s)", async kind => {
     const f = await seed(), nextAgentId = randomUUID(), queueId = randomUUID();
     await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
