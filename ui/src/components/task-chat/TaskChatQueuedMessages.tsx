@@ -28,6 +28,7 @@ import type {
   IssueQueuedCommentEntry,
   IssueQueuedCommentQueue,
 } from "@paperclipai/shared";
+import { queuedMessageWaitRequiresAction } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -362,6 +363,11 @@ export function TaskChatQueuedMessages({
 
   if (entries.length === 0) return null;
 
+  const executionWaitNeedsAction = Boolean(
+    queue.executionWait &&
+      queuedMessageWaitRequiresAction(queue.executionWait.reason),
+  );
+
   return (
     <div
       className="relative z-0 mx-3 -mb-px overflow-hidden rounded-t-xl rounded-b-none border border-b-0 border-border/75 bg-card shadow-sm"
@@ -369,8 +375,24 @@ export function TaskChatQueuedMessages({
       aria-label="Queued messages"
     >
       {queue.executionWait && (
-        <div role="status" aria-live="polite" className="px-3 py-1.5 text-xs text-muted-foreground">
-          {queue.executionWait.message}
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="task-chat-queued-execution-wait"
+          data-state={executionWaitNeedsAction ? "action_required" : "waiting"}
+          className={cn(
+            "px-3 py-1.5 text-xs",
+            executionWaitNeedsAction
+              ? "bg-accent/50 text-foreground"
+              : "text-muted-foreground",
+          )}
+        >
+          <span>{queue.executionWait.message}</span>
+          {executionWaitNeedsAction ? (
+            <span className="ml-1">
+              Nothing is running for this message. Discard it or reconcile the task.
+            </span>
+          ) : null}
         </div>
       )}
       <DndContext

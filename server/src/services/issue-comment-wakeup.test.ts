@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { shouldWakeAssigneeForIssueComment } from "./issue-comment-wakeup.js";
+import {
+  isIssueCommentWakeIdempotencyKey,
+  issueCommentWakeIdempotencyKey,
+  shouldWakeAssigneeForIssueComment,
+} from "./issue-comment-wakeup.js";
+
+describe("issue comment wake idempotency key", () => {
+  it("binds one wake to the persisted comment identity", () => {
+    const key = issueCommentWakeIdempotencyKey("11111111-1111-4111-8111-111111111111");
+    expect(key).toBe("issue-comment:11111111-1111-4111-8111-111111111111");
+    expect(isIssueCommentWakeIdempotencyKey(key)).toBe(true);
+  });
+
+  it("does not treat other durable wake receipts as comment deliveries", () => {
+    for (const key of [null, undefined, "", "chat-inbound:abc", "queued-comment-delivery:abc", "remote-stop-comment:a:b", "issue-comment:"]) {
+      expect(isIssueCommentWakeIdempotencyKey(key)).toBe(false);
+    }
+  });
+});
 
 describe("shouldWakeAssigneeForIssueComment", () => {
   it("suppresses explicit resume from the run that currently owns the issue", () => {

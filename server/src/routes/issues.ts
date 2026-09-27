@@ -245,7 +245,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
+import { issueCommentWakeIdempotencyKey, shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -14644,6 +14644,7 @@ export function issueRoutes(
             },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
+            ...(comment ? { idempotencyKey: issueCommentWakeIdempotencyKey(comment.id) } : {}),
             contextSnapshot: {
               issueId: issue.id,
               ...(comment
@@ -14747,6 +14748,7 @@ export function issueRoutes(
               },
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
+              idempotencyKey: issueCommentWakeIdempotencyKey(comment.id),
               contextSnapshot: {
                 issueId: id,
                 taskId: id,
@@ -14803,6 +14805,7 @@ export function issueRoutes(
               },
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
+              idempotencyKey: issueCommentWakeIdempotencyKey(wakeCommentId),
               contextSnapshot: {
                 issueId: wakeIssueId,
                 taskId: wakeIssueId,
@@ -17301,6 +17304,40 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (
+        !issue.conversationAgentId &&
+        req.actor.type === "board" &&
+        req.actor.userId &&
+        req.body.clientRequestId
+      ) {
+        // A retried board comment must be resolved before any reopen/status/wake
+        // decisions. Otherwise a lost response can replay the lifecycle side
+        // effects even though the service correctly deduplicates the insert.
+        const [existingComment] = await db
+          .select()
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.issueId, issue.id),
+              eq(issueComments.authorUserId, req.actor.userId),
+              eq(issueComments.clientRequestId, req.body.clientRequestId),
+            ),
+          );
+        if (existingComment) {
+          const savedComment = await svc.addComment(
+            issue.id,
+            req.body.body,
+            { userId: req.actor.userId },
+            {
+              clientRequestId: req.body.clientRequestId,
+              authorType: "user",
+              attachmentIds: req.body.attachmentIds,
+            },
+          );
+          res.status(201).json(savedComment);
+          return;
+        }
+      }
       if (issue.conversationAgentId && req.actor.type === "board") {
         if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (!req.actor.userId) throw forbidden("Board user access required");
@@ -18146,6 +18183,7 @@ export function issueRoutes(
               },
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
+              idempotencyKey: issueCommentWakeIdempotencyKey(comment.id),
               contextSnapshot: {
                 issueId: currentIssue.id,
                 taskId: currentIssue.id,
@@ -18183,6 +18221,7 @@ export function issueRoutes(
               },
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
+              idempotencyKey: issueCommentWakeIdempotencyKey(comment.id),
               contextSnapshot: {
                 issueId: currentIssue.id,
                 taskId: currentIssue.id,
@@ -18237,6 +18276,7 @@ export function issueRoutes(
             },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
+            idempotencyKey: issueCommentWakeIdempotencyKey(wakeCommentId),
             contextSnapshot: {
               issueId: wakeIssueId,
               taskId: wakeIssueId,

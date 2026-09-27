@@ -87,6 +87,33 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).not.toContain(message);
   });
 
+  it("keeps an automatically clearing wait as a quiet status", () => {
+    const message = "Waiting for the previous environment to stop. Your message will start automatically.";
+    render({ queue: { ...queue, executionWait: { reason: "remote_cleanup", message } } });
+    const wait = container.querySelector('[data-testid="task-chat-queued-execution-wait"]');
+    expect(wait?.getAttribute("data-state")).toBe("waiting");
+    expect(wait?.textContent).not.toContain("Nothing is running");
+  });
+
+  it("shows a stopped recovery as blocked with a usable discard path", async () => {
+    const message = "The previous run stopped and needs reconciliation before this message can start. Your message is saved.";
+    const props = render({
+      queue: { ...queue, protocol: "legacy", executionWait: { reason: "execution_reconciliation_required", message } },
+    });
+    const wait = container.querySelector('[data-testid="task-chat-queued-execution-wait"]');
+    expect(wait?.getAttribute("data-state")).toBe("action_required");
+    expect(wait?.textContent).toContain(message);
+    expect(wait?.textContent).toContain("Nothing is running for this message");
+    const discard = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-discard-comment-1"]',
+    );
+    expect(discard?.disabled).toBe(false);
+    await act(async () => {
+      discard?.click();
+    });
+    expect(props.onDiscard).toHaveBeenCalledWith("comment-1", "rev-1");
+  });
+
   it("renders each queued message once as a compact one-line row", () => {
     render();
     const pane = container.querySelector(

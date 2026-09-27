@@ -1264,6 +1264,113 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("binds the assignee follow-up wake to the persisted comment identity", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Follow up after the finished run." });
+
+    expect(res.status).toBe(201);
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_commented",
+          idempotencyKey: "issue-comment:comment-1",
+          payload: expect.objectContaining({ issueId: "11111111-1111-4111-8111-111111111111", commentId: "comment-1" }),
+          contextSnapshot: expect.objectContaining({ issueId: "11111111-1111-4111-8111-111111111111", wakeCommentId: "comment-1" }),
+        }),
+      ),
+    );
+  });
+
+  it("binds a reopening follow-up wake to the persisted comment identity", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({ ...makeIssue("done"), ...patch }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "One more related change on this task." });
+
+    expect(res.status).toBe(201);
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_reopened_via_comment",
+          idempotencyKey: "issue-comment:comment-1",
+        }),
+      ),
+    );
+  });
+
+  it("replays a retried clientRequestId without repeating status, activity, or wake side effects", async () => {
+    const { issueComments } = await import("@paperclipai/db");
+    const clientRequestId = "77777777-7777-4777-8777-777777777777";
+    const saved = {
+      id: "comment-saved",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "Please continue with the related change.",
+      authorUserId: "local-board",
+      clientRequestId,
+    };
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.addComment.mockResolvedValue(saved);
+    mockDbSelectFrom.mockImplementation((table: unknown) => ({
+      where: () => ({
+        orderBy: mockDbSelectOrderBy,
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve(table === issueComments ? [{ id: saved.id }] : []).then(onFulfilled, onRejected),
+      }),
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: saved.body, clientRequestId });
+
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe("comment-saved");
+    // The service still owns the exact-content comparison for the saved request.
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      saved.body,
+      { userId: "local-board" },
+      expect.objectContaining({ clientRequestId, authorType: "user" }),
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a reused clientRequestId with different content before any side effect", async () => {
+    const { issueComments } = await import("@paperclipai/db");
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.addComment.mockRejectedValue(
+      new HttpError(409, "Message request ID was already used for different content"),
+    );
+    mockDbSelectFrom.mockImplementation((table: unknown) => ({
+      where: () => ({
+        orderBy: mockDbSelectOrderBy,
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve(table === issueComments ? [{ id: "comment-saved" }] : []).then(onFulfilled, onRejected),
+      }),
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Different text", clientRequestId: "77777777-7777-4777-8777-777777777777" });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("skips the assignee wakeup when the issue is concurrently cancelled while the comment is being written", async () => {
     const app = await installActor(createApp());
     // First call is the route's pre-insert fetch; second is the wake-decision

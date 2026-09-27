@@ -1738,6 +1738,7 @@ export {
 } from "./types/resource-memberships.js";
 
 export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";
+export { queuedMessageWaitRequiresAction } from "./queued-message-wait.js";
 export {
   findWorkspaceCommandDefinition,
   listWorkspaceCommandDefinitions,

@@ -17,10 +17,22 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
+import { gatewayUserTurnDenial } from "./gateway-user-turn.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
-const terminal = ["failed", "interrupted", "timed_out", "cancelled"];
+const terminal = ["succeeded", "failed", "interrupted", "timed_out", "cancelled"];
+
+// Hermes Gateway is a Paperclip-owned execution adapter, not a resumable
+// provider conversation. A user follow-up may start a fresh gateway turn after
+// a terminal legacy run, but it must never inherit the old session or replay the
+// old run. Keep this allowlist narrow; process/webhook adapters retain their
+// reconciliation boundary.
+const FRESH_LEGACY_USER_CONTINUATION_ADAPTER = "hermes_gateway";
+
+function supportsFreshLegacyUserContinuation(adapterType: string): boolean {
+  return adapterType === FRESH_LEGACY_USER_CONTINUATION_ADAPTER;
+}
 
 function processStopped(pid: number): boolean {
   try { process.kill(pid, 0); return false; }
@@ -127,7 +139,8 @@ export async function admitExplicitNativeContinuation(input: {
   if (!retry && !response && !comment?.body.trim()) return null;
   const authorizedAt = response?.comment.createdAt ?? comment?.createdAt ?? new Date();
   const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
-  if (!agent || (!isConversationAdapter(agent.adapterType) && agent.adapterType !== "paperclip_runner")) return null;
+  if (!agent || (!isConversationAdapter(agent.adapterType) && agent.adapterType !== "paperclip_runner" &&
+      !supportsFreshLegacyUserContinuation(agent.adapterType))) return null;
   if (queuedInterrupt && !isConversationAdapter(agent.adapterType) && !response?.source.requiresFreshSession) return null;
   const actions = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
@@ -166,7 +179,7 @@ export async function admitExplicitNativeContinuation(input: {
       !run.processPid && !run.processGroupId && !run.nativeSessionId;
     const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
-      isConversationAdapter(agent.adapterType);
+      (isConversationAdapter(agent.adapterType) || supportsFreshLegacyUserContinuation(agent.adapterType));
     if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission &&
         !(queuedInterrupt && response?.source.requiresFreshSession && run.runtimeMode === "native")) return null;
     // Saved input is a request for a new turn, never permission to undo an
@@ -174,11 +187,30 @@ export async function admitExplicitNativeContinuation(input: {
     if (queuedRequest && !queuedInterrupt && ((run.status === "cancelled" && !unusedAdmission) ||
         run.contextSnapshot?.wakeCommentId === commentId ||
         (Array.isArray(run.contextSnapshot?.wakeCommentIds) && run.contextSnapshot.wakeCommentIds.includes(commentId)))) return null;
+    let historicalAdapter: string | null = null;
     if (legacyUserTurn) {
-      const historicalAdapter = await historicalAdapterType(db, run);
+      historicalAdapter = await historicalAdapterType(db, run);
+      if (supportsFreshLegacyUserContinuation(agent.adapterType)) {
+        const denial = gatewayUserTurnDenial({
+          agentAdapterType: agent.adapterType,
+          historicalAdapterType: historicalAdapter,
+          retry,
+          run: {
+            runtimeMode: run.runtimeMode,
+            status: run.status,
+            finishedAt: run.finishedAt,
+            resultJson: run.resultJson,
+          },
+        });
+        if (denial) return blocked(denial.reason, denial.message);
+      }
       // A settings change never converts a known process/webhook execution into
-      // a conversation. Those adapters retain their reconciliation contract.
-      if (historicalAdapter && !isConversationAdapter(historicalAdapter)) return null;
+      // a conversation. Hermes Gateway is the one legacy adapter explicitly
+      // allowed to start a fresh user turn without replaying its old session.
+      if (historicalAdapter && !isConversationAdapter(historicalAdapter) &&
+          !supportsFreshLegacyUserContinuation(historicalAdapter)) return null;
+      if (historicalAdapter === FRESH_LEGACY_USER_CONTINUATION_ADAPTER &&
+          agent.adapterType !== FRESH_LEGACY_USER_CONTINUATION_ADAPTER) return null;
     }
     // For pre-upgrade rows without adapter evidence, only a new explicit user
     // turn is allowed, after the termination proofs below. This does not infer
@@ -233,9 +265,16 @@ export async function admitExplicitNativeContinuation(input: {
       if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
       if (!unusedAdmission && !cancelledStartup) {
         // A missing process identity is not evidence that a provider exited.
+        // Hermes Gateway is a control-plane adapter: once its cancelled legacy
+        // run is terminal and all environment leases are released, there is no
+        // local provider process for Paperclip to identify. The fresh-turn
+        // boundary above still prevents replay of the old session/action.
+        const hermesGatewayTerminal = legacyUserTurn &&
+          historicalAdapter === FRESH_LEGACY_USER_CONTINUATION_ADAPTER;
         if (!run.processPid && !run.processGroupId &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&
-            !await hasHistoricalSuspendedNativeSession(db, run)) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
+            !await hasHistoricalSuspendedNativeSession(db, run) &&
+            !hermesGatewayTerminal) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
         if (run.processPid && !processStopped(run.processPid)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
         if (run.processGroupId && !processStopped(-run.processGroupId)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
       }

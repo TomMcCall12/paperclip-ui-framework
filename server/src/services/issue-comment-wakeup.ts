@@ -1,3 +1,13 @@
+export function issueCommentWakeIdempotencyKey(commentId: string): string {
+  return `issue-comment:${commentId}`;
+}
+
+export function isIssueCommentWakeIdempotencyKey(
+  value: string | null | undefined,
+): boolean {
+  return typeof value === "string" && /^issue-comment:[^:]+$/.test(value);
+}
+
 export function shouldWakeAssigneeForIssueComment(input: {
   selfComment: boolean;
   resumeRequested: boolean;
