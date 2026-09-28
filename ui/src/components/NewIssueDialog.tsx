@@ -1575,27 +1575,54 @@ export function NewIssueDialog() {
               {supportsAssigneeOverrides ? (
                 <label className="inline-flex items-center gap-1.5">
                   <span className="sr-only">Agent model</span>
-                  <select
-                    data-testid="new-issue-model-select"
-                    data-slot="new-issue-compact-control"
-                    aria-label="Agent model"
-                    value={assigneeModelOverride}
-                    className="h-8 max-w-48 rounded-md border border-border bg-background px-2.5 py-0 text-xs outline-none transition-colors hover:bg-accent/50 sm:h-auto sm:max-w-none sm:px-2 sm:py-1"
-                    onChange={(event) => {
-                      const nextModel = event.target.value;
-                      setAssigneeModelOverride(nextModel);
-                      setAssigneeModelLane(nextModel ? "custom" : "primary");
-                    }}
-                  >
-                    <option value="">
-                      {assigneePrimaryModel ? `Agent default (${assigneePrimaryModel})` : "Agent default"}
-                    </option>
-                    {modelOverrideOptions.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.label}
+                  {assigneeAdapterType === "hermes_gateway" ? (
+                    <>
+                      <input
+                        data-testid="new-issue-model-select"
+                        data-slot="new-issue-compact-control"
+                        aria-label="Agent model"
+                        list="new-issue-hermes-model-options"
+                        value={assigneeModelOverride}
+                        placeholder={assigneePrimaryModel ? `Agent default (${assigneePrimaryModel})` : "Agent default — enter model"}
+                        className="h-8 max-w-48 rounded-md border border-border bg-background px-2.5 py-0 text-xs outline-none transition-colors hover:bg-accent/50 sm:h-auto sm:max-w-none sm:px-2 sm:py-1"
+                        onInput={(event) => {
+                          const nextModel = event.currentTarget.value.trim();
+                          setAssigneeModelOverride(nextModel);
+                          setAssigneeModelLane(nextModel ? "custom" : "primary");
+                        }}
+                        onChange={(event) => {
+                          const nextModel = event.target.value.trim();
+                          setAssigneeModelOverride(nextModel);
+                          setAssigneeModelLane(nextModel ? "custom" : "primary");
+                        }}
+                      />
+                      <datalist id="new-issue-hermes-model-options">
+                        {modelOverrideOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                      </datalist>
+                    </>
+                  ) : (
+                    <select
+                      data-testid="new-issue-model-select"
+                      data-slot="new-issue-compact-control"
+                      aria-label="Agent model"
+                      value={assigneeModelOverride}
+                      className="h-8 max-w-48 rounded-md border border-border bg-background px-2.5 py-0 text-xs outline-none transition-colors hover:bg-accent/50 sm:h-auto sm:max-w-none sm:px-2 sm:py-1"
+                      onChange={(event) => {
+                        const nextModel = event.target.value;
+                        setAssigneeModelOverride(nextModel);
+                        setAssigneeModelLane(nextModel ? "custom" : "primary");
+                      }}
+                    >
+                      <option value="">
+                        {assigneePrimaryModel ? `Agent default (${assigneePrimaryModel})` : "Agent default"}
                       </option>
-                    ))}
-                  </select>
+                      {modelOverrideOptions.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </label>
               ) : null}
               <span>in</span>

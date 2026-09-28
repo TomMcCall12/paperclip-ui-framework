@@ -331,10 +331,12 @@ function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): 
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
     "Follow the Paperclip wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
+  const model = nonEmpty(ctx.config.model);
   return {
     ...payloadTemplate,
     input,
     instructions,
+    ...(model ? { model } : {}),
     ...(sessionKey ? { session_id: sessionKey } : {}),
   };
 }

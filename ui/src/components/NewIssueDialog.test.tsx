@@ -687,6 +687,27 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("shows an editable model control for a Hermes gateway agent and submits its override", async () => {
+    dialogState.newIssueDefaults = { title: "Hermes model", assigneeAgentId: "agent-hermes" };
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-hermes", name: "Jarvis", status: "active", adapterType: "hermes_gateway", adapterConfig: {}, runtimeConfig: {}, permissions: {} }]);
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="new-issue-model-select"]')).not.toBeNull());
+    const modelInput = container.querySelector('[data-testid="new-issue-model-select"]') as HTMLInputElement;
+    expect(modelInput.tagName).toBe("INPUT");
+    await act(async () => {
+      modelInput.value = "gpt-5.6-terra";
+      modelInput.dispatchEvent(new Event("input", { bubbles: true }));
+      modelInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const submitButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create Task"));
+    await waitForAssertion(() => expect(submitButton?.hasAttribute("disabled")).toBe(false));
+    await act(async () => submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ assigneeAgentId: "agent-hermes", assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-terra" } } }));
+    act(() => root.unmount());
+  });
+
   it("warns when the selected assignee is a paused imported agent", async () => {
     dialogState.newIssueDefaults = {
       title: "Compare onboarding flows",
