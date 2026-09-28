@@ -124,6 +124,109 @@ describe("setup-token reaper", () => {
     expect(store.rows.size).toBe(0);
   });
 
+  it("clears a terminal legacy record with no lease without calling the provider", async () => {
+    const store = createMemoryStore();
+    // Legacy local setup-token rows were persisted without a provider lease.
+    store.seed({
+      sessionId: "legacy-no-lease",
+      leaseId: "",
+      state: "timed_out",
+      deadline: 0,
+      boundAt: null,
+    });
+    const leases = createFakeLeases();
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW });
+
+    const result = await reaper.sweep();
+
+    expect(result.released).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(leases.releaseByIdCalls).toEqual([]);
+    expect(store.rows.size).toBe(0);
+  });
+
+  it("keeps a non-terminal record with no lease for investigation", async () => {
+    const store = createMemoryStore();
+    // This is a malformed live record, not a proven terminal legacy row.
+    store.seed({
+      sessionId: "live-no-lease",
+      leaseId: "",
+      state: "awaiting_code",
+      deadline: 0,
+      boundAt: null,
+    });
+    const leases = createFakeLeases();
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW });
+
+    const result = await reaper.sweep();
+
+    expect(result.released).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(leases.releaseByIdCalls).toEqual([]);
+    expect(store.rows.has("live-no-lease")).toBe(true);
+  });
+
+  it("keeps terminal no-lease records outside the proven legacy shape", async () => {
+    const store = createMemoryStore();
+    // A terminal row with either a real deadline or a consumed claim is not the
+    // known null-lease legacy shape, so automatic deletion would be unsafe.
+    store.seed({
+      sessionId: "terminal-no-lease-deadline",
+      leaseId: "",
+      state: "timed_out",
+      deadline: NOW + 60_000,
+      boundAt: null,
+    });
+    store.seed({
+      sessionId: "terminal-no-lease-bound",
+      leaseId: "",
+      state: "timed_out",
+      deadline: 0,
+      boundAt: NOW - 1,
+    });
+    const leases = createFakeLeases();
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW });
+
+    const result = await reaper.sweep();
+
+    expect(result.released).toBe(0);
+    expect(result.failed).toBe(2);
+    expect(leases.releaseByIdCalls).toEqual([]);
+    expect(store.rows.has("terminal-no-lease-deadline")).toBe(true);
+    expect(store.rows.has("terminal-no-lease-bound")).toBe(true);
+  });
+
+  it("retries a failed proven legacy no-lease cleanup without calling the provider", async () => {
+    const store = createMemoryStore();
+    store.seed({
+      sessionId: "legacy-no-lease-retry",
+      leaseId: "",
+      state: "timed_out",
+      deadline: 0,
+      boundAt: null,
+    });
+    const originalRemove = store.remove;
+    let failFirstRemoval = true;
+    store.remove = async (identity) => {
+      if (failFirstRemoval) throw new Error("database unavailable");
+      await originalRemove(identity);
+    };
+    const leases = createFakeLeases();
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW });
+
+    const first = await reaper.sweep();
+    expect(first.released).toBe(0);
+    expect(first.failed).toBe(1);
+    expect(store.rows.has("legacy-no-lease-retry")).toBe(true);
+
+    failFirstRemoval = false;
+    const second = await reaper.sweep();
+    expect(second.released).toBe(1);
+    expect(second.failed).toBe(0);
+    expect(leases.releaseByIdCalls).toEqual([]);
+    expect(store.rows.has("legacy-no-lease-retry")).toBe(false);
+  });
+
   it("reaps every reapable record in one sweep and stays idempotent on the next", async () => {
     const store = createMemoryStore();
     store.seed({ sessionId: "orphan-a", leaseId: "lease-a", state: "failed" });

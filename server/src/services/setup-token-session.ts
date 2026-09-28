@@ -307,9 +307,9 @@ export interface SetupTokenCleanupStore {
 
 /** The counts one reaper sweep produced over the durable cleanup store. */
 export interface SetupTokenReapResult {
-  /** The reapable records whose lease released and whose row cleared. */
+  /** The reapable records whose safe cleanup completed. */
   released: number;
-  /** The reapable records whose lease release failed. The row stays for a retry. */
+  /** The reapable records that could not safely be cleared and remain retryable. */
   failed: number;
 }
 
@@ -318,8 +318,11 @@ export interface SetupTokenReapResult {
  * lease whose session is terminal, past its deadline, or already consumed. It
  * runs after a restart and on the scheduler interval, so it frees a lease that a
  * crash left behind (SR-4). A release failure stays retryable: the sweep leaves
- * the record for a later run. The standalone reaper and the in-flight session
- * service both call this function, so both flows use one reap convention.
+ * the record for a later run. A terminal legacy row with no lease, no expiry,
+ * and no consumed claim cannot represent a live sandbox, so it clears without a
+ * UUID lookup; every other missing-lease row remains fail-closed for inspection.
+ * The standalone reaper and the in-flight session service both call this
+ * function, so both flows use one reap convention.
  */
 export async function reapSetupTokenLeases(
   deps: {
@@ -334,14 +337,44 @@ export async function reapSetupTokenLeases(
   let released = 0;
   let failed = 0;
   for (const record of records) {
+    const identity = {
+      sessionId: record.sessionId,
+      companyId: record.companyId,
+      ownerUserId: record.ownerUserId,
+      adapterType: record.adapterType,
+    };
+
+    // A setup-token service always persists a lease and expiry before its row is
+    // live. This narrow shape is therefore a legacy terminal row, not a sandbox
+    // to tear down. Do not turn its missing UUID into a provider lookup.
+    const isProvenLegacyNoLease =
+      record.leaseId === "" &&
+      isTerminalSessionState(record.state) &&
+      record.deadline === 0 &&
+      record.boundAt === null;
+    if (isProvenLegacyNoLease) {
+      try {
+        await deps.store.remove(identity);
+        released += 1;
+      } catch {
+        failed += 1;
+        log("[paperclip] Setup-token reaper: legacy no-lease cleanup failed; it stays retryable.");
+      }
+      continue;
+    }
+
+    // A missing reference outside the proven terminal legacy shape may describe
+    // a malformed active record. Keep it for investigation rather than guessing
+    // at a lease id, replaying work, or deleting a potentially live session.
+    if (record.leaseId === "") {
+      failed += 1;
+      log("[paperclip] Setup-token reaper: a record has no lease reference; it stays for investigation.");
+      continue;
+    }
+
     try {
       await deps.leases.releaseById(record.leaseId);
-      await deps.store.remove({
-        sessionId: record.sessionId,
-        companyId: record.companyId,
-        ownerUserId: record.ownerUserId,
-        adapterType: record.adapterType,
-      });
+      await deps.store.remove(identity);
       released += 1;
     } catch {
       failed += 1;
