@@ -185,6 +185,32 @@ test("renders accepted-plan continuation without authorizing implementation on t
   expect(prompt).not.toContain("Update the plan only");
 });
 
+test("includes proactive delegation guidance for standard work", () => {
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-11750",
+        title: "Deliver a multi-part change",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "standard",
+      },
+      checkedOutByHarness: true,
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    },
+  }), {});
+
+  expect(prompt).toContain("Delegate proactively when it improves throughput");
+  expect(prompt).toContain("delegate_task");
+  expect(prompt).toContain("2 or more independent workstreams");
+  expect(prompt).toContain("Batch independent delegation requests in one call");
+  expect(prompt).toContain("Keep coordination, integration, and irreversible decisions yourself");
+});
+
 test("keeps authoritative parent and ancestor context from task markdown", () => {
   const prompt = buildPrompt(baseContext({
     paperclipTaskMarkdown: [
