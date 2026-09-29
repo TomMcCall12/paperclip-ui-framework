@@ -690,15 +690,24 @@ describe("NewIssueDialog", () => {
   it("shows an editable model control for a Hermes gateway agent and submits its override", async () => {
     dialogState.newIssueDefaults = { title: "Hermes model", assigneeAgentId: "agent-hermes" };
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-hermes", name: "Jarvis", status: "active", adapterType: "hermes_gateway", adapterConfig: {}, runtimeConfig: {}, permissions: {} }]);
-    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+      { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+    ]);
     const { root } = renderDialog(container);
     await waitForAssertion(() => expect(container.querySelector('[data-testid="new-issue-model-select"]')).not.toBeNull());
-    const modelInput = container.querySelector('[data-testid="new-issue-model-select"]') as HTMLInputElement;
-    expect(modelInput.tagName).toBe("INPUT");
+    const modelSelect = container.querySelector('[data-testid="new-issue-model-select"]') as HTMLSelectElement;
+    expect(modelSelect.tagName).toBe("SELECT");
+    await waitForAssertion(() => {
+      expect(Array.from(modelSelect.options).map((option) => option.textContent)).toEqual([
+        "Agent default",
+        "GPT-5.6 Luna",
+        "GPT-5.6 Terra",
+      ]);
+    });
     await act(async () => {
-      modelInput.value = "gpt-5.6-terra";
-      modelInput.dispatchEvent(new Event("input", { bubbles: true }));
-      modelInput.dispatchEvent(new Event("change", { bubbles: true }));
+      modelSelect.value = "gpt-5.6-terra";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
     });
     const submitButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create Task"));
     await waitForAssertion(() => expect(submitButton?.hasAttribute("disabled")).toBe(false));
