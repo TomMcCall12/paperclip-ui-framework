@@ -5,7 +5,7 @@ import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession } from "
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
-import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { asc, and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
@@ -17,7 +17,7 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
-import { gatewayUserTurnDenial } from "./gateway-user-turn.js";
+import { gatewayUserTurnDenial, RECONCILIATION_REQUIRED_WAIT } from "./gateway-user-turn.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -32,6 +32,12 @@ const FRESH_LEGACY_USER_CONTINUATION_ADAPTER = "hermes_gateway";
 
 function supportsFreshLegacyUserContinuation(adapterType: string): boolean {
   return adapterType === FRESH_LEGACY_USER_CONTINUATION_ADAPTER;
+}
+
+function hasBlockedAutomaticReplay(evidence: Record<string, unknown>): boolean {
+  const automaticRecovery = evidence.automaticRecovery;
+  return typeof automaticRecovery === "object" && automaticRecovery !== null &&
+    (automaticRecovery as Record<string, unknown>).replay === "blocked";
 }
 
 function processStopped(pid: number): boolean {
@@ -253,16 +259,39 @@ export async function admitExplicitNativeContinuation(input: {
     const leases = await db.select()
       .from(environmentLeases).where(and(
         eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
-      ));
-    const remote = leases.some(lease => lease.provider !== "local");
+      )).orderBy(asc(environmentLeases.id)).for("share");
+    const remoteLeases = leases.filter(lease => lease.provider !== "local");
+    const localLeases = leases.filter(lease => lease.provider === "local");
+    const remote = remoteLeases.length > 0;
     if (remote) {
-      // Never interpret remote PIDs using the control-plane host's process table.
-      if (!leases.every(hasRemoteTerminationReceipt)) return blocked("remote_cleanup", "Waiting for the previous environment to stop. Your message will start automatically.");
-      if (run.runtimeMode === "native" && !input.dryRun && !leases.every(lease => completeTerminatedRemoteNativeSessionCleanup({
+      // A provider receipt proves only its own remote lease. Once a run has a
+      // local lease too, the run-level PID/event cannot be attributed to that
+      // lease, so no current evidence can authorize automatic continuation.
+      if (!remoteLeases.every(hasRemoteTerminationReceipt)) {
+        const terminalGatewayRemoteWithoutProof = localLeases.length === 0 && legacyUserTurn &&
+          agent.adapterType === FRESH_LEGACY_USER_CONTINUATION_ADAPTER &&
+          historicalAdapter === FRESH_LEGACY_USER_CONTINUATION_ADAPTER &&
+          action.status === "resolved" && hasBlockedAutomaticReplay(action.evidence) &&
+          remoteLeases.every(lease => Boolean(lease.provider && lease.provider !== "local" && lease.providerLeaseId &&
+            lease.status === "released" && lease.releasedAt !== null && lease.cleanupStatus === "success"));
+        if (terminalGatewayRemoteWithoutProof)
+          return blocked(RECONCILIATION_REQUIRED_WAIT.reason, RECONCILIATION_REQUIRED_WAIT.message);
+        return blocked("remote_cleanup", "Waiting for the previous environment to stop. Your message will start automatically.");
+      }
+      if (localLeases.length > 0) {
+        if (localLeases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed" ||
+            !["released", "expired", "failed"].includes(lease.status)))
+          return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
+        return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
+      }
+      if (run.runtimeMode === "native" && !input.dryRun && !remoteLeases.every(lease => completeTerminatedRemoteNativeSessionCleanup({
         companyId, runId: run.id, remoteCleanupScope: remoteLeaseCleanupScope(lease)!,
       }))) return null;
     } else {
-      if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
+      // Keep the established local-only contract: the local driver ordinarily
+      // releases without a cleanupStatus, so null is not a failure by itself.
+      if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed"))
+        return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
       if (!unusedAdmission && !cancelledStartup) {
         // A missing process identity is not evidence that a provider exited.
         // Hermes Gateway is a control-plane adapter: once its cancelled legacy

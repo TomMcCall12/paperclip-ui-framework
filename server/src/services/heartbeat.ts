@@ -7,8 +7,8 @@ import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
-import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
-import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
+import { PROCESS_IDENTITY_RECORDED, hasNativeLocalProcessStop, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
+import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop } from "./acknowledged-native-stop.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
@@ -10232,9 +10232,18 @@ export function heartbeatService(
 
   async function resumeRemoteStopComments(run: typeof heartbeatRuns.$inferSelect, requestId?: string) {
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
-    if (run.runtimeMode !== "native" &&
-        parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true &&
-        !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
+    const requiresRemoteStopProof = run.runtimeMode !== "native" &&
+      parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true;
+    const stopEvidenceLeases = requiresRemoteStopProof
+      ? await db.select({ provider: environmentLeases.provider }).from(environmentLeases).where(and(
+          eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+        ))
+      : [];
+    const hasRemoteLease = stopEvidenceLeases.some(lease => lease.provider !== "local");
+    // Preserve the legacy no-remote no-op. A real remote stopped-run hold is
+    // instead classified under the issue lock in enqueueWakeup, where it is
+    // atomically reprojected or linked to one fresh successor.
+    if (requiresRemoteStopProof && !hasRemoteLease) return;
     const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     if (!issueId) return;
     const currentRun = run.runtimeMode === "native" ? await getRun(run.id) : null;
@@ -10242,18 +10251,14 @@ export function heartbeatService(
       leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
     )) : [];
-    // Stop ends one response. Saved user input can enter ordinary admission
-    // once its executor settles; it does not need a manufactured crash incident.
-    // The ordinary path still enforces task holds, ownership, and native session
-    // cleanup before starting a provider.
+    // This only selects the saved-message authorization path. Termination proof
+    // is read again under enqueueWakeup's issue transaction before a successor
+    // can be created.
     const stoppedNativeContinuation = currentRun && isAcknowledgedNativeStop(currentRun) &&
       !activeRunExecutions.has(run.id) && !coordinator?.leaseOwner &&
-      ["terminal_failure", "applied"].includes(coordinator?.phase ?? "") &&
-      await acknowledgedNativeStopExecutionHasStopped(db, currentRun) &&
-      !(await getExecutionBlocker(db, run.companyId, issueId));
+      ["terminal_failure", "applied"].includes(coordinator?.phase ?? "");
     const legacyContinuation = run.runtimeMode === "legacy" &&
-      hasConversationContinuationPolicy((await getRun(run.id))?.resultJson) &&
-      !(await getExecutionBlocker(db, run.companyId, issueId));
+      hasConversationContinuationPolicy((await getRun(run.id))?.resultJson);
     if (run.runtimeMode !== "native" && run.runtimeMode !== "legacy") return;
     const pending = await db.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
@@ -10298,30 +10303,17 @@ export function heartbeatService(
           stoppedNativeContinuation ? undefined : gt(issueComments.createdAt, run.finishedAt),
         ));
         if (!comment?.body.trim()) continue;
-      } else {
-        let wait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
-        const admitted = await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
-          agentId: run.agentId, actorType: wake.requestedByActorType, actorId: requestedByActorId,
-          reason, commentId, successorRunId: randomUUID(), dryRun: true,
-          onBlocked: (reason, message) => { wait = { reason, message }; },
-        });
-        if (!admitted) {
-          await db.update(agentWakeupRequests).set({
-            payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
-              coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb) || ${JSON.stringify(wait)}::jsonb)`,
-            updatedAt: new Date(),
-          }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, run.companyId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution")));
-          continue;
-        }
       }
-      // Re-enter ordinary admission with the original user's authority. It
-      // atomically adopts the deferred comments and still applies every gate.
+      // The issue-locked enqueue owns classification, hold projection, and
+      // successor creation. Never carry stop evidence from this outer sweep.
       await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
         reason, payload, contextSnapshot: context,
         requestedByActorType: "user", requestedByActorId,
         ...(stoppedNativeContinuation ? { queuedCommentRequestId: wake.id } : {}),
-        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
+        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id, {
+        sourceRunId: run.id,
+        mode: run.runtimeMode,
+      });
       break;
     }
   }
@@ -26167,7 +26159,12 @@ export function heartbeatService(
     }
   }
 
-  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+  async function enqueueWakeup(
+    agentId: string,
+    opts: WakeupOptions = {},
+    executionWaitRequestId?: string,
+    resumeAfterStop?: { sourceRunId: string; mode: "legacy" | "native" },
+  ) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -27157,6 +27154,93 @@ export function heartbeatService(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null },
           );
+          if (resumeAfterStop && !executionBlocker) {
+            const deferStoppedSource = async (condition: { reason: string; message: string }) => {
+              if (!executionWaitRequestId) return { kind: "skipped" as const };
+              await tx.update(agentWakeupRequests).set({
+                payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify(condition)}::jsonb)`,
+                updatedAt: new Date(),
+              }).where(and(
+                eq(agentWakeupRequests.id, executionWaitRequestId),
+                eq(agentWakeupRequests.companyId, issue.companyId),
+                eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              ));
+              return { kind: "deferred" as const };
+            };
+            const [sourceCoordinator] = resumeAfterStop.mode === "native"
+              ? await tx.select({ phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner })
+                .from(nativeRunFinalizations).where(and(
+                  eq(nativeRunFinalizations.companyId, issue.companyId),
+                  eq(nativeRunFinalizations.runId, resumeAfterStop.sourceRunId),
+                )).for("update")
+              : [];
+            const [sourceRun] = await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.id, resumeAfterStop.sourceRunId),
+            )).for("update");
+            const sourceIssueId = sourceRun?.nativeIssueId ?? readNonEmptyString(sourceRun?.contextSnapshot?.issueId);
+            if (!sourceRun || sourceRun.agentId !== agentId || sourceIssueId !== issue.id ||
+                !sourceRun.finishedAt || !isHeartbeatRunTerminalStatus(sourceRun.status))
+              return deferStoppedSource({ reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." });
+            if (resumeAfterStop.mode === "legacy" &&
+                (sourceRun.runtimeMode !== "legacy" || !hasConversationContinuationPolicy(sourceRun.resultJson)))
+              return deferStoppedSource({ reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." });
+            if (resumeAfterStop.mode === "native" &&
+                (sourceRun.runtimeMode !== "native" || !isAcknowledgedNativeStop(sourceRun) ||
+                  activeRunExecutions.has(sourceRun.id) || sourceCoordinator?.leaseOwner ||
+                  !["terminal_failure", "applied"].includes(sourceCoordinator?.phase ?? "")))
+              return deferStoppedSource({ reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." });
+
+            // Lock every lease after the source run. releaseLease mutates the
+            // receipt without the issue lock, so FOR SHARE is the evidence fence
+            // for this admission decision.
+            const sourceLeases = await tx.select().from(environmentLeases).where(and(
+              eq(environmentLeases.companyId, issue.companyId),
+              eq(environmentLeases.heartbeatRunId, sourceRun.id),
+            )).orderBy(asc(environmentLeases.id)).for("share");
+            const remoteLeases = sourceLeases.filter(lease => lease.provider !== "local");
+            const localLeases = sourceLeases.filter(lease => lease.provider === "local");
+            let sourceWait: { reason: string; message: string } | null = null;
+            if (remoteLeases.length > 0) {
+              if (!remoteLeases.every(hasRemoteTerminationReceipt)) {
+                sourceWait = { reason: "remote_cleanup", message: "Waiting for the previous environment to stop. Your message will start automatically." };
+              } else if (localLeases.length > 0) {
+                if (localLeases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed" ||
+                    !["released", "expired", "failed"].includes(lease.status))) {
+                  sourceWait = { reason: "local_cleanup", message: "Waiting for the previous environment to finish cleanup. Your message will start automatically." };
+                } else {
+                  // Run-level PID/event evidence is not attributable to either
+                  // lease in a mixed topology. Hold until lease-scoped evidence exists.
+                  sourceWait = { reason: "process_identity_missing", message: "The previous run has no verified stop record. Paperclip cannot start this message yet." };
+                }
+              }
+            } else if (resumeAfterStop.mode === "legacy") {
+              // The legacy scheduler only resumes remote conversation rows. If a
+              // remote lease disappeared after its outer selection, do not turn
+              // that race into a bare enqueue.
+              sourceWait = { reason: "process_identity_missing", message: "The previous run has no verified stop record. Paperclip cannot start this message yet." };
+            } else if (sourceLeases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) {
+              sourceWait = { reason: "local_cleanup", message: "Waiting for the previous environment to finish cleanup. Your message will start automatically." };
+            } else if (!sourceRun.processPid && !sourceRun.processGroupId) {
+              if (!await hasNativeLocalProcessStop(tx as unknown as Db, issue.companyId, sourceRun.id))
+                sourceWait = { reason: "process_identity_missing", message: "The previous run has no verified stop record. Paperclip cannot start this message yet." };
+            } else {
+              const validPid = (pid: number | null) => pid === null || (Number.isSafeInteger(pid) && pid > 1);
+              const stopped = (pid: number) => {
+                try { process.kill(pid, 0); return false; }
+                catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+              };
+              if (!validPid(sourceRun.processPid) || !validPid(sourceRun.processGroupId)) {
+                sourceWait = { reason: "process_identity_missing", message: "The previous run has no verified stop record. Paperclip cannot start this message yet." };
+              } else if ((sourceRun.processPid && !stopped(sourceRun.processPid)) ||
+                  (sourceRun.processGroupId && !stopped(-sourceRun.processGroupId))) {
+                sourceWait = { reason: "process_running", message: "Waiting for the previous process to stop. Your message will start automatically." };
+              }
+            }
+            if (sourceWait) return deferStoppedSource(sourceWait);
+            enrichedContextSnapshot.forceFreshSession = true;
+            enrichedContextSnapshot.previousRunId = sourceRun.id;
+          }
           // Prove eligibility without retiring the hold. Later gates can still
           // decline this wake; hold retirement and successor creation stay atomic.
           // A bound chat request has already rechecked its current principal
