@@ -71,6 +71,7 @@ import {
   help,
   adapterLabels,
 } from "./agent-config-primitives";
+import { AgentDefaultModelField } from "./AgentDefaultModelField";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
@@ -1248,6 +1249,33 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     : eff("adapterConfig", "model", String(config.model ?? ""));
   const currentModelId = typeof currentModelValue === "string" ? currentModelValue : "";
 
+  // Existing Hermes gateway and Claude local agents pick their default model
+  // from server-validated options; other adapters keep the catalog dropdown.
+  const validatedDefaultModelAgentId = !isCreate
+    && adapterType === props.agent.adapterType
+    && (adapterType === "hermes_gateway" || adapterType === "claude_local")
+    ? props.agent.id
+    : null;
+
+  function handleModelChange(v: string) {
+    const supportedEfforts = setupEfforts(adapterType, v);
+    const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(adapterType)
+      && Boolean(currentThinkingEffort)
+      && !supportedEfforts.includes(String(currentThinkingEffort));
+    if (isCreate) {
+      set!({
+        model: v,
+        ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
+      });
+      return;
+    }
+    mark("adapterConfig", "model", v || undefined);
+    if (clearUnsupportedEffort) {
+      mark("adapterConfig", thinkingEffortKey, undefined);
+      mark("adapterConfig", "reasoningEffort", undefined);
+    }
+  }
+
   async function handleRefreshModels() {
     if (!selectedCompanyId) return;
     setRefreshingModels(true);
@@ -1715,28 +1743,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {renderAdapterFields("adapter")}
+          {validatedDefaultModelAgentId && !isLocal && (
+            <AgentDefaultModelField
+              agentId={validatedDefaultModelAgentId}
+              companyId={selectedCompanyId ?? undefined}
+              value={currentModelId}
+              onChange={handleModelChange}
+            />
+          )}
           {isLocal && (<>
+              {validatedDefaultModelAgentId ? (
+                <AgentDefaultModelField
+                  agentId={validatedDefaultModelAgentId}
+                  companyId={selectedCompanyId ?? undefined}
+                  value={currentModelId}
+                  onChange={handleModelChange}
+                />
+              ) : (
               <ModelDropdown
                 models={models}
                 value={currentModelId}
-                onChange={(v) => {
-                  const supportedEfforts = setupEfforts(adapterType, v);
-                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(adapterType)
-                    && Boolean(currentThinkingEffort)
-                    && !supportedEfforts.includes(String(currentThinkingEffort));
-                  if (isCreate) {
-                    set!({
-                      model: v,
-                      ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
-                    });
-                    return;
-                  }
-                  mark("adapterConfig", "model", v || undefined);
-                  if (clearUnsupportedEffort) {
-                    mark("adapterConfig", thinkingEffortKey, undefined);
-                    mark("adapterConfig", "reasoningEffort", undefined);
-                  }
-                }}
+                onChange={handleModelChange}
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
@@ -1761,7 +1788,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
-              {(refreshModelsError || fetchedModelsError) && (
+              )}
+              {!validatedDefaultModelAgentId && (refreshModelsError || fetchedModelsError) && (
                 <p className="text-xs text-destructive">
                   {refreshModelsError
                     ?? (fetchedModelsError instanceof Error

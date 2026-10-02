@@ -325,6 +325,38 @@ export interface AdapterEnvironmentTestResult {
   testedAt: string;
 }
 
+// Supported default-model choices for one existing agent. "available" means
+// the runtime itself listed the ids; "unverified" means the ids come from
+// Paperclip's adapter catalog and the agent's own auth was not checked. Every
+// other status fails closed: no ids are offered and a new model cannot be saved.
+export type AgentModelOptionsStatus =
+  | "available"
+  | "unverified"
+  | "auth_failed"
+  | "unsupported"
+  | "unreachable"
+  | "misconfigured"
+  | "invalid_response";
+
+export interface AgentModelOption {
+  id: string;
+  label: string;
+  provider?: string;
+}
+
+export interface AgentModelOptions {
+  adapterType: string;
+  runtimeLabel: string;
+  provider: string | null;
+  source: "hermes_gateway" | "adapter_catalog";
+  status: AgentModelOptionsStatus;
+  message: string | null;
+  currentModel: string | null;
+  currentModelListed: boolean;
+  defaultLabel: string;
+  models: AgentModelOption[];
+}
+
 // The cheap tri-state authentication signal for one adapter type. "present"
 // means the host already has a usable credential. "absent" means the host has
 // no usable credential yet, but the caller can add one. "unknown" means the

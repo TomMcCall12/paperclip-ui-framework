@@ -14,7 +14,21 @@ import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
 
+const DEFAULT_MODEL_OPTIONS = vi.hoisted(() => ({
+  adapterType: "claude_local",
+  runtimeLabel: "Claude Code (local)",
+  provider: "anthropic",
+  source: "adapter_catalog",
+  status: "unverified",
+  message: null,
+  currentModel: null,
+  currentModelListed: false,
+  defaultLabel: "Default (claude-opus-5)",
+  models: [] as Array<{ id: string; label: string }>,
+}));
+
 const mockAgentsApi = vi.hoisted(() => ({
+  modelOptions: vi.fn(async () => DEFAULT_MODEL_OPTIONS),
   adapterModels: vi.fn(),
   detectModel: vi.fn(),
   list: vi.fn(),
@@ -898,6 +912,81 @@ describe("AgentConfigForm environment selector", () => {
     expect(existing.container.textContent).toContain("Default (claude-opus-5)");
     expect(created.container.textContent).toContain("Default (claude-opus-5)");
     expect(existing.onSave).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      adapterType: "hermes_gateway",
+      adapterConfig: {
+        apiBaseUrl: "http://127.0.0.1:9119",
+        apiKey: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+        model: "gpt-6.1-sol",
+      },
+      options: {
+        ...DEFAULT_MODEL_OPTIONS,
+        adapterType: "hermes_gateway",
+        runtimeLabel: "Hermes Gateway",
+        provider: "openai-codex",
+        source: "hermes_gateway",
+        status: "available",
+        defaultLabel: "Gateway default (gpt-6.1-sol)",
+        models: [
+          { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+        ],
+      },
+      saved: "gpt-6.1-sol",
+      next: "gpt-5.6-terra",
+    },
+    {
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-5" },
+      options: {
+        ...DEFAULT_MODEL_OPTIONS,
+        models: [
+          { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+          { id: "claude-opus-5", label: "Claude Opus 5" },
+        ],
+      },
+      saved: "claude-sonnet-5",
+      next: "claude-opus-5",
+    },
+  ])("saves and reloads a supported $adapterType default model from the agent page", async ({ adapterType, adapterConfig, options, saved, next }) => {
+    mockAgentsApi.modelOptions.mockImplementation(async () => options as typeof DEFAULT_MODEL_OPTIONS);
+    try {
+      const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+      const result = await renderForm(environments, { adapterType, adapterConfig });
+      roots.push(result.root);
+      await flushReact();
+
+      const control = result.container.querySelector<HTMLSelectElement>('[data-testid="agent-default-model-select"]');
+      expect(control).not.toBeNull();
+      expect(control!.disabled).toBe(false);
+      expect(control!.value).toBe(saved);
+      expect(mockAgentsApi.modelOptions).toHaveBeenCalledWith("agent-1", "company-1");
+
+      await act(async () => {
+        control!.value = next;
+        control!.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await flushReact();
+      const saveButton = Array.from(result.container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Save");
+      expect(saveButton).not.toBeUndefined();
+      await act(async () => {
+        saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
+        adapterConfig: expect.objectContaining({ model: next }),
+      }));
+
+      const reloaded = await renderForm(environments, { adapterType, adapterConfig: { ...adapterConfig, model: next } });
+      roots.push(reloaded.root);
+      await flushReact();
+      expect(reloaded.container.querySelector<HTMLSelectElement>('[data-testid="agent-default-model-select"]')!.value).toBe(next);
+    } finally {
+      mockAgentsApi.modelOptions.mockImplementation(async () => DEFAULT_MODEL_OPTIONS);
+    }
   });
 
   it("keeps secret access out of the main Configuration content", async () => {

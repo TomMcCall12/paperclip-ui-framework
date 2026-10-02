@@ -123,6 +123,11 @@ import {
   requireServerAdapter,
 } from "../adapters/index.js";
 import {
+  DEFAULT_MODEL_CONTROL_ADAPTER_TYPES,
+  resolveAgentModelOptions,
+  unsupportedDefaultModelReason,
+} from "../services/agent-model-options.js";
+import {
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
   redactEventPayload,
@@ -3251,6 +3256,33 @@ export function agentRoutes(
     res.json(models);
   });
 
+  async function resolveDefaultModelOptions(
+    req: Request,
+    agent: { id: string; companyId: string; adapterType: string },
+    adapterConfig: Record<string, unknown>,
+  ) {
+    // Only Hermes needs the agent's resolved gateway key; it stays server-side.
+    const runtimeConfig = agent.adapterType === "hermes_gateway"
+      ? (await secretsSvc.resolveAdapterConfigForRuntime(
+          agent.companyId,
+          adapterConfig,
+          buildActorSecretContext(req, { consumerType: "agent", consumerId: agent.id }),
+          { adapterType: agent.adapterType, skipUserSecrets: true },
+        )).config
+      : adapterConfig;
+    return resolveAgentModelOptions(agent.adapterType, runtimeConfig, asNonEmptyString(adapterConfig.model));
+  }
+
+  router.get("/agents/:id/model-options", async (req, res) => {
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    if (!DEFAULT_MODEL_CONTROL_ADAPTER_TYPES.has(agent.adapterType)) {
+      throw unprocessable(`Default model control is not available for ${agent.adapterType} agents`);
+    }
+    res.json(await resolveDefaultModelOptions(req, agent, asRecord(agent.adapterConfig) ?? {}));
+  });
+
   router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -5389,6 +5421,24 @@ export function agentRoutes(
       await assertCanApplyAgentProfileChange(req, existing);
     } else {
       await assertCanUpdateAgent(req, existing);
+    }
+
+    if (
+      touchesAdapterConfiguration
+      && requestedAdapterType === existing.adapterType
+      && DEFAULT_MODEL_CONTROL_ADAPTER_TYPES.has(requestedAdapterType)
+    ) {
+      // A changed default model must be one the runtime actually supports. An
+      // unchanged saved model (including legacy values) is left as-is.
+      const nextAdapterConfig = asRecord(patchData.adapterConfig) ?? {};
+      const nextModel = asNonEmptyString(nextAdapterConfig.model);
+      if (nextModel && nextModel !== asNonEmptyString(asRecord(existing.adapterConfig)?.model)) {
+        const options = await resolveDefaultModelOptions(req, existing, nextAdapterConfig);
+        const reason = unsupportedDefaultModelReason(options, nextModel);
+        if (reason) {
+          throw unprocessable(reason, { code: "agent_default_model_unsupported", status: options.status });
+        }
+      }
     }
 
     const actor = getActorInfo(req);

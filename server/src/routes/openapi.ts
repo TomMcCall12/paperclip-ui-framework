@@ -3556,6 +3556,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/model-options",
+  tags: ["agents"],
+  summary: "List supported default models for an existing agent",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/agents/{id}/skills/sync",
   tags: ["agents"],

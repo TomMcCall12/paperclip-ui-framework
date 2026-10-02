@@ -8,6 +8,7 @@ import type {
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AgentModelOptions,
   AdapterAuthSignalResponse,
   AdapterAuthSessionResponse,
   AdapterAuthSessionOwnerResponse,
@@ -214,6 +215,8 @@ export const agentsApi = {
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models${query}`,
     );
   },
+  modelOptions: (id: string, companyId?: string) =>
+    api.get<AgentModelOptions>(agentPath(id, companyId, "/model-options")),
   detectModel: (companyId: string, type: string) =>
     api.get<DetectedAdapterModel | null>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
