@@ -2,7 +2,8 @@ import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queryKeys";
 
 /**
- * Refreshes the queries a successful agent configuration save can make stale.
+ * Refreshes the queries a successful agent configuration save or revision
+ * rollback can make stale.
  * The default model options depend on the saved gateway URL, key and adapter,
  * so they are reloaded once for this agent only.
  */

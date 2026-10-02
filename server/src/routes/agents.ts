@@ -3465,6 +3465,18 @@ export function agentRoutes(
         adapterConfigForTest = canRestoreEnv
           ? restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig)
           : inputAdapterConfig;
+        // A test sends the key to the draft gateway, so it is bound by the same
+        // rule as a save. The caller is already authorized; no secret has been
+        // normalized, resolved, or sent yet.
+        const credentialRebindReason = hermesCredentialRebindReason({
+          existingAdapterType: savedAgent.adapterType,
+          existingConfig: parseObject(savedAgent.adapterConfig),
+          nextAdapterType: type,
+          nextConfig: adapterConfigForTest,
+        });
+        if (credentialRebindReason) {
+          throw unprocessable(credentialRebindReason, { code: "hermes_gateway_credential_rebind_required" });
+        }
       }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,

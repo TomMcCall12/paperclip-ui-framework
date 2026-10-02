@@ -406,6 +406,117 @@ describe("agent test-environment route", () => {
     }
   });
 
+  describe("Hermes gateway saved-key rebind guard", () => {
+    const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const savedUrl = "https://hermes.example.com";
+    const draftUrl = "https://attacker.example.net";
+    const savedRef = { type: "secret_ref", secretId: "secret-hermes-1", version: "latest" };
+    const savedUserRef = { type: "user_secret_ref", key: "HERMES_KEY" };
+    let restoreHermes: () => void = () => {};
+
+    beforeEach(async () => {
+      const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+      const previous = getServerAdapter("hermes_gateway");
+      unregisterServerAdapter("hermes_gateway");
+      registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+      restoreHermes = () => {
+        unregisterServerAdapter("hermes_gateway");
+        if (previous) registerServerAdapter(previous);
+      };
+    });
+
+    afterEach(() => restoreHermes());
+
+    function saveAgent(adapterConfig: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+      mockAgentService.getById.mockResolvedValue({
+        id: agentId, companyId: "company-1", adapterType: "hermes_gateway",
+        adapterConfig, runtimeConfig: {}, defaultEnvironmentId: null, ...extra,
+      });
+    }
+
+    function expectNoSecretUseOrProbe() {
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    }
+
+    it.each([
+      { name: "apiKey secret_ref to a new apiBaseUrl", saved: { apiBaseUrl: savedUrl, apiKey: savedRef }, draft: { apiBaseUrl: draftUrl, apiKey: savedRef } },
+      { name: "token alias to a new url alias", saved: { url: savedUrl, token: savedRef }, draft: { url: draftUrl, token: savedRef } },
+      { name: "owner-scoped user secret to a new apiBaseUrl", saved: { apiBaseUrl: savedUrl, apiKey: savedUserRef }, draft: { apiBaseUrl: draftUrl, apiKey: savedUserRef } },
+      { name: "apiKey secret_ref onto plain remote HTTP", saved: { apiBaseUrl: savedUrl, apiKey: savedRef }, draft: { apiBaseUrl: savedUrl, apiKey: savedRef, dangerouslyAllowInsecureRemoteHttp: true } },
+    ])("rejects testing a saved $name before resolving or sending it", async ({ saved, draft }) => {
+      saveAgent(saved);
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ agentId, adapterConfig: draft });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details).toEqual({ code: "hermes_gateway_credential_rebind_required" });
+      expectNoSecretUseOrProbe();
+    });
+
+    it("rejects carrying another adapter's saved key onto a Hermes gateway test", async () => {
+      saveAgent({ apiKey: savedRef }, { adapterType: "external_test" });
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ agentId, adapterConfig: { apiBaseUrl: draftUrl, apiKey: savedRef } });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details).toEqual({ code: "hermes_gateway_credential_rebind_required" });
+      expectNoSecretUseOrProbe();
+    });
+
+    it("tests the saved key against the gateway it was saved for", async () => {
+      saveAgent({ apiBaseUrl: savedUrl, apiKey: savedRef });
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ agentId, adapterConfig: { apiBaseUrl: `${savedUrl}/`, apiKey: savedRef } });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockSecretService.resolveAdapterConfigForRuntime).toHaveBeenCalledWith(
+        "company-1", { apiBaseUrl: `${savedUrl}/`, apiKey: savedRef }, expect.any(Object),
+        expect.objectContaining({ userSecretMediation: "owner_scoped" }),
+      );
+      expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("tests a new gateway with a fresh probe-only key and no saved reference", async () => {
+      saveAgent({ apiBaseUrl: savedUrl, apiKey: savedRef });
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ agentId, adapterConfig: { apiBaseUrl: draftUrl }, testCredentials: { API_SERVER_KEY: "fresh-probe-key" } });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(testEnvironmentSpy.mock.calls[0]?.[0].config).toMatchObject({ apiBaseUrl: draftUrl, apiKey: "fresh-probe-key" });
+    });
+
+    it("denies an unauthorized caller before revealing whether a saved key would move", async () => {
+      saveAgent({ apiBaseUrl: savedUrl, apiKey: savedRef });
+      mockAccessService.decide.mockImplementation(async ({ action }) => ({ allowed: action !== "agent_config:update", reason: "test", explanation: "Update denied" }));
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ agentId, adapterConfig: { apiBaseUrl: draftUrl, apiKey: savedRef } });
+      expect(res.status).toBe(403);
+      expect(JSON.stringify(res.body)).not.toContain("hermes_gateway_credential_rebind_required");
+      expectNoSecretUseOrProbe();
+    });
+
+    it("hides another company's agent before checking its saved key", async () => {
+      saveAgent({ apiBaseUrl: savedUrl, apiKey: savedRef }, { companyId: "company-2" });
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ agentId, adapterConfig: { apiBaseUrl: draftUrl, apiKey: savedRef } });
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(res.body)).not.toContain("hermes_gateway_credential_rebind_required");
+      expectNoSecretUseOrProbe();
+    });
+  });
+
   // The managed-adoption verdict, all three ways. An api_key account is
   // re-verified against the provider's endpoint at adoption — the same check
   // its save performed, catching a key revoked since — but never through the
