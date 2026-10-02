@@ -158,7 +158,13 @@ function registerModuleMocks() {
 }
 
 
-async function createApp() {
+async function createApp(actor: Record<string, unknown> = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+}) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -166,13 +172,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   const db = {
@@ -471,5 +471,265 @@ describe("agent default model control", { timeout: 60_000 }, () => {
 
     expect(res.status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not validate a default model change for callers without agent config update access", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "deny", explanation: "Not allowed" });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${JARVIS_ID}`)
+      .send({ adapterConfig: { model: "gpt-5.6-terra" } }));
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not list or validate models for an agent in another company", async () => {
+    const foreignJarvis = { ...jarvis, companyId: "company-2" };
+    mockAgentService.getById.mockImplementation(async (id: string) => (id === JARVIS_ID ? foreignJarvis : null));
+    const actors = [
+      { type: "board", userId: "user-1", companyIds: ["company-1"], source: "session", isInstanceAdmin: false },
+      { type: "agent", agentId: ENGINEER_ID, companyId: "company-1", source: "agent_key" },
+    ];
+    for (const actor of actors) {
+      const app = await createApp(actor);
+      const options = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${JARVIS_ID}/model-options`));
+      const patch = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${JARVIS_ID}`)
+        .send({ adapterConfig: { model: "gpt-5.6-terra" } }));
+
+      expect(options.status).toBe(404);
+      expect(patch.status).toBe(404);
+    }
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  describe("Hermes gateway credential rebind", () => {
+    const SAVED_KEY_REF = jarvis.adapterConfig.apiKey;
+    const NEW_KEY_REF = { type: "secret_ref", secretId: "44444444-4444-4444-8444-444444444444", version: "latest" };
+    const COLLECTOR_URL = "https://collector.example.test";
+
+    function expectSavedKeyNeverUsed(res: request.Response) {
+      expect(res.status).toBe(422);
+      expect(res.body.error).toMatch(/API key/i);
+      expect(JSON.stringify(res.body)).not.toContain(HERMES_KEY);
+      expect(JSON.stringify(res.body)).not.toContain(SAVED_KEY_REF.secretId);
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    }
+
+    it("rejects a gateway URL and model change that keeps the saved key before resolving it", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${JARVIS_ID}`)
+        .send({ adapterConfig: { apiBaseUrl: COLLECTOR_URL, model: "gpt-5.6-terra" } }));
+
+      expectSavedKeyNeverUsed(res);
+    });
+
+    it("rejects a gateway URL change that re-sends the saved key reference", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${JARVIS_ID}`)
+        .send({
+          replaceAdapterConfig: true,
+          adapterConfig: { apiBaseUrl: COLLECTOR_URL, apiKey: SAVED_KEY_REF, model: "gpt-5.6-terra" },
+        }));
+
+      expectSavedKeyNeverUsed(res);
+    });
+
+    it("rejects a URL-only change that keeps the saved key, so model options never probe the new gateway", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${JARVIS_ID}`)
+        .send({ adapterConfig: { apiBaseUrl: COLLECTOR_URL } }));
+
+      expectSavedKeyNeverUsed(res);
+
+      const options = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${JARVIS_ID}/model-options`));
+      expect(options.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:9119/api/model/options");
+    });
+
+    it("answers an unauthorized URL change with 403 before the rebind rule or any secret use", async () => {
+      mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "deny", explanation: "Not allowed" });
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${JARVIS_ID}`)
+        .send({ adapterConfig: { apiBaseUrl: COLLECTOR_URL, model: "gpt-5.6-terra" } }));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).not.toMatch(/API key/i);
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects enabling remote plain HTTP while keeping the saved key", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${JARVIS_ID}`)
+        .send({ adapterConfig: { apiBaseUrl: "http://203.0.113.9:8642", dangerouslyAllowInsecureRemoteHttp: true } }));
+
+      expectSavedKeyNeverUsed(res);
+    });
+
+    it("accepts a gateway URL change that supplies a new key and validates the model against the new gateway", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${JARVIS_ID}`)
+        .send({ adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", apiKey: NEW_KEY_REF, model: "gpt-5.6-terra" } }));
+
+      expect(res.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("https://new-gateway.example.test/api/model/options");
+      const resolvedConfig = mockSecretService.resolveAdapterConfigForRuntime.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(resolvedConfig.apiKey).toEqual(NEW_KEY_REF);
+      expect(mockAgentService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps model selection working on the saved live Jarvis gateway when the form re-sends its config", async () => {
+      const liveConfig = {
+        apiBaseUrl: "http://192.168.0.163:8642",
+        dangerouslyAllowInsecureRemoteHttp: true,
+        apiKey: SAVED_KEY_REF,
+        model: "gpt-6.1-sol",
+      };
+      mockAgentService.getById.mockImplementation(async (id: string) => (
+        id === JARVIS_ID ? { ...jarvis, adapterConfig: liveConfig } : null
+      ));
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${JARVIS_ID}`)
+        .send({ replaceAdapterConfig: true, adapterConfig: { ...liveConfig, model: "gpt-5.6-terra" } }));
+
+      expect(res.status).toBe(200);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("http://192.168.0.163:8642/api/model/options");
+    });
+  });
+
+  describe("adapter switches onto a validated default model runtime", () => {
+    const CODEX_ID = "55555555-5555-4555-8555-555555555555";
+    const GATEWAY_ID = "66666666-6666-4666-8666-666666666666";
+    const GATEWAY_KEY_REF = { type: "secret_ref", secretId: "77777777-7777-4777-8777-777777777777", version: "latest" };
+    const codexAgent = agentRecord({
+      id: CODEX_ID,
+      name: "Codex",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.5" },
+    });
+    const gatewayAgent = agentRecord({
+      id: GATEWAY_ID,
+      name: "Gateway",
+      adapterType: "openclaw_gateway",
+      adapterConfig: { url: "wss://gateway.example.test", apiKey: GATEWAY_KEY_REF },
+    });
+    let listModels: { mockRestore: () => void } | null = null;
+
+    beforeEach(async () => {
+      mockAgentService.getById.mockImplementation(async (id: string) => (
+        id === CODEX_ID ? codexAgent : id === GATEWAY_ID ? gatewayAgent : id === ENGINEER_ID ? engineer : null
+      ));
+      const adapters = await import("../adapters/index.js");
+      listModels = vi.spyOn(adapters, "listAdapterModels").mockImplementation(async (type: string) => (
+        type === "claude_local"
+          ? [{ id: "claude-sonnet-5", label: "Claude Sonnet 5" }]
+          : [{ id: "gpt-5.5", label: "GPT-5.5" }]
+      ));
+    });
+
+    afterEach(() => {
+      listModels?.mockRestore();
+      listModels = null;
+    });
+
+    it("rejects an unsupported model when switching to claude_local", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${CODEX_ID}`)
+        .send({ adapterType: "claude_local", adapterConfig: { model: "gpt-5.5" } }));
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toMatch(/not in Paperclip's Claude model catalog/i);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("accepts a catalog model or the runtime default when switching to claude_local", async () => {
+      const app = await createApp();
+      const listed = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${CODEX_ID}`)
+        .send({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }));
+      const runtimeDefault = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${CODEX_ID}`)
+        .send({ adapterType: "claude_local", adapterConfig: {} }));
+
+      expect(listed.status).toBe(200);
+      expect(runtimeDefault.status).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects a model the target Hermes gateway does not list when switching to hermes_gateway", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${CODEX_ID}`)
+        .send({
+          adapterType: "hermes_gateway",
+          adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", apiKey: GATEWAY_KEY_REF, model: "gpt-5.5" },
+        }));
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toMatch(/not offered by the Hermes gateway/i);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("https://new-gateway.example.test/api/model/options");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("accepts a gateway-listed model when switching to hermes_gateway", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${CODEX_ID}`)
+        .send({
+          adapterType: "hermes_gateway",
+          adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", apiKey: GATEWAY_KEY_REF, model: "gpt-5.6-terra" },
+        }));
+
+      expect(res.status).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not carry a saved key into a switch to hermes_gateway", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${GATEWAY_ID}`)
+        .send({
+          adapterType: "hermes_gateway",
+          adapterConfig: { apiBaseUrl: "https://collector.example.test", apiKey: GATEWAY_KEY_REF, model: "gpt-5.6-terra" },
+        }));
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toMatch(/API key/i);
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("leaves switches to adapters without default model control unvalidated", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${ENGINEER_ID}`)
+        .send({ adapterType: "codex_local", adapterConfig: { model: "any-codex-model" } }));
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 });

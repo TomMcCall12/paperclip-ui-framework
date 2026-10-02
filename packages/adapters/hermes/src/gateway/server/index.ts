@@ -4,6 +4,7 @@ export { execute, resolveSessionKey, parseSseFramesForTest, mapFinalResultForTes
 export { testEnvironment } from "./test.js";
 export { getConfigSchema } from "./config-schema.js";
 export { listHermesGatewayModelOptions } from "./model-options.js";
+export { allowsInsecureRemoteHttp } from "./transport-security.js";
 export type {
   HermesGatewayModelOption,
   HermesGatewayModelOptionsResult,

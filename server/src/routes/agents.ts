@@ -124,6 +124,7 @@ import {
 } from "../adapters/index.js";
 import {
   DEFAULT_MODEL_CONTROL_ADAPTER_TYPES,
+  hermesCredentialRebindReason,
   resolveAgentModelOptions,
   unsupportedDefaultModelReason,
 } from "../services/agent-model-options.js";
@@ -5371,6 +5372,18 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         );
       }
+      const credentialRebindReason = hermesCredentialRebindReason({
+        existingAdapterType: existing.adapterType,
+        existingConfig: existingAdapterConfig,
+        nextAdapterType: requestedAdapterType,
+        nextConfig: rawEffectiveAdapterConfig,
+      });
+      if (credentialRebindReason) {
+        // Authorize first so a denied caller learns nothing about the saved
+        // key; this still runs before any secret normalization or resolution.
+        await assertCanUpdateAgent(req, existing);
+        throw unprocessable(credentialRebindReason, { code: "hermes_gateway_credential_rebind_required" });
+      }
       const effectiveAdapterConfig = applyCodexLocalKeyIsolation(
         existing.companyId,
         existing.id,
@@ -5423,17 +5436,21 @@ export function agentRoutes(
       await assertCanUpdateAgent(req, existing);
     }
 
-    if (
-      touchesAdapterConfiguration
-      && requestedAdapterType === existing.adapterType
-      && DEFAULT_MODEL_CONTROL_ADAPTER_TYPES.has(requestedAdapterType)
-    ) {
-      // A changed default model must be one the runtime actually supports. An
-      // unchanged saved model (including legacy values) is left as-is.
+    if (touchesAdapterConfiguration && DEFAULT_MODEL_CONTROL_ADAPTER_TYPES.has(requestedAdapterType)) {
+      // A changed default model must be one the target runtime actually
+      // supports. An unchanged saved model (including legacy values) is left
+      // as-is; a model carried onto a different adapter is always checked.
       const nextAdapterConfig = asRecord(patchData.adapterConfig) ?? {};
       const nextModel = asNonEmptyString(nextAdapterConfig.model);
-      if (nextModel && nextModel !== asNonEmptyString(asRecord(existing.adapterConfig)?.model)) {
-        const options = await resolveDefaultModelOptions(req, existing, nextAdapterConfig);
+      const savedModel = requestedAdapterType === existing.adapterType
+        ? asNonEmptyString(asRecord(existing.adapterConfig)?.model)
+        : null;
+      if (nextModel && nextModel !== savedModel) {
+        const options = await resolveDefaultModelOptions(
+          req,
+          { id: existing.id, companyId: existing.companyId, adapterType: requestedAdapterType },
+          nextAdapterConfig,
+        );
         const reason = unsupportedDefaultModelReason(options, nextModel);
         if (reason) {
           throw unprocessable(reason, { code: "agent_default_model_unsupported", status: options.status });
