@@ -510,7 +510,9 @@ describe("agent default model control", { timeout: 60_000 }, () => {
 
   describe("Hermes gateway credential rebind", () => {
     const SAVED_KEY_REF = jarvis.adapterConfig.apiKey;
+    // Same company, never saved on Jarvis: another agent's stored key.
     const NEW_KEY_REF = { type: "secret_ref", secretId: "44444444-4444-4444-8444-444444444444", version: "latest" };
+    const NEW_PLAIN_KEY = { type: "plain", value: "fresh-gateway-key-for-test" };
     const COLLECTOR_URL = "https://collector.example.test";
 
     function expectSavedKeyNeverUsed(res: request.Response) {
@@ -587,14 +589,96 @@ describe("agent default model control", { timeout: 60_000 }, () => {
       const app = await createApp();
       const res = await requestApp(app, (baseUrl) => request(baseUrl)
         .patch(`/api/agents/${JARVIS_ID}`)
-        .send({ adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", apiKey: NEW_KEY_REF, model: "gpt-5.6-terra" } }));
+        .send({ adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", apiKey: NEW_PLAIN_KEY, model: "gpt-5.6-terra" } }));
 
       expect(res.status).toBe(200);
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(fetchMock.mock.calls[0]?.[0]).toBe("https://new-gateway.example.test/api/model/options");
       const resolvedConfig = mockSecretService.resolveAdapterConfigForRuntime.mock.calls[0]?.[1] as Record<string, unknown>;
-      expect(resolvedConfig.apiKey).toEqual(NEW_KEY_REF);
+      expect(resolvedConfig.apiKey).toEqual(NEW_PLAIN_KEY);
       expect(mockAgentService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the saved-key rebind code for a URL change that re-sends the saved key", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${JARVIS_ID}`)
+        .send({ adapterConfig: { apiBaseUrl: COLLECTOR_URL, apiKey: SAVED_KEY_REF } }));
+
+      expectSavedKeyNeverUsed(res);
+      expect(res.body.details).toEqual({ code: "hermes_gateway_credential_rebind_required" });
+    });
+
+    describe("another stored secret at the saved gateway", () => {
+      function expectRejectedBeforeSecretUse(res: request.Response) {
+        expectSavedKeyNeverUsed(res);
+        expect(res.body.details).toEqual({ code: "hermes_gateway_unbound_secret_ref" });
+        expect(JSON.stringify(res.body)).not.toContain(NEW_KEY_REF.secretId);
+        expect(mockLogActivity).not.toHaveBeenCalled();
+      }
+
+      it.each([
+        { name: "apiKey", replace: false, adapterConfig: { apiKey: NEW_KEY_REF } },
+        { name: "token alias beside the saved apiKey", replace: false, adapterConfig: { token: NEW_KEY_REF } },
+        { name: "full config re-sent with only the key changed", replace: true, adapterConfig: { ...jarvis.adapterConfig, apiKey: NEW_KEY_REF } },
+        { name: "model change with the key changed", replace: false, adapterConfig: { apiKey: NEW_KEY_REF, model: "gpt-5.6-terra" } },
+      ])("rejects a substituted $name before normalizing, resolving, or saving", async ({ replace, adapterConfig }) => {
+        const app = await createApp();
+        const res = await requestApp(app, (baseUrl) => request(baseUrl)
+          .patch(`/api/agents/${JARVIS_ID}`)
+          .send({ ...(replace ? { replaceAdapterConfig: true } : {}), adapterConfig }));
+
+        expectRejectedBeforeSecretUse(res);
+      });
+
+      it("answers an unauthorized substitution with 403 and no hint about the reference", async () => {
+        mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "deny", explanation: "Not allowed" });
+        const app = await createApp();
+        const res = await requestApp(app, (baseUrl) => request(baseUrl)
+          .patch(`/api/agents/${JARVIS_ID}`)
+          .send({ adapterConfig: { apiKey: NEW_KEY_REF } }));
+
+        expect(res.status).toBe(403);
+        expect(JSON.stringify(res.body)).not.toContain("hermes_gateway_unbound_secret_ref");
+        expect(res.body.error).not.toMatch(/API key|stored key/i);
+        expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+        expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+        expect(mockAgentService.update).not.toHaveBeenCalled();
+      });
+
+      it("saves the agent's own reference moved to the token alias", async () => {
+        const app = await createApp();
+        const res = await requestApp(app, (baseUrl) => request(baseUrl)
+          .patch(`/api/agents/${JARVIS_ID}`)
+          .send({
+            replaceAdapterConfig: true,
+            adapterConfig: { apiBaseUrl: jarvis.adapterConfig.apiBaseUrl, token: SAVED_KEY_REF, model: "gpt-6.1-sol" },
+          }));
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(mockAgentService.update).toHaveBeenCalledTimes(1);
+      });
+
+      it("saves a fresh plain key at the saved gateway", async () => {
+        const app = await createApp();
+        const res = await requestApp(app, (baseUrl) => request(baseUrl)
+          .patch(`/api/agents/${JARVIS_ID}`)
+          .send({ adapterConfig: { apiKey: NEW_PLAIN_KEY } }));
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(mockSecretService.normalizeAdapterConfigForPersistence.mock.calls[0]?.[1]).toMatchObject({ apiKey: NEW_PLAIN_KEY });
+        expect(mockAgentService.update).toHaveBeenCalledTimes(1);
+      });
+
+      it("leaves a stored secret on a non-Hermes adapter alone", async () => {
+        const app = await createApp();
+        const res = await requestApp(app, (baseUrl) => request(baseUrl)
+          .patch(`/api/agents/${ENGINEER_ID}`)
+          .send({ adapterConfig: { env: { ANTHROPIC_API_KEY: NEW_KEY_REF } } }));
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(mockAgentService.update).toHaveBeenCalledTimes(1);
+      });
     });
 
     it("keeps model selection working on the saved live Jarvis gateway when the form re-sends its config", async () => {
@@ -621,6 +705,7 @@ describe("agent default model control", { timeout: 60_000 }, () => {
     const CODEX_ID = "55555555-5555-4555-8555-555555555555";
     const GATEWAY_ID = "66666666-6666-4666-8666-666666666666";
     const GATEWAY_KEY_REF = { type: "secret_ref", secretId: "77777777-7777-4777-8777-777777777777", version: "latest" };
+    const FRESH_GATEWAY_KEY = { type: "plain", value: "fresh-switch-key-for-test" };
     const codexAgent = agentRecord({
       id: CODEX_ID,
       name: "Codex",
@@ -683,7 +768,7 @@ describe("agent default model control", { timeout: 60_000 }, () => {
         .patch(`/api/agents/${CODEX_ID}`)
         .send({
           adapterType: "hermes_gateway",
-          adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", apiKey: GATEWAY_KEY_REF, model: "gpt-5.5" },
+          adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", apiKey: FRESH_GATEWAY_KEY, model: "gpt-5.5" },
         }));
 
       expect(res.status).toBe(422);
@@ -698,7 +783,7 @@ describe("agent default model control", { timeout: 60_000 }, () => {
         .patch(`/api/agents/${CODEX_ID}`)
         .send({
           adapterType: "hermes_gateway",
-          adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", apiKey: GATEWAY_KEY_REF, model: "gpt-5.6-terra" },
+          adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", apiKey: FRESH_GATEWAY_KEY, model: "gpt-5.6-terra" },
         }));
 
       expect(res.status).toBe(200);
@@ -716,6 +801,24 @@ describe("agent default model control", { timeout: 60_000 }, () => {
 
       expect(res.status).toBe(422);
       expect(res.body.error).toMatch(/API key/i);
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("keeps no stored secret on a switch onto hermes_gateway", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${CODEX_ID}`)
+        .send({
+          adapterType: "hermes_gateway",
+          adapterConfig: { apiBaseUrl: "https://new-gateway.example.test", token: GATEWAY_KEY_REF, model: "gpt-5.6-terra" },
+        }));
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toEqual({ code: "hermes_gateway_unbound_secret_ref" });
+      expect(JSON.stringify(res.body)).not.toContain(GATEWAY_KEY_REF.secretId);
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
       expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
       expect(mockAgentService.update).not.toHaveBeenCalled();

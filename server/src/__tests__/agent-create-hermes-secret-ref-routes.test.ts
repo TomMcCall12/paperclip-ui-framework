@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentConfigRevisions,
   agents,
   approvals,
   companies,
@@ -87,6 +88,7 @@ describeEmbeddedPostgres("new Hermes gateway agents cannot borrow a stored compa
     await db.delete(companySecrets);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(agentConfigRevisions);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -248,6 +250,132 @@ describeEmbeddedPostgres("new Hermes gateway agents cannot borrow a stored compa
       expect(apiKey.type).toBe("secret_ref");
       const bindings = await db.select().from(companySecretBindings).where(eq(companySecretBindings.targetId, createdId));
       expect(bindings).toEqual([expect.objectContaining({ secretId: apiKey.secretId, configPath: "apiKey" })]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("saved Hermes gateway agents", () => {
+    // Creates a Hermes agent from a fresh plain key, as the UI does, and
+    // returns it with the stored secret its config now names.
+    async function createHermesAgent(companyId: string, name: string) {
+      const res = await request(createApp(db, boardActor()))
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name,
+          role: "engineer",
+          adapterType: "hermes_gateway",
+          adapterConfig: { apiBaseUrl: GATEWAY_URL, apiKey: { type: "plain", value: `synthetic-${name}-${randomUUID()}` } },
+        });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      const id = (res.body.agent?.id ?? res.body.id) as string;
+      const [row] = await db.select().from(agents).where(eq(agents.id, id));
+      const apiKey = (row!.adapterConfig as Record<string, unknown>).apiKey as { type: string; secretId: string };
+      expect(apiKey.type).toBe("secret_ref");
+      return { id, secretId: apiKey.secretId };
+    }
+
+    async function snapshot(agentId: string) {
+      const [row] = await db.select().from(agents).where(eq(agents.id, agentId));
+      return {
+        adapterConfig: row!.adapterConfig,
+        bindings: await db.select().from(companySecretBindings).where(eq(companySecretBindings.targetId, agentId)),
+        revisions: await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agentId)),
+        activity: await db.select().from(activityLog).where(eq(activityLog.entityId, agentId)),
+      };
+    }
+
+    it.each(credentialKeys)(
+      "rejects PATCHing another agent's stored key as %s at the unchanged gateway, persisting nothing",
+      async (key) => {
+        const companyId = await seedCompany();
+        const target = await createHermesAgent(companyId, "target");
+        const other = await createHermesAgent(companyId, "other");
+        const before = await snapshot(target.id);
+
+        const res = await request(createApp(db, boardActor()))
+          .patch(`/api/agents/${target.id}`)
+          .send({ adapterConfig: { [key]: { type: "secret_ref", secretId: other.secretId } } });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(422);
+        expect(res.body.details).toEqual({ code: "hermes_gateway_unbound_secret_ref" });
+        expect(JSON.stringify(res.body)).not.toContain(other.secretId);
+        expect(JSON.stringify(res.body)).not.toContain(target.secretId);
+        expect(await snapshot(target.id)).toEqual(before);
+        expect(fetchSpy).not.toHaveBeenCalled();
+      },
+    );
+
+    it("denies an agent without update permission before inspecting the substituted key", async () => {
+      const companyId = await seedCompany();
+      const target = await createHermesAgent(companyId, "target");
+      const other = await createHermesAgent(companyId, "other");
+      const caller = await seedAgent(companyId, {});
+      const before = await snapshot(target.id);
+
+      const res = await request(createApp(db, agentActor(companyId, caller.id)))
+        .patch(`/api/agents/${target.id}`)
+        .send({ adapterConfig: { apiKey: { type: "secret_ref", secretId: other.secretId } } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(JSON.stringify(res.body)).not.toContain("hermes_gateway_unbound_secret_ref");
+      expect(await snapshot(target.id)).toEqual(before);
+    });
+
+    it("rejects testing another agent's stored key at the saved gateway before any request", async () => {
+      const companyId = await seedCompany();
+      const target = await createHermesAgent(companyId, "target");
+      const other = await createHermesAgent(companyId, "other");
+
+      const res = await request(createApp(db, boardActor()))
+        .post(`/api/companies/${companyId}/adapters/hermes_gateway/test-environment`)
+        .send({ agentId: target.id, adapterConfig: { apiBaseUrl: GATEWAY_URL, apiKey: { type: "secret_ref", secretId: other.secretId } } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details).toEqual({ code: "hermes_gateway_unbound_secret_ref" });
+      expect(JSON.stringify(res.body)).not.toContain(other.secretId);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("keeps the agent's own stored key when the form re-sends its config", async () => {
+      const companyId = await seedCompany();
+      const target = await createHermesAgent(companyId, "target");
+      const ownRef = { type: "secret_ref", secretId: target.secretId };
+
+      const res = await request(createApp(db, boardActor()))
+        .patch(`/api/agents/${target.id}`)
+        .send({ replaceAdapterConfig: true, adapterConfig: { apiBaseUrl: GATEWAY_URL, apiKey: ownRef, timeoutSec: 300 } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const after = await snapshot(target.id);
+      expect((after.adapterConfig as Record<string, unknown>).apiKey).toMatchObject(ownRef);
+      expect(after.bindings.map((binding) => binding.secretId)).toEqual([target.secretId]);
+    });
+
+    it("still rolls back to a revision holding the agent's own earlier key", async () => {
+      const companyId = await seedCompany();
+      const target = await createHermesAgent(companyId, "target");
+      const app = createApp(db, boardActor());
+
+      const keep = await request(app).patch(`/api/agents/${target.id}`).send({ adapterConfig: { timeoutSec: 300 } });
+      expect(keep.status, JSON.stringify(keep.body)).toBe(200);
+      const rotate = await request(app)
+        .patch(`/api/agents/${target.id}`)
+        .send({ adapterConfig: { apiKey: { type: "plain", value: `synthetic-rotated-${randomUUID()}` } } });
+      expect(rotate.status, JSON.stringify(rotate.body)).toBe(200);
+      const [rotated] = await db.select().from(agents).where(eq(agents.id, target.id));
+      expect(((rotated!.adapterConfig as Record<string, unknown>).apiKey as { secretId: string }).secretId).not.toBe(target.secretId);
+
+      const revisions = await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, target.id));
+      const earlier = revisions.find((revision) => {
+        const config = (revision.afterConfig as Record<string, unknown>).adapterConfig as Record<string, unknown>;
+        return (config.apiKey as { secretId?: string } | undefined)?.secretId === target.secretId;
+      });
+      expect(earlier).toBeDefined();
+
+      const rollback = await request(app).post(`/api/agents/${target.id}/config-revisions/${earlier!.id}/rollback`).send({});
+      expect(rollback.status, JSON.stringify(rollback.body)).toBe(200);
+      const [restored] = await db.select().from(agents).where(eq(agents.id, target.id));
+      expect(((restored!.adapterConfig as Record<string, unknown>).apiKey as { secretId: string }).secretId).toBe(target.secretId);
       expect(fetchSpy).not.toHaveBeenCalled();
     });
   });

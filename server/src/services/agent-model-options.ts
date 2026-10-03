@@ -123,16 +123,51 @@ export function hermesCredentialRebindReason(input: {
 }
 
 /**
+ * Reads a stored company-secret reference. Returns undefined when the value is
+ * not one, and null as the id when the reference names no usable secret.
+ */
+function storedSecretRefId(value: unknown): string | null | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "secret_ref") return undefined;
+  return typeof record.secretId === "string" && record.secretId.length > 0 ? record.secretId : null;
+}
+
+/**
  * True when a Hermes gateway config names a stored company secret as its key.
  * A new gateway has no saved key to reuse, so such a reference would send an
  * existing secret to a gateway it was never saved for. Inspects shape only.
  */
 export function hermesConfigUsesStoredSecret(adapterType: string, config: Record<string, unknown>): boolean {
   if (adapterType !== "hermes_gateway") return false;
+  return HERMES_CREDENTIAL_KEYS.some((key) => storedSecretRefId(config[key]) !== undefined);
+}
+
+/**
+ * A saved Hermes agent may only name, as its gateway key, a stored company
+ * secret its own saved Hermes config already names under either key alias.
+ * Any other stored secret, including one another agent holds, would send a key
+ * this agent was never saved with. A switch onto Hermes keeps no earlier
+ * reference. Returns true when the change must be rejected. Inspects shape
+ * only and runs before any secret is normalized, resolved, or sent.
+ */
+export function hermesConfigBorrowsStoredSecret(input: {
+  existingAdapterType: string;
+  existingConfig: Record<string, unknown>;
+  nextAdapterType: string;
+  nextConfig: Record<string, unknown>;
+}): boolean {
+  if (input.nextAdapterType !== "hermes_gateway") return false;
+  const ownSecretIds = new Set(
+    input.existingAdapterType === "hermes_gateway"
+      ? HERMES_CREDENTIAL_KEYS.map((key) => storedSecretRefId(input.existingConfig[key])).filter(
+        (id): id is string => typeof id === "string",
+      )
+      : [],
+  );
   return HERMES_CREDENTIAL_KEYS.some((key) => {
-    const value = config[key];
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-      && (value as Record<string, unknown>).type === "secret_ref";
+    const secretId = storedSecretRefId(input.nextConfig[key]);
+    return secretId !== undefined && (secretId === null || !ownSecretIds.has(secretId));
   });
 }
 

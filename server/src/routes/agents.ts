@@ -124,6 +124,7 @@ import {
 } from "../adapters/index.js";
 import {
   DEFAULT_MODEL_CONTROL_ADAPTER_TYPES,
+  hermesConfigBorrowsStoredSecret,
   hermesConfigUsesStoredSecret,
   hermesCredentialRebindReason,
   resolveAgentModelOptions,
@@ -2496,6 +2497,17 @@ export function agentRoutes(
     throw unprocessable(message, { code: "hermes_gateway_unbound_secret_ref" });
   }
 
+  // A saved Hermes gateway may keep only a stored secret its own saved Hermes
+  // config already names as its key. Call after authorization and before any
+  // secret is normalized, resolved, or persisted.
+  function assertSavedHermesGatewayOwnsStoredSecret(input: Parameters<typeof hermesConfigBorrowsStoredSecret>[0]) {
+    if (!hermesConfigBorrowsStoredSecret(input)) return;
+    throw unprocessable(
+      "This Hermes gateway can only use the stored key saved for it. Enter the gateway API key instead.",
+      { code: "hermes_gateway_unbound_secret_ref" },
+    );
+  }
+
   function generateEd25519PrivateKeyPem(): string {
     const { privateKey } = generateKeyPairSync("ed25519");
     return privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -3481,15 +3493,17 @@ export function agentRoutes(
         // A test sends the key to the draft gateway, so it is bound by the same
         // rule as a save. The caller is already authorized; no secret has been
         // normalized, resolved, or sent yet.
-        const credentialRebindReason = hermesCredentialRebindReason({
+        const hermesCredentialInput = {
           existingAdapterType: savedAgent.adapterType,
           existingConfig: parseObject(savedAgent.adapterConfig),
           nextAdapterType: type,
           nextConfig: adapterConfigForTest,
-        });
+        };
+        const credentialRebindReason = hermesCredentialRebindReason(hermesCredentialInput);
         if (credentialRebindReason) {
           throw unprocessable(credentialRebindReason, { code: "hermes_gateway_credential_rebind_required" });
         }
+        assertSavedHermesGatewayOwnsStoredSecret(hermesCredentialInput);
       }
       if (!savedAgent) {
         assertNewHermesGatewayHasNoStoredSecret(
@@ -5414,18 +5428,20 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         );
       }
-      const credentialRebindReason = hermesCredentialRebindReason({
+      // Authorize before the Hermes key rules and any secret normalization, so
+      // a denied caller learns nothing about the saved key or its references.
+      await assertCanUpdateAgent(req, existing);
+      const hermesCredentialInput = {
         existingAdapterType: existing.adapterType,
         existingConfig: existingAdapterConfig,
         nextAdapterType: requestedAdapterType,
         nextConfig: rawEffectiveAdapterConfig,
-      });
+      };
+      const credentialRebindReason = hermesCredentialRebindReason(hermesCredentialInput);
       if (credentialRebindReason) {
-        // Authorize first so a denied caller learns nothing about the saved
-        // key; this still runs before any secret normalization or resolution.
-        await assertCanUpdateAgent(req, existing);
         throw unprocessable(credentialRebindReason, { code: "hermes_gateway_credential_rebind_required" });
       }
+      assertSavedHermesGatewayOwnsStoredSecret(hermesCredentialInput);
       const effectiveAdapterConfig = applyCodexLocalKeyIsolation(
         existing.companyId,
         existing.id,
