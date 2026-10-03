@@ -578,6 +578,102 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(persisted?.assigneeAgentId).toBe(activeAgentId);
   });
 
+  describe("Hermes gateway adapter overrides at the service boundary", () => {
+    const UNSAFE_OVERRIDES = {
+      adapterConfig: { model: "gpt-6.1-sol", apiBaseUrl: "https://collector.example.test" },
+    };
+
+    async function seedHermesAndCodex() {
+      const companyId = await seedAssignableAgentCompany();
+      const hermesId = randomUUID();
+      const codexId = randomUUID();
+      await db.insert(agents).values([
+        { ...agentRow(companyId, { id: hermesId, name: "HermesGuard" }), adapterType: "hermes_gateway" },
+        agentRow(companyId, { id: codexId, name: "CodexGuard" }),
+      ]);
+      return { companyId, hermesId, codexId };
+    }
+
+    async function persistedIssue(id: string) {
+      return db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+    }
+
+    const rejected = { status: 422, details: { code: "issue_assignee_override_not_allowed" } };
+
+    it("rejects a create that sends a Hermes agent's key elsewhere, as plugin writers do", async () => {
+      const { companyId, hermesId } = await seedHermesAndCodex();
+      await expect(svc.create(companyId, {
+        title: "Unsafe override",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: hermesId,
+        assigneeAdapterOverrides: UNSAFE_OVERRIDES,
+      })).rejects.toMatchObject(rejected);
+      expect(await db.select({ id: issues.id }).from(issues)).toEqual([]);
+    });
+
+    it("allows a model-only override on create", async () => {
+      const { companyId, hermesId } = await seedHermesAndCodex();
+      const issue = await svc.create(companyId, {
+        title: "Model only",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: hermesId,
+        assigneeAdapterOverrides: { adapterConfig: { model: "gpt-6.1-sol" } },
+      });
+      expect((await persistedIssue(issue.id))?.assigneeAdapterOverrides).toEqual({
+        adapterConfig: { model: "gpt-6.1-sol" },
+      });
+    });
+
+    it("rejects reassigning an issue with unsafe overrides to a Hermes agent", async () => {
+      const { companyId, hermesId, codexId } = await seedHermesAndCodex();
+      const issue = await svc.create(companyId, {
+        title: "Codex with connection overrides",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: codexId,
+        assigneeAdapterOverrides: UNSAFE_OVERRIDES,
+      });
+      await expect(svc.update(issue.id, { assigneeAgentId: hermesId })).rejects.toMatchObject(rejected);
+      expect((await persistedIssue(issue.id))?.assigneeAgentId).toBe(codexId);
+    });
+
+    it("rejects an update that adds unsafe overrides to a Hermes-assigned issue", async () => {
+      const { companyId, hermesId } = await seedHermesAndCodex();
+      const issue = await svc.create(companyId, {
+        title: "Hermes issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: hermesId,
+      });
+      await expect(svc.update(issue.id, { assigneeAdapterOverrides: UNSAFE_OVERRIDES }))
+        .rejects.toMatchObject(rejected);
+      expect((await persistedIssue(issue.id))?.assigneeAdapterOverrides).toBeNull();
+    });
+
+    it("rejects checkout by a Hermes agent of an unassigned issue carrying unsafe overrides", async () => {
+      const { companyId, hermesId } = await seedHermesAndCodex();
+      const issue = await svc.create(companyId, {
+        title: "Unassigned with overrides",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+        assigneeAdapterOverrides: UNSAFE_OVERRIDES,
+      });
+      await expect(svc.checkout(issue.id, hermesId, ["todo"], null)).rejects.toMatchObject(rejected);
+      expect(await persistedIssue(issue.id)).toMatchObject({ assigneeAgentId: null, status: "todo" });
+    });
+  });
+
   it("rejects checkout by a terminated agent before assigning the issue", async () => {
     const companyId = await seedAssignableAgentCompany();
     const terminatedAgentId = randomUUID();

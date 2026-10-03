@@ -111,6 +111,7 @@ import {
   resolvePaperclipRunnerProviderProfile,
 } from "./native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
+import { issueAssigneeOverrideRejectionReason } from "./issue-assignee-override-guard.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
@@ -5498,6 +5499,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const preImportExistingSlugToAgentId = new Map<string, string>();
       const preImportExistingAgentIds = new Set<string>();
       const agentStatusById = new Map<string, string | null | undefined>();
+      const agentAdapterTypeById = new Map<string, string>();
       const existingAgents = await agents.list(targetCompany.id);
       for (const existing of existingAgents) {
         const slug = normalizeAgentUrlKey(existing.name) ?? existing.id;
@@ -5505,6 +5507,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         preImportExistingSlugToAgentId.set(slug, existing.id);
         preImportExistingAgentIds.add(existing.id);
         agentStatusById.set(existing.id, existing.status);
+        agentAdapterTypeById.set(existing.id, existing.adapterType);
       }
       const importedSlugToProjectId = new Map<string, string>();
       const importedProjectWorkspaceIdByProjectSlug = new Map<string, Map<string, string>>();
@@ -5650,6 +5653,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               actorUserId ?? null,
             );
             agentStatusById.set(updated.id, updated.status ?? agentStatusById.get(updated.id) ?? null);
+            agentAdapterTypeById.set(updated.id, updated.adapterType);
             await secrets.syncEnvBindingsForTarget?.(
               targetCompany.id,
               { targetType: "agent", targetId: updated.id },
@@ -5697,6 +5701,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             actorUserId ?? null,
           );
           agentStatusById.set(created.id, created.status ?? (pauseAutomations ? "paused" : "idle"));
+          agentAdapterTypeById.set(created.id, created.adapterType);
           await secrets.syncEnvBindingsForTarget?.(
             targetCompany.id,
             { targetType: "agent", targetId: created.id },
@@ -6236,6 +6241,22 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
+          // Imported overrides are merged over the assignee's saved config at
+          // run time, so they obey the same rule as an issue write. A rejected
+          // set is dropped rather than failing the whole import.
+          let assigneeAdapterOverrides = sanitizeImportedIssueAssigneeAdapterOverrides(
+            manifestIssue.assigneeAdapterOverrides,
+          );
+          if (assigneeAdapterOverrides && assigneeAgentId) {
+            const overrideRejection = issueAssigneeOverrideRejectionReason(
+              agentAdapterTypeById.get(assigneeAgentId),
+              assigneeAdapterOverrides,
+            );
+            if (overrideRejection) {
+              warnings.push(`Task ${manifestIssue.slug} adapter overrides were dropped: ${overrideRejection}`);
+              assigneeAdapterOverrides = null;
+            }
+          }
           issueRows.push({
             id: issueId,
             ref: manifestIssue.slug,
@@ -6249,9 +6270,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
               : "medium",
             billingCode: manifestIssue.billingCode ?? null,
-            assigneeAdapterOverrides: sanitizeImportedIssueAssigneeAdapterOverrides(
-              manifestIssue.assigneeAdapterOverrides,
-            ),
+            assigneeAdapterOverrides,
             executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
             labelIds: resolvedLabelIds,
             monitorNotes,

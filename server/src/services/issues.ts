@@ -195,6 +195,10 @@ import {
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import {
+  ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+  issueAssigneeOverrideRejectionReason,
+} from "./issue-assignee-override-guard.js";
 
 const ALL_ISSUE_STATUSES = [
   "backlog",
@@ -6542,6 +6546,28 @@ async function countBlockedInboxIssues(
   }, 0);
 }
 
+/**
+ * Issue adapter overrides are merged over the assignee's saved config at run
+ * time. Every writer that sets overrides or changes the agent assignee checks
+ * the resulting pair here, so plugin, checkout and other non-route writers
+ * obey the same rule as the issue routes. The heartbeat still re-checks before
+ * any secret is resolved.
+ */
+async function assertIssueAssigneeOverridesAllowed(
+  dbOrTx: Pick<Db, "select">,
+  assigneeAgentId: string | null | undefined,
+  overrides: unknown,
+) {
+  if (!assigneeAgentId || overrides === null || overrides === undefined) return;
+  const assignee = await dbOrTx
+    .select({ adapterType: agents.adapterType })
+    .from(agents)
+    .where(eq(agents.id, assigneeAgentId))
+    .then((rows) => rows[0] ?? null);
+  const reason = issueAssigneeOverrideRejectionReason(assignee?.adapterType, overrides);
+  if (reason) throw unprocessable(reason, { code: ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE });
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -9737,6 +9763,11 @@ export function issueService(db: Db) {
         await assertAssignableAgent(db, companyId, data.assigneeAgentId, {
           kind: "work",
         });
+        await assertIssueAssigneeOverridesAllowed(
+          dbOrTx,
+          data.assigneeAgentId,
+          issueData.assigneeAdapterOverrides,
+        );
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
@@ -10591,6 +10622,18 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       if (
+        issueData.assigneeAgentId !== undefined ||
+        issueData.assigneeAdapterOverrides !== undefined
+      ) {
+        await assertIssueAssigneeOverridesAllowed(
+          dbOrTx,
+          issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId,
+          issueData.assigneeAdapterOverrides !== undefined
+            ? issueData.assigneeAdapterOverrides
+            : existing.assigneeAdapterOverrides,
+        );
+      }
+      if (
         issueData.assigneeAgentId !== undefined &&
         issueData.assigneeAgentId !== existing.assigneeAgentId
       ) {
@@ -11318,7 +11361,10 @@ export function issueService(db: Db) {
       checkoutRunId: string | null,
     ) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
@@ -11326,6 +11372,13 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, {
         kind: "work",
       });
+      // Checkout can take an unassigned issue, so the overrides it already
+      // carries must be safe for the agent taking it.
+      await assertIssueAssigneeOverridesAllowed(
+        db,
+        agentId,
+        issueCompany.assigneeAdapterOverrides,
+      );
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(

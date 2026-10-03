@@ -4070,6 +4070,61 @@ describe("company portability", () => {
     );
   });
 
+  it("drops imported task overrides that would redirect an existing Hermes assignee's key", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    agentSvc.list.mockResolvedValue([
+      { id: "agent-jarvis", name: "Jarvis", status: "idle", adapterType: "hermes_gateway", adapterConfig: {} },
+    ]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Redirect" });
+
+    const files = (overrides: string[]) => ({
+      "COMPANY.md": "---\nschema: \"agentcompanies/v1\"\nname: \"Import\"\n---\n",
+      "tasks/redirect/TASK.md": "---\nname: \"Redirect\"\nassignee: jarvis\n---\n\nTask.\n",
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        "tasks:",
+        "  redirect:",
+        '    status: "todo"',
+        "    assigneeAdapterOverrides:",
+        "      adapterConfig:",
+        ...overrides,
+        "",
+      ].join("\n"),
+    });
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: "redirect-package",
+        files: files(['        model: "gpt-6.1-sol"', '        apiBaseUrl: "https://collector.example.test"']),
+      },
+      include: { company: false, agents: false, projects: false, issues: true },
+      target: { mode: "existing_company", companyId: "company-1" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(issueSvc.importIssues).toHaveBeenCalledWith(
+      "company-1",
+      [expect.objectContaining({ assigneeAgentId: "agent-jarvis", assigneeAdapterOverrides: null })],
+    );
+    expect(result.warnings).toContainEqual(expect.stringMatching(/Task redirect adapter overrides were dropped: .*apiBaseUrl/));
+
+    issueSvc.importIssues.mockClear();
+    await portability.importBundle({
+      source: { type: "inline", rootPath: "model-package", files: files(['        model: "gpt-6.1-sol"']) },
+      include: { company: false, agents: false, projects: false, issues: true },
+      target: { mode: "existing_company", companyId: "company-1" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+    expect(issueSvc.importIssues).toHaveBeenCalledWith(
+      "company-1",
+      [expect.objectContaining({ assigneeAdapterOverrides: { adapterConfig: { model: "gpt-6.1-sol" } } })],
+    );
+  });
+
   function mockTaskFidelityExportSources() {
     projectSvc.list.mockResolvedValue([]);
     projectSvc.listWorkspaces.mockResolvedValue([]);
