@@ -646,7 +646,7 @@ describe("agent default model control", { timeout: 60_000 }, () => {
         expect(mockAgentService.update).not.toHaveBeenCalled();
       });
 
-      it("saves the agent's own reference moved to the token alias", async () => {
+      it("rejects the agent's own reference moved to the token alias, which is never resolved", async () => {
         const app = await createApp();
         const res = await requestApp(app, (baseUrl) => request(baseUrl)
           .patch(`/api/agents/${JARVIS_ID}`)
@@ -655,8 +655,8 @@ describe("agent default model control", { timeout: 60_000 }, () => {
             adapterConfig: { apiBaseUrl: jarvis.adapterConfig.apiBaseUrl, token: SAVED_KEY_REF, model: "gpt-6.1-sol" },
           }));
 
-        expect(res.status, JSON.stringify(res.body)).toBe(200);
-        expect(mockAgentService.update).toHaveBeenCalledTimes(1);
+        expectRejectedBeforeSecretUse(res);
+        expect(res.body.error).toMatch(/apiKey, not token/);
       });
 
       it("saves a fresh plain key at the saved gateway", async () => {

@@ -230,6 +230,9 @@ export function approvalRoutes(
       : [];
     const uniqueIssueIds = Array.from(new Set(issueIds));
     const { issueIds: _issueIds, ...approvalInput } = req.body;
+    if (approvalInput.type === "hire_agent") {
+      await svc.assertHireApprovalPayload(companyId, approvalInput.payload, { requireAgentHire: true });
+    }
     const normalizedPayload =
       approvalInput.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
@@ -472,6 +475,9 @@ export function approvalRoutes(
       return;
     }
 
+    if (req.body.payload && existing.type === "hire_agent") {
+      await svc.assertHireApprovalPayload(existing.companyId, req.body.payload, { requireAgentHire: true });
+    }
     const normalizedPayload = req.body.payload
       ? existing.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(

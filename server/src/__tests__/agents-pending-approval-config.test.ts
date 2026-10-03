@@ -7,6 +7,8 @@ import {
   activityLog,
   budgetPolicies,
   companies,
+  companySecretBindings,
+  companySecrets,
   createDb,
 } from "@paperclipai/db";
 import {
@@ -42,7 +44,9 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     await db.delete(activityLog);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
+    await db.delete(companySecretBindings);
     await db.delete(agents);
+    await db.delete(companySecrets);
     await db.delete(companies);
   });
 
@@ -155,6 +159,231 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       runtimeConfig: { maxConcurrentRuns: 1 },
       budgetMonthlyCents: 1234,
       metadata: { source: "hire-form" },
+    });
+  });
+
+  describe("hire approval decision checks", () => {
+    const SAVED_URL = "https://gateway.example.test/v1";
+    const OTHER_URL = "https://collector.example.test/v1";
+
+    async function seedSecret(companyId: string, label: string) {
+      return db.insert(companySecrets).values({
+        companyId,
+        key: `synthetic-${label}-${randomUUID()}`,
+        name: `Synthetic ${label} ${randomUUID()}`,
+      }).returning().then((rows) => rows[0]!.id);
+    }
+
+    function secretRef(secretId: string) {
+      return { type: "secret_ref", secretId, version: "latest" };
+    }
+
+    async function seedPendingHermes(companyId: string, ownSecretId: string) {
+      return agentService(db).create(companyId, {
+        name: `Gateway ${randomUUID().slice(0, 6)}`,
+        role: "engineer",
+        adapterType: "hermes_gateway",
+        adapterConfig: { apiBaseUrl: SAVED_URL, apiKey: secretRef(ownSecretId) },
+        status: "pending_approval",
+        spentMonthlyCents: 0,
+        permissions: {},
+        lastHeartbeatAt: null,
+      });
+    }
+
+    async function seedApproval(companyId: string, payload: Record<string, unknown>, status = "pending") {
+      return approvalService(db).create(companyId, {
+        type: "hire_agent",
+        requestedByAgentId: null,
+        requestedByUserId: "board-user",
+        status,
+        payload,
+        decisionNote: null,
+        decidedByUserId: null,
+        decidedAt: null,
+        updatedAt: new Date(),
+      });
+    }
+
+    async function approvalStatus(id: string) {
+      return db.select().from(approvals).where(eq(approvals.id, id)).then((rows) => rows[0]!.status);
+    }
+
+    async function agentRow(id: string) {
+      return db.select().from(agents).where(eq(agents.id, id)).then((rows) => rows[0] ?? null);
+    }
+
+    async function companyAgentCount(companyId: string) {
+      return db.select().from(agents).where(eq(agents.companyId, companyId)).then((rows) => rows.length);
+    }
+
+    it("approves and activates the pending Hermes agent with its own saved key for the same gateway", async () => {
+      const companyId = await seedCompany();
+      const ownSecretId = await seedSecret(companyId, "own");
+      const pending = await seedPendingHermes(companyId, ownSecretId);
+      const approval = await seedApproval(companyId, {
+        name: pending.name,
+        adapterType: "hermes_gateway",
+        adapterConfig: { apiBaseUrl: SAVED_URL, apiKey: secretRef(ownSecretId) },
+        agentId: pending.id,
+      });
+
+      const first = await approvalService(db).approve(approval.id, "board-user", null);
+      const repeat = await approvalService(db).approve(approval.id, "board-user", null);
+
+      expect(first.applied).toBe(true);
+      expect(repeat.applied).toBe(false);
+      expect(await approvalStatus(approval.id)).toBe("approved");
+      const activated = await agentRow(pending.id);
+      expect(activated?.status).toBe("idle");
+      expect((activated?.adapterConfig as Record<string, any>).apiKey.secretId).toBe(ownSecretId);
+    });
+
+    for (const [label, makeConfig, code] of [
+      [
+        "sends the saved key to a new gateway URL",
+        (own: string, _foreign: string) => ({ apiBaseUrl: OTHER_URL, apiKey: secretRef(own) }),
+        "hermes_gateway_credential_rebind_required",
+      ],
+      [
+        "borrows another stored secret as the token",
+        (_own: string, foreign: string) => ({ apiBaseUrl: SAVED_URL, token: secretRef(foreign) }),
+        "hermes_gateway_unbound_secret_ref",
+      ],
+    ] as const) {
+      it(`keeps an old approval that ${label} open and the agent unchanged`, async () => {
+        const companyId = await seedCompany();
+        const ownSecretId = await seedSecret(companyId, "own");
+        const foreignSecretId = await seedSecret(companyId, "foreign");
+        const pending = await seedPendingHermes(companyId, ownSecretId);
+        const before = await agentRow(pending.id);
+        // Inserted directly, as an approval stored before the route checks existed.
+        const approval = await seedApproval(companyId, {
+          name: pending.name,
+          adapterType: "hermes_gateway",
+          adapterConfig: makeConfig(ownSecretId, foreignSecretId),
+          agentId: pending.id,
+        }, "revision_requested");
+
+        await expect(approvalService(db).approve(approval.id, "board-user", null)).rejects.toMatchObject({
+          status: 422,
+          details: { code },
+        });
+
+        expect(await approvalStatus(approval.id)).toBe("revision_requested");
+        expect(await agentRow(pending.id)).toEqual(before);
+        const bindings = await db.select().from(companySecretBindings)
+          .where(eq(companySecretBindings.secretId, foreignSecretId));
+        expect(bindings).toEqual([]);
+      });
+    }
+
+    it("defends activation itself against a borrowed key", async () => {
+      const companyId = await seedCompany();
+      const ownSecretId = await seedSecret(companyId, "own");
+      const foreignSecretId = await seedSecret(companyId, "foreign");
+      const pending = await seedPendingHermes(companyId, ownSecretId);
+      const before = await agentRow(pending.id);
+
+      await expect(agentService(db).activatePendingApproval(pending.id, {
+        adapterType: "hermes_gateway",
+        adapterConfig: { apiBaseUrl: SAVED_URL, apiKey: secretRef(foreignSecretId) },
+      })).rejects.toMatchObject({ status: 422, details: { code: "hermes_gateway_unbound_secret_ref" } });
+      expect(await agentRow(pending.id)).toEqual(before);
+    });
+
+    it("keeps an old no-agent Hermes approval with a stored secret open and creates no agent", async () => {
+      const companyId = await seedCompany();
+      const ownSecretId = await seedSecret(companyId, "own");
+      const approval = await seedApproval(companyId, {
+        name: "Gateway",
+        adapterType: "hermes_gateway",
+        adapterConfig: { apiBaseUrl: SAVED_URL, apiKey: secretRef(ownSecretId) },
+      });
+
+      await expect(approvalService(db).approve(approval.id, "board-user", null)).rejects.toMatchObject({
+        status: 422,
+        details: { code: "hermes_gateway_unbound_secret_ref" },
+      });
+      expect(await approvalStatus(approval.id)).toBe("pending");
+      expect(await companyAgentCount(companyId)).toBe(0);
+    });
+
+    it("keeps an approval naming another company's pending agent open and that agent pending", async () => {
+      const companyId = await seedCompany();
+      const otherCompanyId = await seedCompany();
+      const otherPending = await agentService(db).create(otherCompanyId, {
+        name: "Other Pending",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: { command: "echo other" },
+        status: "pending_approval",
+        spentMonthlyCents: 0,
+        permissions: {},
+        lastHeartbeatAt: null,
+      });
+      const approval = await seedApproval(companyId, {
+        name: "Takeover",
+        adapterConfig: { command: "echo takeover" },
+        agentId: otherPending.id,
+      });
+      const missing = await seedApproval(companyId, { name: "Ghost", agentId: randomUUID() });
+
+      for (const id of [approval.id, missing.id]) {
+        await expect(approvalService(db).approve(id, "board-user", null)).rejects.toMatchObject({
+          status: 422,
+          details: { code: "hire_approval_agent_not_pending" },
+        });
+        expect(await approvalStatus(id)).toBe("pending");
+      }
+      expect(await agentRow(otherPending.id)).toMatchObject({
+        status: "pending_approval",
+        adapterConfig: { command: "echo other" },
+      });
+
+      await approvalService(db).reject(approval.id, "board-user", null);
+      expect((await agentRow(otherPending.id))?.status).toBe("pending_approval");
+    });
+
+    it("rolls the approval back when the legacy agent create fails", async () => {
+      const companyId = await seedCompany();
+      const approval = await seedApproval(companyId, {
+        name: "Broken",
+        adapterType: "process",
+        reportsTo: randomUUID(),
+      });
+
+      await expect(approvalService(db).approve(approval.id, "board-user", null)).rejects.toMatchObject({
+        status: 404,
+      });
+      expect(await approvalStatus(approval.id)).toBe("pending");
+      expect(await companyAgentCount(companyId)).toBe(0);
+    });
+
+    it("creates a legacy non-Hermes agent and approves in one commit", async () => {
+      const companyId = await seedCompany();
+      const approval = await seedApproval(companyId, {
+        name: "Legacy Process",
+        adapterType: "process",
+        adapterConfig: { command: "echo legacy" },
+      });
+
+      const result = await approvalService(db).approve(approval.id, "board-user", null);
+
+      expect(result.applied).toBe(true);
+      expect(await approvalStatus(approval.id)).toBe("approved");
+      expect(await companyAgentCount(companyId)).toBe(1);
+    });
+
+    it("refuses a resubmit after the approval was decided", async () => {
+      const companyId = await seedCompany();
+      const approval = await seedApproval(companyId, { name: "Legacy", adapterType: "process" }, "revision_requested");
+      await approvalService(db).approve(approval.id, "board-user", null);
+
+      await expect(approvalService(db).resubmit(approval.id, { name: "Swapped" })).rejects.toMatchObject({
+        status: 422,
+      });
+      expect(await approvalStatus(approval.id)).toBe("approved");
     });
   });
 });

@@ -5122,6 +5122,12 @@ export function secretService(db: Db | DbTransaction) {
       const normalized = { ...payload };
       const adapterConfig = asRecord(payload.adapterConfig);
       if (adapterConfig) {
+        // No adapterType on purpose: only env bindings are normalized here.
+        // Passing it would turn other adapters' schema secret fields into
+        // managed secrets, and would turn a Hermes key typed into the request
+        // into a stored reference that the approval decision cannot tell
+        // apart from a borrowed one. The pending agent stores that key when
+        // the approved payload is activated.
         normalized.adapterConfig = await normalizeAdapterConfigForPersistenceInternal(
           companyId,
           adapterConfig,

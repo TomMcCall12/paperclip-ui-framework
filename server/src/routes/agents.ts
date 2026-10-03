@@ -127,6 +127,8 @@ import {
   hermesConfigBorrowsStoredSecret,
   hermesConfigUsesStoredSecret,
   hermesCredentialRebindReason,
+  hermesTokenAliasHoldsStoredSecret,
+  HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE,
   resolveAgentModelOptions,
   unsupportedDefaultModelReason,
 } from "../services/agent-model-options.js";
@@ -2501,6 +2503,9 @@ export function agentRoutes(
   // config already names as its key. Call after authorization and before any
   // secret is normalized, resolved, or persisted.
   function assertSavedHermesGatewayOwnsStoredSecret(input: Parameters<typeof hermesConfigBorrowsStoredSecret>[0]) {
+    if (hermesTokenAliasHoldsStoredSecret(input.nextAdapterType, input.nextConfig)) {
+      throw unprocessable(HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE, { code: "hermes_gateway_unbound_secret_ref" });
+    }
     if (!hermesConfigBorrowsStoredSecret(input)) return;
     throw unprocessable(
       "This Hermes gateway can only use the stored key saved for it. Enter the gateway API key instead.",

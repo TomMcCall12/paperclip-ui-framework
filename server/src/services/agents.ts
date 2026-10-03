@@ -38,6 +38,7 @@ import {
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
+import { hermesHireApprovalViolation } from "./agent-model-options.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
@@ -1095,8 +1096,21 @@ export function agentService(db: Db) {
     activatePendingApproval: async (id: string, approvedPayload?: Record<string, unknown> | null) => {
       const activatedAgent = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, id)).for("update");
         const existing = await agentService(txDb).getById(id);
         if (!existing || existing.status !== "pending_approval") return null;
+        // Callers can reach activation without the approval routes, so check
+        // the Hermes key binding again against the locked agent row before any
+        // secret is normalized, persisted, or bound.
+        if (approvedPayload) {
+          const violation = hermesHireApprovalViolation({
+            companyId: existing.companyId,
+            payload: { ...approvedPayload, agentId: id },
+            target: existing,
+            requireAgentHire: false,
+          });
+          if (violation) throw unprocessable(violation.message, { code: violation.code });
+        }
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
         let approvalBindingDecision: ClaudeOAuthBindingInvariantDecision | null = null;
