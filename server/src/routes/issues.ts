@@ -224,13 +224,19 @@ import {
 } from "../errors.js";
 import {
   ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+  ISSUE_TASK_MODEL_UNSUPPORTED_CODE,
   issueAssigneeOverrideRejectionReason,
+  issueTaskModelToVerify,
+  issueTaskModelUnsupportedReason,
 } from "../services/issue-assignee-override-guard.js";
+import { resolveAgentModelOptions } from "../services/agent-model-options.js";
+import { secretService } from "../services/secrets.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import {
   assertBoard,
   assertCompanyAccess,
+  buildActorSecretContext,
   getAccessibleResource,
   getActorInfo,
 } from "./authz.js";
@@ -3548,6 +3554,7 @@ export function issueRoutes(
     opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
+  const secretsSvc = secretService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
@@ -7282,10 +7289,49 @@ export function issueRoutes(
     );
   }
 
+  // One live model list per assignee per request, so a decomposition with
+  // several children for the same agent asks its gateway once. Never shared
+  // across requests.
+  const memoizeIssueTaskModelOptions = createRequestPromiseMemo<
+    Request,
+    Awaited<ReturnType<typeof resolveAgentModelOptions>> | null
+  >();
+
+  // Lists the assignee's current models with its own saved key, resolved
+  // server-side under the agent's bindings. The key goes only to the agent's
+  // configured gateway and is never returned or logged. Resolves null when the
+  // key cannot be resolved.
+  async function loadIssueTaskModelOptions(
+    req: Request,
+    assignee: { id: string; companyId: string; adapterType: string; adapterConfig: unknown },
+  ) {
+    const adapterConfig = (assignee.adapterConfig ?? {}) as Record<string, unknown>;
+    let runtimeConfig: Record<string, unknown>;
+    try {
+      runtimeConfig = (await secretsSvc.resolveAdapterConfigForRuntime(
+        assignee.companyId,
+        adapterConfig,
+        buildActorSecretContext(req, { consumerType: "agent", consumerId: assignee.id }),
+        { adapterType: assignee.adapterType, skipUserSecrets: true },
+      )).config;
+    } catch (err) {
+      // The error may name the secret; log only its status.
+      logger.warn(
+        { agentId: assignee.id, status: err instanceof HttpError ? err.status : null },
+        "Could not resolve the assignee's gateway key to verify an issue task model",
+      );
+      return null;
+    }
+    return resolveAgentModelOptions(assignee.adapterType, runtimeConfig, null);
+  }
+
   // Issue overrides are merged over the assignee's saved adapter config at run
   // time. Called after authorization, so a denied caller learns nothing about
-  // the assignee, and before anything is persisted.
+  // the assignee and triggers no key resolution or gateway call, and before
+  // anything is persisted.
   async function assertIssueAssigneeOverridesAllowed(
+    req: Request,
+    companyId: string,
     assigneeAgentId: string | null | undefined,
     overrides: unknown,
   ) {
@@ -7298,6 +7344,20 @@ export function issueRoutes(
     if (reason) {
       throw unprocessable(reason, {
         code: ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+      });
+    }
+    const taskModel = issueTaskModelToVerify(assignee?.adapterType, overrides);
+    if (!assignee || !taskModel) return;
+    // Never resolve another company's agent key; fail closed instead.
+    const options = assignee.companyId === companyId
+      ? await memoizeIssueTaskModelOptions(req, assignee.id, () =>
+          loadIssueTaskModelOptions(req, assignee),
+        )
+      : null;
+    const unsupported = issueTaskModelUnsupportedReason(options, taskModel);
+    if (unsupported) {
+      throw unprocessable(unsupported, {
+        code: ISSUE_TASK_MODEL_UNSUPPORTED_CODE,
       });
     }
   }
@@ -11865,6 +11925,8 @@ export function issueRoutes(
         await assertCanAssignTasks(req, companyId, createAssignmentScope);
       }
       await assertIssueAssigneeOverridesAllowed(
+        req,
+        companyId,
         createBody.assigneeAgentId,
         createBody.assigneeAdapterOverrides,
       );
@@ -12210,6 +12272,8 @@ export function issueRoutes(
         await assertCanAssignTasks(req, parent.companyId, childAssignmentScope);
       }
       await assertIssueAssigneeOverridesAllowed(
+        req,
+        parent.companyId,
         createBody.assigneeAgentId,
         createBody.assigneeAdapterOverrides,
       );
@@ -12442,6 +12506,8 @@ export function issueRoutes(
         // Every child is validated before any is persisted, so one unsafe
         // override fails the whole decomposition.
         await assertIssueAssigneeOverridesAllowed(
+          req,
+          sourceIssue.companyId,
           childBody.assigneeAgentId,
           childBody.assigneeAdapterOverrides,
         );
@@ -13502,6 +13568,8 @@ export function issueRoutes(
         nextAssigneeAgentId !== existing.assigneeAgentId
       ) {
         await assertIssueAssigneeOverridesAllowed(
+          req,
+          existing.companyId,
           nextAssigneeAgentId,
           updateFields.assigneeAdapterOverrides === undefined
             ? existing.assigneeAdapterOverrides

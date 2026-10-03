@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -51,6 +51,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+
+const mockSecretService = vi.hoisted(() => ({
+  resolveAdapterConfigForRuntime: vi.fn(),
+}));
 
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(),
@@ -105,6 +109,11 @@ function registerRouteMocks() {
 
   vi.doMock("../services/routines.js", () => ({
     routineService: () => mockRoutineService,
+  }));
+
+  vi.doMock("../services/secrets.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../services/secrets.js")>()),
+    secretService: () => mockSecretService,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -205,6 +214,7 @@ describe("issue workspace command authorization", () => {
     vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../services/issues.js");
     vi.doUnmock("../services/routines.js");
+    vi.doUnmock("../services/secrets.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -353,6 +363,20 @@ describe("issue assignee adapter override credential guard", () => {
     source: "session",
     isInstanceAdmin: false,
   };
+  // Dummy runtime value the stubbed secret resolver returns for the saved key.
+  const resolvedHermesKey = "resolved-hermes-key";
+  // The gateway's current provider is "openai"; "anthropic" models belong to
+  // another provider and must not be accepted.
+  const defaultGatewayCatalog = () => ({
+    provider: "openai",
+    model: "gateway-default-model",
+    providers: [
+      { slug: "openai", authenticated: true, models: ["hermes-task-model", "hermes-other-model"] },
+      { slug: "anthropic", authenticated: true, models: ["other-provider-model"] },
+    ],
+  });
+  let gatewayCatalog: unknown = defaultGatewayCatalog();
+  const gatewayFetch = vi.fn<typeof fetch>();
 
   beforeEach(() => {
     vi.resetModules();
@@ -385,6 +409,28 @@ describe("issue assignee adapter override credential guard", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockLogActivity.mockResolvedValue(undefined);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    // Secret resolution swaps the saved key for its runtime value; the
+    // gateway is stubbed, never called for real.
+    mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(
+      async (_companyId: string, config: Record<string, unknown>) => ({
+        config: { ...config, apiKey: resolvedHermesKey },
+        secretKeys: new Set(["apiKey"]),
+        manifest: [],
+      }),
+    );
+    gatewayCatalog = defaultGatewayCatalog();
+    gatewayFetch.mockReset();
+    gatewayFetch.mockImplementation(async () =>
+      new Response(JSON.stringify(gatewayCatalog), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", gatewayFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("rejects an authorized non-admin PATCH that points a Hermes assignee at a new gateway URL", async () => {
@@ -512,6 +558,204 @@ describe("issue assignee adapter override credential guard", () => {
     );
   });
 
+  describe("Hermes task model catalog check", () => {
+    function expectTaskModelRejected(res: request.Response) {
+      expect(res.status).toBe(422);
+      expect(res.body.details?.code).toBe("issue_task_model_unsupported");
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain(savedHermesKey);
+      expect(body).not.toContain(resolvedHermesKey);
+      expect(body).not.toContain("hermes.internal");
+    }
+
+    function patchTaskModel(app: express.Express, model: string) {
+      return request(app)
+        .patch("/api/issues/issue-1")
+        .send({ assigneeAdapterOverrides: { adapterConfig: { model } } });
+    }
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: hermesAgent.id }));
+    });
+
+    it("checks the model against the gateway's live list with the agent-bound resolved key", async () => {
+      const app = await createApp(memberActor);
+
+      const res = await patchTaskModel(app, "hermes-task-model");
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.resolveAdapterConfigForRuntime).toHaveBeenCalledTimes(1);
+      expect(mockSecretService.resolveAdapterConfigForRuntime).toHaveBeenCalledWith(
+        "company-1",
+        hermesAgent.adapterConfig,
+        expect.objectContaining({ consumerType: "agent", consumerId: hermesAgent.id }),
+        expect.objectContaining({ adapterType: "hermes_gateway", skipUserSecrets: true }),
+      );
+      expect(gatewayFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = gatewayFetch.mock.calls[0]!;
+      expect(String(url)).toBe("https://hermes.internal/api/model/options");
+      expect((init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${resolvedHermesKey}`);
+      expect(JSON.stringify(res.body)).not.toContain(resolvedHermesKey);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({
+          assigneeAdapterOverrides: { adapterConfig: { model: "hermes-task-model" } },
+        }),
+      );
+    });
+
+    it("rejects a model the gateway does not list, without substituting a default", async () => {
+      const app = await createApp(memberActor);
+
+      const res = await patchTaskModel(app, "retired-model");
+
+      expectTaskModelRejected(res);
+      expect(res.body.error).toContain('Task model "retired-model" is not offered');
+      expect(res.body.error).not.toContain("gateway-default-model");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a model listed only for a provider other than the gateway's current one", async () => {
+      const app = await createApp(memberActor);
+
+      const res = await patchTaskModel(app, "other-provider-model");
+
+      expectTaskModelRejected(res);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects even a listed model when the catalog is not available", async () => {
+      const app = await createApp(memberActor);
+      const unavailable: Array<[string, () => Promise<Response>]> = [
+        // Current provider not authenticated, though the id is listed.
+        ["auth_failed", async () => Response.json({
+          provider: "openai",
+          providers: [{ slug: "openai", authenticated: false, models: ["hermes-task-model"] }],
+        })],
+        ["auth_failed", async () => new Response("denied", { status: 401 })],
+        ["unsupported", async () => new Response("missing", { status: 404 })],
+        ["unreachable", async () => { throw new TypeError("connect ECONNREFUSED"); }],
+        ["invalid_response", async () => new Response("not json", { status: 200 })],
+      ];
+
+      for (const [status, respond] of unavailable) {
+        gatewayFetch.mockImplementationOnce(respond);
+        const res = await patchTaskModel(app, "hermes-task-model");
+        expectTaskModelRejected(res);
+        expect(res.body.error).toContain(`could not be verified (${status})`);
+      }
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects when the agent's saved key cannot be resolved, without calling the gateway", async () => {
+      mockSecretService.resolveAdapterConfigForRuntime.mockRejectedValue(
+        Object.assign(new Error("Secret is not bound to agent at apiKey"), { status: 422 }),
+      );
+      const app = await createApp(memberActor);
+
+      const res = await patchTaskModel(app, "hermes-task-model");
+
+      expectTaskModelRejected(res);
+      expect(res.body.error).not.toContain("Secret is not bound");
+      expect(gatewayFetch).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("never reuses a catalog answer across requests", async () => {
+      const app = await createApp(memberActor);
+
+      expect((await patchTaskModel(app, "hermes-task-model")).status).toBe(200);
+      gatewayCatalog = {
+        provider: "openai",
+        providers: [{ slug: "openai", authenticated: true, models: ["hermes-other-model"] }],
+      };
+      const res = await patchTaskModel(app, "hermes-task-model");
+
+      expectTaskModelRejected(res);
+      expect(gatewayFetch).toHaveBeenCalledTimes(2);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("does no credential resolution or catalog fetch for non-Hermes assignees or model-less overrides", async () => {
+      const app = await createApp(memberActor);
+
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: claudeAgent.id }));
+      expect((await patchTaskModel(app, "any-claude-model")).status).toBe(200);
+
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: hermesAgent.id }));
+      expect((await request(app)
+        .patch("/api/issues/issue-1")
+        .send({ assigneeAdapterOverrides: { useProjectWorkspace: true } })).status).toBe(200);
+
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        assigneeAgentId: hermesAgent.id,
+        assigneeAdapterOverrides: { adapterConfig: { model: "retired-model" } },
+      }));
+      expect((await request(app).patch("/api/issues/issue-1").send({ title: "Renamed" })).status).toBe(200);
+
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(gatewayFetch).not.toHaveBeenCalled();
+    });
+
+    it("denies an unauthorized assignment before resolving the key or fetching models", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
+      mockAgentService.resolveByReference.mockResolvedValue({ agent: hermesAgent, ambiguous: false });
+      mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => (
+        action === "tasks:assign"
+          ? { allowed: false, action, reason: "deny_test", explanation: "Denied by test mock." }
+          : { allowed: true, action, reason: "allow_test", explanation: "Allowed by test mock." }
+      ));
+      const app = await createApp(memberActor);
+
+      const res = await request(app)
+        .patch("/api/issues/issue-1")
+        .send({
+          assigneeAgentId: hermesAgent.id,
+          assigneeAdapterOverrides: { adapterConfig: { model: "retired-model" } },
+        });
+
+      expect(res.status).toBe(403);
+      expect(JSON.stringify(res.body)).not.toContain("issue_task_model_unsupported");
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(gatewayFetch).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects assigning a Hermes agent to an issue that keeps an unsupported saved model", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        assigneeAgentId: claudeAgent.id,
+        assigneeAdapterOverrides: { adapterConfig: { model: "retired-model" } },
+      }));
+      mockAgentService.resolveByReference.mockResolvedValue({ agent: hermesAgent, ambiguous: false });
+      const app = await createApp(memberActor);
+
+      const res = await request(app)
+        .patch("/api/issues/issue-1")
+        .send({ assigneeAgentId: hermesAgent.id });
+
+      expectTaskModelRejected(res);
+      expect(gatewayFetch).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects creating a Hermes-assigned issue with an unsupported model", async () => {
+      mockAgentService.resolveByReference.mockResolvedValue({ agent: hermesAgent, ambiguous: false });
+      const app = await createApp(memberActor);
+
+      const res = await request(app)
+        .post("/api/companies/company-1/issues")
+        .send({
+          title: "Unsupported model",
+          status: "todo",
+          assigneeAgentId: hermesAgent.id,
+          assigneeAdapterOverrides: { adapterConfig: { model: "retired-model" } },
+        });
+
+      expectTaskModelRejected(res);
+      expect(mockIssueService.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe("child issue routes", () => {
     beforeEach(() => {
       mockIssueService.getById.mockResolvedValue(makeIssue());
@@ -626,6 +870,76 @@ describe("issue assignee adapter override credential guard", () => {
           ],
         }),
       );
+    });
+
+    it("rejects creating a Hermes-assigned child with an unsupported model", async () => {
+      const app = await createApp(memberActor);
+
+      const res = await request(app)
+        .post("/api/issues/issue-1/children")
+        .send({
+          title: "Unsupported child",
+          status: "todo",
+          assigneeAgentId: hermesAgent.id,
+          assigneeAdapterOverrides: { adapterConfig: { model: "other-provider-model" } },
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details?.code).toBe("issue_task_model_unsupported");
+      expect(JSON.stringify(res.body)).not.toContain(resolvedHermesKey);
+      expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    });
+
+    it("persists no child when one accepted-plan child has an unsupported model", async () => {
+      const app = await createApp(memberActor);
+
+      const res = await request(app)
+        .post("/api/issues/issue-1/accepted-plan-decompositions")
+        .send({
+          acceptedPlanRevisionId: "55555555-5555-4555-8555-555555555555",
+          children: [
+            {
+              title: "Supported child",
+              status: "todo",
+              assigneeAgentId: hermesAgent.id,
+              assigneeAdapterOverrides: { adapterConfig: { model: "hermes-task-model" } },
+            },
+            {
+              title: "Unsupported child",
+              status: "todo",
+              assigneeAgentId: hermesAgent.id,
+              assigneeAdapterOverrides: { adapterConfig: { model: "retired-model" } },
+            },
+          ],
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details?.code).toBe("issue_task_model_unsupported");
+      expect(JSON.stringify(res.body)).not.toContain(resolvedHermesKey);
+      expect(mockIssueService.decomposeAcceptedPlan).not.toHaveBeenCalled();
+      expect(mockIssueService.createChild).not.toHaveBeenCalled();
+      expect(mockIssueService.create).not.toHaveBeenCalled();
+      // Both children share one request-local catalog fetch.
+      expect(gatewayFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("fetches one catalog per Hermes assignee for a decomposition of supported children", async () => {
+      const app = await createApp(memberActor);
+      const children = ["hermes-task-model", "hermes-other-model", "hermes-task-model"].map((model, index) => ({
+        title: `Hermes child ${index}`,
+        status: "todo",
+        assigneeAgentId: hermesAgent.id,
+        assigneeAdapterOverrides: { adapterConfig: { model } },
+      }));
+
+      const res = await request(app)
+        .post("/api/issues/issue-1/accepted-plan-decompositions")
+        .send({ acceptedPlanRevisionId: "55555555-5555-4555-8555-555555555555", children });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.resolveAdapterConfigForRuntime).toHaveBeenCalledTimes(1);
+      expect(gatewayFetch).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.decomposeAcceptedPlan).toHaveBeenCalledTimes(1);
     });
   });
 });

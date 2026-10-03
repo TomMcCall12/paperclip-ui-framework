@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { issueAssigneeOverrideRejectionReason } from "../services/issue-assignee-override-guard.js";
+import {
+  issueAssigneeOverrideRejectionReason,
+  issueTaskModelToVerify,
+  issueTaskModelUnsupportedReason,
+} from "../services/issue-assignee-override-guard.js";
 
 describe("issueAssigneeOverrideRejectionReason", () => {
   it("allows only a non-empty string model for Hermes gateway", () => {
@@ -33,5 +37,34 @@ describe("issueAssigneeOverrideRejectionReason", () => {
     expect(issueAssigneeOverrideRejectionReason("claude_local", { adapterConfig: { chrome: true, effort: "high" } })).toBeNull();
     expect(issueAssigneeOverrideRejectionReason("hermes_local", { adapterConfig: { model: "m", provider: "p" } })).toBeNull();
     expect(issueAssigneeOverrideRejectionReason(null, { adapterConfig: { apiBaseUrl: "x" } })).toBeNull();
+  });
+});
+
+describe("issueTaskModelToVerify", () => {
+  it("returns the Hermes task model only", () => {
+    expect(issueTaskModelToVerify("hermes_gateway", { adapterConfig: { model: "m" } })).toBe("m");
+    expect(issueTaskModelToVerify("hermes_gateway", { useProjectWorkspace: true })).toBeNull();
+    expect(issueTaskModelToVerify("hermes_gateway", { adapterConfig: {} })).toBeNull();
+    expect(issueTaskModelToVerify("hermes_gateway", null)).toBeNull();
+    expect(issueTaskModelToVerify("claude_local", { adapterConfig: { model: "m" } })).toBeNull();
+    expect(issueTaskModelToVerify("hermes_local", { adapterConfig: { model: "m" } })).toBeNull();
+    expect(issueTaskModelToVerify(null, { adapterConfig: { model: "m" } })).toBeNull();
+  });
+});
+
+describe("issueTaskModelUnsupportedReason", () => {
+  const models = [{ id: "listed" }];
+
+  it("accepts only an exact id from an available list", () => {
+    expect(issueTaskModelUnsupportedReason({ status: "available", models }, "listed")).toBeNull();
+    expect(issueTaskModelUnsupportedReason({ status: "available", models }, "LISTED")).toMatch(/is not offered/);
+    expect(issueTaskModelUnsupportedReason({ status: "available", models }, " listed")).toMatch(/is not offered/);
+  });
+
+  it("rejects a listed id when the list is not available, including unverified", () => {
+    for (const status of ["unverified", "auth_failed", "unreachable", "unsupported", "misconfigured", "invalid_response"]) {
+      expect(issueTaskModelUnsupportedReason({ status, models }, "listed")).toContain(`could not be verified (${status})`);
+    }
+    expect(issueTaskModelUnsupportedReason(null, "listed")).toMatch(/could not be verified\./);
   });
 });
