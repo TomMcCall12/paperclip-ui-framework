@@ -124,11 +124,7 @@ import {
 } from "../adapters/index.js";
 import {
   DEFAULT_MODEL_CONTROL_ADAPTER_TYPES,
-  hermesConfigBorrowsStoredSecret,
-  hermesConfigUsesStoredSecret,
-  hermesCredentialRebindReason,
-  hermesTokenAliasHoldsStoredSecret,
-  HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE,
+  hermesAgentKeyViolation,
   resolveAgentModelOptions,
   unsupportedDefaultModelReason,
 } from "../services/agent-model-options.js";
@@ -2487,30 +2483,35 @@ export function agentRoutes(
     );
   }
 
-  // A new Hermes gateway has no saved key to reuse. Resolving or binding an
-  // existing company secret would send it to a gateway it was never saved for.
-  // Call after authorization and before any secret is normalized or persisted.
+  // A new Hermes gateway has no saved key to reuse, and a saved one may keep
+  // only its own key at the gateway it was saved for. Call after
+  // authorization and before any secret is normalized, resolved or persisted.
   function assertNewHermesGatewayHasNoStoredSecret(
     adapterType: string,
     adapterConfig: Record<string, unknown>,
     message: string,
   ) {
-    if (!hermesConfigUsesStoredSecret(adapterType, adapterConfig)) return;
-    throw unprocessable(message, { code: "hermes_gateway_unbound_secret_ref" });
+    const violation = hermesAgentKeyViolation({
+      existing: null,
+      nextAdapterType: adapterType,
+      nextConfig: adapterConfig,
+      newAgentMessage: message,
+    });
+    if (violation) throw unprocessable(violation.message, { code: violation.code });
   }
 
-  // A saved Hermes gateway may keep only a stored secret its own saved Hermes
-  // config already names as its key. Call after authorization and before any
-  // secret is normalized, resolved, or persisted.
-  function assertSavedHermesGatewayOwnsStoredSecret(input: Parameters<typeof hermesConfigBorrowsStoredSecret>[0]) {
-    if (hermesTokenAliasHoldsStoredSecret(input.nextAdapterType, input.nextConfig)) {
-      throw unprocessable(HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE, { code: "hermes_gateway_unbound_secret_ref" });
-    }
-    if (!hermesConfigBorrowsStoredSecret(input)) return;
-    throw unprocessable(
-      "This Hermes gateway can only use the stored key saved for it. Enter the gateway API key instead.",
-      { code: "hermes_gateway_unbound_secret_ref" },
-    );
+  function assertSavedHermesGatewayKeyAllowed(input: {
+    existingAdapterType: string;
+    existingConfig: Record<string, unknown>;
+    nextAdapterType: string;
+    nextConfig: Record<string, unknown>;
+  }) {
+    const violation = hermesAgentKeyViolation({
+      existing: { adapterType: input.existingAdapterType, adapterConfig: input.existingConfig },
+      nextAdapterType: input.nextAdapterType,
+      nextConfig: input.nextConfig,
+    });
+    if (violation) throw unprocessable(violation.message, { code: violation.code });
   }
 
   function generateEd25519PrivateKeyPem(): string {
@@ -3504,11 +3505,7 @@ export function agentRoutes(
           nextAdapterType: type,
           nextConfig: adapterConfigForTest,
         };
-        const credentialRebindReason = hermesCredentialRebindReason(hermesCredentialInput);
-        if (credentialRebindReason) {
-          throw unprocessable(credentialRebindReason, { code: "hermes_gateway_credential_rebind_required" });
-        }
-        assertSavedHermesGatewayOwnsStoredSecret(hermesCredentialInput);
+        assertSavedHermesGatewayKeyAllowed(hermesCredentialInput);
       }
       if (!savedAgent) {
         assertNewHermesGatewayHasNoStoredSecret(
@@ -5442,11 +5439,7 @@ export function agentRoutes(
         nextAdapterType: requestedAdapterType,
         nextConfig: rawEffectiveAdapterConfig,
       };
-      const credentialRebindReason = hermesCredentialRebindReason(hermesCredentialInput);
-      if (credentialRebindReason) {
-        throw unprocessable(credentialRebindReason, { code: "hermes_gateway_credential_rebind_required" });
-      }
-      assertSavedHermesGatewayOwnsStoredSecret(hermesCredentialInput);
+      assertSavedHermesGatewayKeyAllowed(hermesCredentialInput);
       const effectiveAdapterConfig = applyCodexLocalKeyIsolation(
         existing.companyId,
         existing.id,

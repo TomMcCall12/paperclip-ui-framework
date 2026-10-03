@@ -1188,6 +1188,28 @@ describeEmbeddedPostgres("secretService", () => {
     expect(secret?.status).toBe("active");
   });
 
+  it("stores a Hermes gateway token alias as a managed secret and resolves it at runtime", async () => {
+    // The adapter reads `token` as an alias of `apiKey`, so it is a schema
+    // secret field too: never kept as plaintext config, and resolved at run.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const tokenValue = `plain-token-${randomUUID()}`;
+
+    const normalized = await svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      { apiBaseUrl: "https://gateway.example.test", token: tokenValue },
+      { adapterType: "hermes_gateway" },
+    ) as Record<string, unknown>;
+    const tokenBinding = normalized.token as { type: string; secretId: string };
+    expect(tokenBinding.type).toBe("secret_ref");
+    expect(JSON.stringify(normalized)).not.toContain(tokenValue);
+
+    const resolved = await svc.resolveAdapterConfigForRuntime(companyId, normalized, undefined, {
+      adapterType: "hermes_gateway",
+    });
+    expect(resolved.config.token).toBe(tokenValue);
+  });
+
   it("validates the access namespace as agent-only with env-style aliases", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

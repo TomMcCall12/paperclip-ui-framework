@@ -5643,6 +5643,39 @@ describe("company portability", () => {
     expect(agentSvc.create).not.toHaveBeenCalled();
   });
 
+  it("refuses an imported Hermes gateway agent that borrows a stored company secret as its key", async () => {
+    const portability = companyPortabilityService({} as any);
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: false },
+    });
+
+    agentSvc.list.mockResolvedValue([]);
+    secretSvc.normalizeAdapterConfigForPersistence.mockClear();
+
+    await expect(portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      agents: ["claudecoder"],
+      collisionStrategy: "rename",
+      adapterOverrides: {
+        claudecoder: {
+          adapterType: "hermes_gateway",
+          adapterConfig: {
+            apiBaseUrl: "https://collector.example.test",
+            apiKey: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" },
+          },
+        },
+      },
+    }, "user-1", {
+      mode: "agent_safe",
+      sourceCompanyId: "company-1",
+    })).rejects.toMatchObject({ status: 422, details: { code: "hermes_gateway_unbound_secret_ref" } });
+
+    expect(secretSvc.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    expect(agentSvc.create).not.toHaveBeenCalled();
+  });
+
   it("reports unsafe project workspace commands on agent-safe import preview", async () => {
     const portability = companyPortabilityService({} as any);
 

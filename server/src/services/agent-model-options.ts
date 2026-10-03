@@ -143,17 +143,48 @@ export function hermesConfigUsesStoredSecret(adapterType: string, config: Record
   return HERMES_CREDENTIAL_KEYS.some((key) => storedSecretRefId(config[key]) !== undefined);
 }
 
-/**
- * True when a Hermes gateway config puts a stored company secret under the
- * `token` alias. Only `apiKey` is a schema secret field, so such a reference is
- * never resolved and the gateway would run without its key. Inspects shape only.
- */
-export function hermesTokenAliasHoldsStoredSecret(adapterType: string, config: Record<string, unknown>): boolean {
-  return adapterType === "hermes_gateway" && storedSecretRefId(config.token) !== undefined;
-}
+export type HermesKeyViolation = {
+  code: "hermes_gateway_unbound_secret_ref" | "hermes_gateway_credential_rebind_required";
+  message: string;
+};
 
-export const HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE =
-  "A stored Hermes gateway API key must be saved as apiKey, not token.";
+export const HERMES_NEW_AGENT_STORED_SECRET_MESSAGE =
+  "A new Hermes gateway agent cannot use a stored secret. Enter the gateway API key instead.";
+const HERMES_BORROWED_SECRET_MESSAGE =
+  "This Hermes gateway can only use the stored key saved for it. Enter the gateway API key instead.";
+
+/**
+ * The one Hermes key rule every agent writer applies: routes, hire approvals,
+ * plugin-managed agents and company import. `existing` is null for a new
+ * agent, which may hold no stored secret as its key. A saved agent may keep
+ * only its own key, and only at the gateway and transport it was saved for.
+ * Inspects shape only; runs before any secret is normalized, resolved or sent.
+ */
+export function hermesAgentKeyViolation(input: {
+  existing: { adapterType: string; adapterConfig: unknown } | null;
+  nextAdapterType: string;
+  nextConfig: Record<string, unknown>;
+  newAgentMessage?: string;
+}): HermesKeyViolation | null {
+  if (input.nextAdapterType !== "hermes_gateway") return null;
+  if (!input.existing) {
+    return hermesConfigUsesStoredSecret(input.nextAdapterType, input.nextConfig)
+      ? { code: "hermes_gateway_unbound_secret_ref", message: input.newAgentMessage ?? HERMES_NEW_AGENT_STORED_SECRET_MESSAGE }
+      : null;
+  }
+  const credentialInput = {
+    existingAdapterType: input.existing.adapterType,
+    existingConfig: plainRecord(input.existing.adapterConfig) ?? {},
+    nextAdapterType: input.nextAdapterType,
+    nextConfig: input.nextConfig,
+  };
+  const rebindReason = hermesCredentialRebindReason(credentialInput);
+  if (rebindReason) return { code: "hermes_gateway_credential_rebind_required", message: rebindReason };
+  if (hermesConfigBorrowsStoredSecret(credentialInput)) {
+    return { code: "hermes_gateway_unbound_secret_ref", message: HERMES_BORROWED_SECRET_MESSAGE };
+  }
+  return null;
+}
 
 /**
  * A saved Hermes agent may only name, as its gateway key, a stored company
@@ -183,10 +214,7 @@ export function hermesConfigBorrowsStoredSecret(input: {
   });
 }
 
-export type HermesHireApprovalViolation = {
-  code: "hermes_gateway_unbound_secret_ref" | "hermes_gateway_credential_rebind_required";
-  message: string;
-};
+export type HermesHireApprovalViolation = HermesKeyViolation;
 
 /** The agent a hire approval payload names, as stored. */
 export type HermesHireApprovalTarget = {
@@ -310,25 +338,11 @@ export function hermesHireApprovalViolation(input: {
       : null;
   }
 
-  const existingConfig = plainRecord(target.adapterConfig) ?? {};
-  const credentialInput = {
-    existingAdapterType: target.adapterType,
-    existingConfig,
+  return hermesAgentKeyViolation({
+    existing: target,
     nextAdapterType: payloadAdapterType ?? target.adapterType,
-    nextConfig: payloadConfig ?? existingConfig,
-  };
-  const rebindReason = hermesCredentialRebindReason(credentialInput);
-  if (rebindReason) return { code: "hermes_gateway_credential_rebind_required", message: rebindReason };
-  if (hermesTokenAliasHoldsStoredSecret(credentialInput.nextAdapterType, credentialInput.nextConfig)) {
-    return { code: "hermes_gateway_unbound_secret_ref", message: HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE };
-  }
-  if (hermesConfigBorrowsStoredSecret(credentialInput)) {
-    return {
-      code: "hermes_gateway_unbound_secret_ref",
-      message: "This Hermes gateway can only use the stored key saved for it. Enter the gateway API key instead.",
-    };
-  }
-  return null;
+    nextConfig: payloadConfig ?? plainRecord(target.adapterConfig) ?? {},
+  });
 }
 
 /** Returns why `model` cannot be saved as this agent's default, or null when it is supported. */

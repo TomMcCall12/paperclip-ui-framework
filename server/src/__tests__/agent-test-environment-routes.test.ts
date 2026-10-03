@@ -586,16 +586,14 @@ describe("agent test-environment route", () => {
         expectNoSecretUseOrProbe();
       });
 
-      it("rejects the saved reference under the token alias, which is never resolved", async () => {
+      it("tests the saved reference under the other key alias at the saved gateway", async () => {
         saveAgent({ apiBaseUrl: savedUrl, apiKey: savedRef });
         const app = await createApp();
         const res = await request(app)
           .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
           .send({ agentId, adapterConfig: { apiBaseUrl: savedUrl, token: savedRef } });
-        expect(res.status).toBe(422);
-        expect(res.body.details).toEqual({ code: "hermes_gateway_unbound_secret_ref" });
-        expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
-        expect(testEnvironmentSpy).not.toHaveBeenCalled();
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
       });
 
       it("tests a fresh plain key at the saved gateway", async () => {

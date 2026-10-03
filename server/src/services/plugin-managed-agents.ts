@@ -15,13 +15,7 @@ import type {
 import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
-import {
-  HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE,
-  hermesConfigBorrowsStoredSecret,
-  hermesConfigUsesStoredSecret,
-  hermesCredentialRebindReason,
-  hermesTokenAliasHoldsStoredSecret,
-} from "./agent-model-options.js";
+import { hermesAgentKeyViolation } from "./agent-model-options.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 
@@ -113,39 +107,20 @@ function selectPreferredAdapterType(
 
 /**
  * A plugin declares a managed agent's adapter config, and these writers call
- * the agent service directly, so they apply the same Hermes key rules as the
- * agent routes: a new gateway agent holds no stored secret, and a reset may
- * keep only the agent's own key, under apiKey, at the gateway it was saved for.
+ * the agent service directly, so they apply the same Hermes key rule as the
+ * agent routes.
  */
 function assertManagedHermesConfigAllowed(input: {
   existing: { adapterType: string; adapterConfig: unknown } | null;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
 }) {
-  if (input.adapterType !== "hermes_gateway") return;
-  const fail = (message: string, code: string) => {
-    throw unprocessable(message, { code });
-  };
-  if (hermesTokenAliasHoldsStoredSecret(input.adapterType, input.adapterConfig)) {
-    fail(HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE, "hermes_gateway_unbound_secret_ref");
-  }
-  if (!input.existing) {
-    if (hermesConfigUsesStoredSecret(input.adapterType, input.adapterConfig)) {
-      fail("A new plugin-managed Hermes gateway agent cannot use a stored secret as its key.", "hermes_gateway_unbound_secret_ref");
-    }
-    return;
-  }
-  const credentialInput = {
-    existingAdapterType: input.existing.adapterType,
-    existingConfig: (input.existing.adapterConfig ?? {}) as Record<string, unknown>,
+  const violation = hermesAgentKeyViolation({
+    existing: input.existing,
     nextAdapterType: input.adapterType,
     nextConfig: input.adapterConfig,
-  };
-  const rebindReason = hermesCredentialRebindReason(credentialInput);
-  if (rebindReason) fail(rebindReason, "hermes_gateway_credential_rebind_required");
-  if (hermesConfigBorrowsStoredSecret(credentialInput)) {
-    fail("This Hermes gateway can only use the stored key saved for it.", "hermes_gateway_unbound_secret_ref");
-  }
+  });
+  if (violation) throw unprocessable(violation.message, { code: violation.code });
 }
 
 function declarationPatch(declaration: PluginManagedAgentDeclaration, input: { adapterType?: string } = {}) {

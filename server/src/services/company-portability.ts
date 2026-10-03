@@ -112,6 +112,7 @@ import {
 } from "./native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { issueAssigneeOverrideRejectionReason } from "./issue-assignee-override-guard.js";
+import { hermesAgentKeyViolation } from "./agent-model-options.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
@@ -5586,10 +5587,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ? { ...adapterOverride.adapterConfig }
             : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
 
+          // Import writes agents through the agent service, so it applies the
+          // same Hermes key rule as the agent routes before any secret is
+          // normalized: a new gateway agent holds no stored secret, and an
+          // updated one keeps only its own key at its own gateway.
+          const importedAdapterType = adapterOverride?.adapterType ?? manifestAgent.adapterType;
+          const hermesKeyViolation = hermesAgentKeyViolation({
+            existing: planAgent.action === "update" && planAgent.existingAgentId
+              ? existingAgents.find((agent) => agent.id === planAgent.existingAgentId) ?? null
+              : null,
+            nextAdapterType: importedAdapterType,
+            nextConfig: baseAdapterConfig,
+            newAgentMessage: `Imported Hermes gateway agent ${planAgent.slug} cannot use a stored secret. `
+              + "Enter its gateway API key instead.",
+          });
+          if (hermesKeyViolation) {
+            throw unprocessable(hermesKeyViolation.message, { code: hermesKeyViolation.code });
+          }
+
           const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
           const normalizedAdapter = await prepareImportedAgentAdapter(
             targetCompany.id,
-            adapterOverride?.adapterType ?? manifestAgent.adapterType,
+            importedAdapterType,
             baseAdapterConfig,
             desiredSkills,
             mode,
