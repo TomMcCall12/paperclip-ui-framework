@@ -10699,7 +10699,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  it("skips an unassigned blocker whose saved overrides its Hermes creator cannot run, and keeps sweeping", async () => {
+  it("assigns an orphan blocker to its Hermes creator and leaves disallowed overrides to the dispatch check", async () => {
     const companyId = randomUUID();
     const hermesCreatorId = randomUUID();
     const codexCreatorId = randomUUID();
@@ -10765,24 +10765,30 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
-    expect(result.issueIds).toContain(safeBlockerId);
-    expect(result.issueIds).not.toContain(unsafeBlockerId);
+    // The sweep no longer fails or silently skips: both blockers are assigned,
+    // and the run on the unsafe one is stopped before any secret is resolved.
+    expect(result.issueIds).toEqual(expect.arrayContaining([safeBlockerId, unsafeBlockerId]));
     const rows = await db
       .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
       .from(issues)
       .where(inArray(issues.id, [unsafeBlockerId, safeBlockerId]));
     expect(Object.fromEntries(rows.map((row) => [row.id, row.assigneeAgentId]))).toEqual({
-      [unsafeBlockerId]: null,
+      [unsafeBlockerId]: hermesCreatorId,
       [safeBlockerId]: codexCreatorId,
     });
 
     const wakeups = await db
-      .select({ runId: agentWakeupRequests.runId })
+      .select({ agentId: agentWakeupRequests.agentId, runId: agentWakeupRequests.runId })
       .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.agentId, codexCreatorId));
+      .where(inArray(agentWakeupRequests.agentId, [hermesCreatorId, codexCreatorId]));
     for (const wakeup of wakeups) {
       if (wakeup.runId) await waitForRunToSettle(heartbeat, wakeup.runId);
     }
+    const hermesRunId = wakeups.find((wakeup) => wakeup.agentId === hermesCreatorId)?.runId;
+    expect(hermesRunId).toBeTruthy();
+    const hermesRun = await heartbeat.getRun(hermesRunId!);
+    expect(hermesRun).toMatchObject({ status: "failed", errorCode: "configuration_incomplete" });
+    expect((hermesRun?.resultJson as any)?.configurationIncomplete?.reason).toBe("issue_assignee_override_not_allowed");
   });
 
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {

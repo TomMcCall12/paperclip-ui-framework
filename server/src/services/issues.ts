@@ -6553,16 +6553,19 @@ async function countBlockedInboxIssues(
  * obey the same rule as the issue routes. The heartbeat still re-checks before
  * any secret is resolved.
  */
-async function assertIssueAssigneeOverridesAllowed(
+async function assertIssueOverrideKeysAllowed(
   dbOrTx: Pick<Db, "select">,
+  companyId: string,
   assigneeAgentId: string | null | undefined,
   overrides: unknown,
 ) {
   if (!assigneeAgentId || overrides === null || overrides === undefined) return;
+  // Company-scoped, so an agent id from another company reveals nothing; the
+  // assignability check reports it.
   const assignee = await dbOrTx
     .select({ adapterType: agents.adapterType })
     .from(agents)
-    .where(eq(agents.id, assigneeAgentId))
+    .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
   const reason = issueAssigneeOverrideRejectionReason(assignee?.adapterType, overrides);
   if (reason) throw unprocessable(reason, { code: ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE });
@@ -9763,8 +9766,9 @@ export function issueService(db: Db) {
         await assertAssignableAgent(db, companyId, data.assigneeAgentId, {
           kind: "work",
         });
-        await assertIssueAssigneeOverridesAllowed(
+        await assertIssueOverrideKeysAllowed(
           dbOrTx,
+          companyId,
           data.assigneeAgentId,
           issueData.assigneeAdapterOverrides,
         );
@@ -10576,7 +10580,7 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
-      options: { bindRuntimeSharedWorkspace?: boolean } = {},
+      options: { bindRuntimeSharedWorkspace?: boolean; deferOverrideCheckToDispatch?: boolean } = {},
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications =
@@ -10621,12 +10625,18 @@ export function issueService(db: Db) {
         companyGuard,
         ...issueData
       } = data;
+      // Only a real change to the pair is checked, matching the issue routes.
+      // System reassignments may defer to the dispatch-time check, which
+      // blocks the issue with a notice instead of failing the caller's flow.
       if (
-        issueData.assigneeAgentId !== undefined ||
-        issueData.assigneeAdapterOverrides !== undefined
+        !options.deferOverrideCheckToDispatch &&
+        ((issueData.assigneeAgentId !== undefined &&
+          issueData.assigneeAgentId !== existing.assigneeAgentId) ||
+          issueData.assigneeAdapterOverrides !== undefined)
       ) {
-        await assertIssueAssigneeOverridesAllowed(
+        await assertIssueOverrideKeysAllowed(
           dbOrTx,
+          existing.companyId,
           issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId,
           issueData.assigneeAdapterOverrides !== undefined
             ? issueData.assigneeAdapterOverrides
@@ -11363,6 +11373,7 @@ export function issueService(db: Db) {
       const issueCompany = await db
         .select({
           companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
           assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
         })
         .from(issues)
@@ -11373,12 +11384,17 @@ export function issueService(db: Db) {
         kind: "work",
       });
       // Checkout can take an unassigned issue, so the overrides it already
-      // carries must be safe for the agent taking it.
-      await assertIssueAssigneeOverridesAllowed(
-        db,
-        agentId,
-        issueCompany.assigneeAdapterOverrides,
-      );
+      // carries must be safe for the agent taking it. An assigned issue was
+      // checked when its pair was written, and checkout by anyone else stays
+      // a 409 conflict.
+      if (issueCompany.assigneeAgentId === null) {
+        await assertIssueOverrideKeysAllowed(
+          db,
+          issueCompany.companyId,
+          agentId,
+          issueCompany.assigneeAdapterOverrides,
+        );
+      }
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(

@@ -113,6 +113,26 @@ suite("heartbeat issue assignee override guard", () => {
     expect(resolvedAdapterConfigs.slice(resolvedBefore)).toHaveLength(0);
   }, 25_000);
 
+  it("blocks a persisted unsafe override on an assignment wake (auto-checkout) as configuration_incomplete", async () => {
+    const { agentId, issueId } = await seedHermesIssue({ adapterConfig: { apiBaseUrl: "https://attacker.example" } });
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect({ status: latest?.status, errorCode: latest?.errorCode }).toEqual({ status: "failed", errorCode: "configuration_incomplete" });
+    }, { timeout: 15_000 });
+    const latest = await heartbeat.getRun(run!.id);
+    expect((latest?.resultJson as any)?.configurationIncomplete?.reason).toBe("issue_assignee_override_not_allowed");
+    expect(JSON.stringify(latest)).not.toContain(SAVED_HERMES_KEY);
+    expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(0);
+  }, 25_000);
+
   it("still runs a Hermes task whose override only picks the model", async () => {
     const { agentId, issueId } = await seedHermesIssue({ adapterConfig: { model: "hermes-task-model" } });
     const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });

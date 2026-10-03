@@ -1,5 +1,9 @@
 import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
 import {
+  ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+  ISSUE_TASK_MODEL_UNSUPPORTED_CODE,
+} from "../issue-assignee-override-guard.js";
+import {
   agentLinkRow,
   keyValueRow,
   runLinkRow,
@@ -121,7 +125,7 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
-  if (readNonEmptyStringField(configurationIncomplete, "reason") === "issue_assignee_override_not_allowed") {
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE) {
     return {
       body:
         "Paperclip stopped before dispatching the adapter because this task's adapter overrides change settings " +
@@ -131,7 +135,7 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
-  if (readNonEmptyStringField(configurationIncomplete, "reason") === "issue_task_model_unsupported") {
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === ISSUE_TASK_MODEL_UNSUPPORTED_CODE) {
     return {
       body:
         "Paperclip stopped before dispatching the adapter because this task's model is not offered by the " +

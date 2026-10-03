@@ -660,6 +660,45 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       expect((await persistedIssue(issue.id))?.assigneeAdapterOverrides).toBeNull();
     });
 
+    it("lets a write that restates an unchanged assignee through on a legacy unsafe pair", async () => {
+      const { companyId, hermesId } = await seedHermesAndCodex();
+      const issueId = randomUUID();
+      // Written straight to the row, as a record saved before the write guard.
+      await db.insert(issues).values({
+        id: issueId, companyId, title: "Legacy", status: "todo", priority: "medium",
+        assigneeAgentId: hermesId, assigneeAdapterOverrides: UNSAFE_OVERRIDES,
+      });
+      const updated = await svc.update(issueId, { status: "cancelled", assigneeAgentId: hermesId });
+      expect(updated?.status).toBe("cancelled");
+    });
+
+    it("keeps checkout of another agent's issue a 409 conflict, whatever its overrides", async () => {
+      const { companyId, hermesId, codexId } = await seedHermesAndCodex();
+      const issue = await svc.create(companyId, {
+        title: "Codex owns this",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: codexId,
+        assigneeAdapterOverrides: UNSAFE_OVERRIDES,
+      });
+      await expect(svc.checkout(issue.id, hermesId, ["todo"], null)).rejects.toMatchObject({ status: 409 });
+    });
+
+    it("defers the check to dispatch when a system reassignment asks it to", async () => {
+      const { companyId, hermesId, codexId } = await seedHermesAndCodex();
+      const issue = await svc.create(companyId, {
+        title: "System handoff",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: codexId,
+        assigneeAdapterOverrides: UNSAFE_OVERRIDES,
+      });
+      const updated = await svc.update(issue.id, { assigneeAgentId: hermesId }, undefined, undefined, undefined, {
+        deferOverrideCheckToDispatch: true,
+      });
+      expect(updated?.assigneeAgentId).toBe(hermesId);
+    });
+
     it("rejects checkout by a Hermes agent of an unassigned issue carrying unsafe overrides", async () => {
       const { companyId, hermesId } = await seedHermesAndCodex();
       const issue = await svc.create(companyId, {

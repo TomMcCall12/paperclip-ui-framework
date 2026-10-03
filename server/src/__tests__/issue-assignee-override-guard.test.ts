@@ -50,6 +50,10 @@ describe("issueTaskModelToVerify", () => {
     expect(issueTaskModelToVerify("hermes_local", { adapterConfig: { model: "m" } })).toBeNull();
     expect(issueTaskModelToVerify(null, { adapterConfig: { model: "m" } })).toBeNull();
   });
+
+  it("returns the trimmed model, as the adapter sends it", () => {
+    expect(issueTaskModelToVerify("hermes_gateway", { adapterConfig: { model: " gpt-6.1-sol " } })).toBe("gpt-6.1-sol");
+  });
 });
 
 describe("issueTaskModelUnsupportedReason", () => {

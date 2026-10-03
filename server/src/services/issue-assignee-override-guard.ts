@@ -69,7 +69,8 @@ export function issueTaskModelToVerify(
   if (!adapterType || !CATALOG_CHECKED_TASK_MODEL_ADAPTER_TYPES.has(adapterType)) return null;
   if (!isRecord(overrides) || !isRecord(overrides.adapterConfig)) return null;
   const model = overrides.adapterConfig.model;
-  return typeof model === "string" && model.trim().length > 0 ? model : null;
+  // The adapter trims the model it sends, so compare the trimmed id.
+  return typeof model === "string" && model.trim().length > 0 ? model.trim() : null;
 }
 
 /**

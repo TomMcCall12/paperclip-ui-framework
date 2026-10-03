@@ -6981,6 +6981,25 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
   );
 }
 
+// Checkout rejects an unassigned issue whose saved overrides this agent's
+// adapter may not run. Surface it like the dispatch-time override check, so
+// the issue is blocked with its notice rather than failing setup.
+function checkoutOverrideRejection(
+  error: unknown,
+  issueId: string,
+  agentId: string,
+): ConfigurationIncompleteFailure | null {
+  if (
+    !(error instanceof HttpError) ||
+    (error.details as { code?: unknown } | undefined)?.code !== ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE
+  ) {
+    return null;
+  }
+  return new ConfigurationIncompleteFailure(error.message, {
+    configurationIncomplete: { reason: ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE, issueId, agentId },
+  });
+}
+
 function isCheckoutConflictError(error: unknown): boolean {
   return (
     error instanceof HttpError &&
@@ -20318,6 +20337,8 @@ export function heartbeatService(
           );
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
         } catch (error) {
+          const overrideRejection = checkoutOverrideRejection(error, issueId, agent.id);
+          if (overrideRejection) throw overrideRejection;
           if (!isCheckoutConflictError(error)) throw error;
           const staleness = await runDispatch.cancelStaleQueuedRun({
             runId: run.id,
@@ -20355,6 +20376,8 @@ export function heartbeatService(
           );
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
         } catch (error) {
+          const overrideRejection = checkoutOverrideRejection(error, issueId, agent.id);
+          if (overrideRejection) throw overrideRejection;
           if (!isCheckoutConflictError(error)) throw error;
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
         }
@@ -21305,7 +21328,15 @@ export function heartbeatService(
       const dispatchTaskModel = issueTaskModelToVerify(agent.adapterType, issueAssigneeOverrides);
       if (dispatchTaskModel) {
         const taskModelOptions = await resolveAgentModelOptions(agent.adapterType, resolvedConfig, null)
-          .catch(() => null);
+          .catch((err: unknown) => {
+            // Gateway failures come back as statuses; a throw here is
+            // unexpected, so log its type without the resolved config.
+            logger.warn(
+              { runId: run.id, agentId: agent.id, errorName: err instanceof Error ? err.name : typeof err },
+              "Task model verification failed unexpectedly; blocking dispatch",
+            );
+            return null;
+          });
         const taskModelRejection = issueTaskModelUnsupportedReason(taskModelOptions, dispatchTaskModel);
         if (taskModelRejection) {
           throw new ConfigurationIncompleteFailure(taskModelRejection, {

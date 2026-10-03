@@ -68,8 +68,11 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
-import { HttpError, forbidden, notFound } from "../../errors.js";
-import { ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE } from "../issue-assignee-override-guard.js";
+import { forbidden, notFound } from "../../errors.js";
+import {
+  ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+  ISSUE_TASK_MODEL_UNSUPPORTED_CODE,
+} from "../issue-assignee-override-guard.js";
 import { logger } from "../../middleware/logger.js";
 import {
   isPidAlive,
@@ -2166,20 +2169,17 @@ export function recoveryService(
 
       const relations = await issuesSvc.getRelationSummaries(candidate.id);
       const blockingLinks = formatIssueLinksForComment(relations.blocks);
-      // Saved task overrides that the creator's adapter cannot run make the
-      // reassignment fail; leave that blocker for a person and keep sweeping.
-      const updated = await issuesSvc.update(candidate.id, {
-        assigneeAgentId: creatorAgent.id,
-        assigneeUserId: null,
-      }).catch((error: unknown) => {
-        if (
-          error instanceof HttpError &&
-          (error.details as { code?: unknown } | undefined)?.code === ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE
-        ) {
-          return null;
-        }
-        throw error;
-      });
+      // Saved task overrides the creator's adapter cannot run are left to the
+      // dispatch-time check, which blocks the blocker with a visible notice
+      // for an operator instead of failing this sweep.
+      const updated = await issuesSvc.update(
+        candidate.id,
+        { assigneeAgentId: creatorAgent.id, assigneeUserId: null },
+        undefined,
+        undefined,
+        undefined,
+        { deferOverrideCheckToDispatch: true },
+      );
       if (!updated) {
         skipped += 1;
         continue;
@@ -2562,6 +2562,10 @@ export function recoveryService(
                               ?.pluginStatus,
                           ) ?? "error",
                         )}, then explicitly retry the original owner or reassign.`
+                      : readConfigurationIncompletePayload(input.latestRun)?.reason === ISSUE_TASK_MODEL_UNSUPPORTED_CODE
+                      ? "Board operator: pick a task model the assignee's gateway lists, clear the task model, or check the gateway, then explicitly retry or reassign."
+                      : readConfigurationIncompletePayload(input.latestRun)?.reason === ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE
+                      ? "Board operator: clear or reduce the task's adapter overrides to what the assignee allows, then explicitly retry or reassign."
                       : "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
                     : recoveryCause === "execution_review_participant_recovery"
                       ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
