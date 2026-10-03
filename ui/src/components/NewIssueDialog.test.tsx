@@ -711,7 +711,9 @@ describe("NewIssueDialog", () => {
     });
     const submitButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create Task"));
     await waitForAssertion(() => expect(submitButton?.hasAttribute("disabled")).toBe(false));
-    await act(async () => submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     await flush();
     expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ assigneeAgentId: "agent-hermes", assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-terra" } } }));
     act(() => root.unmount());
