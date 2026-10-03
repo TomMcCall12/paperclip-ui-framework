@@ -16,6 +16,23 @@ vi.mock("../adapters/index.js", () => ({
   findActiveServerAdapter: () => ({ type: "hermes_gateway", execute, supportsLocalAgentJwt: false }),
   runningProcesses: new Map(),
 }));
+const modelOptions = vi.hoisted(() => ({
+  current: { status: "available", models: [{ id: "hermes-task-model" }] } as
+    | { status: string; models: Array<{ id: string }> }
+    | Error,
+  gatewayConfigs: [] as Array<Record<string, unknown>>,
+}));
+vi.mock("../services/agent-model-options.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-model-options.js")>();
+  return {
+    ...actual,
+    resolveAgentModelOptions: async (_adapterType: string, runtimeConfig: Record<string, unknown>) => {
+      modelOptions.gatewayConfigs.push(runtimeConfig);
+      if (modelOptions.current instanceof Error) throw modelOptions.current;
+      return modelOptions.current;
+    },
+  };
+});
 vi.mock("../services/secrets.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/secrets.js")>();
   return {
@@ -63,6 +80,7 @@ suite("heartbeat issue assignee override guard", () => {
   }, 240_000);
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    modelOptions.current = { status: "available", models: [{ id: "hermes-task-model" }] };
   });
 
   async function seedHermesIssue(assigneeAdapterOverrides: Record<string, unknown>) {
@@ -104,5 +122,35 @@ suite("heartbeat issue assignee override guard", () => {
     const calls = execute.mock.calls.filter(([input]) => input.runId === run!.id);
     expect(calls).toHaveLength(1);
     expect(calls[0]![0].config).toMatchObject({ apiBaseUrl: "https://hermes.internal", model: "hermes-task-model" });
+    // The catalog check asked the agent's own gateway, not anywhere else.
+    expect(modelOptions.gatewayConfigs.at(-1)).toMatchObject({ apiBaseUrl: "https://hermes.internal" });
+  }, 25_000);
+
+  async function expectTaskModelRejected(override: string, message: RegExp) {
+    const { agentId, issueId } = await seedHermesIssue({ adapterConfig: { model: override } });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect({ status: latest?.status, errorCode: latest?.errorCode }).toEqual({ status: "failed", errorCode: "configuration_incomplete" });
+    }, { timeout: 15_000 });
+    const latest = await heartbeat.getRun(run!.id);
+    expect(latest?.error).toMatch(message);
+    expect(JSON.stringify(latest)).not.toContain(SAVED_HERMES_KEY);
+    expect((latest?.resultJson as any)?.configurationIncomplete?.reason).toBe("issue_task_model_unsupported");
+    expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(0);
+  }
+
+  it("blocks a saved task model the gateway's current provider does not offer before dispatch", async () => {
+    await expectTaskModelRejected("other-provider/model", /not offered by the assignee's Hermes gateway/);
+  }, 25_000);
+
+  it("blocks a saved task model when the gateway model list cannot be verified", async () => {
+    modelOptions.current = { status: "invalid_response", models: [{ id: "hermes-task-model" }] };
+    await expectTaskModelRejected("hermes-task-model", /could not be verified \(invalid_response\)/);
+  }, 25_000);
+
+  it("blocks a saved task model when the gateway model list request fails", async () => {
+    modelOptions.current = new Error("gateway unreachable at https://hermes.internal");
+    await expectTaskModelRejected("hermes-task-model", /could not be verified\./);
   }, 25_000);
 });

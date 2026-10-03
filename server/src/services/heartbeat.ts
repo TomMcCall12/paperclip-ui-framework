@@ -5,8 +5,12 @@ import { settleSlackConversation } from "./slack-conversation-lifecycle.js";
 import { publicChatTaskUrl } from "./chat-task-url.js";
 import {
   ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+  ISSUE_TASK_MODEL_UNSUPPORTED_CODE,
   issueAssigneeOverrideRejectionReason,
+  issueTaskModelToVerify,
+  issueTaskModelUnsupportedReason,
 } from "./issue-assignee-override-guard.js";
+import { resolveAgentModelOptions } from "./agent-model-options.js";
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
@@ -21293,6 +21297,26 @@ export function heartbeatService(
           secretsSvc,
           trustPreset,
         });
+      // A saved task model may predate the write-time check, or the gateway's
+      // current provider may have changed since. The overrides are model-only
+      // here, so the resolved config still points at the agent's own gateway
+      // with its own key; ask that gateway before any request carries the
+      // task model, and fail closed when the list cannot be verified.
+      const dispatchTaskModel = issueTaskModelToVerify(agent.adapterType, issueAssigneeOverrides);
+      if (dispatchTaskModel) {
+        const taskModelOptions = await resolveAgentModelOptions(agent.adapterType, resolvedConfig, null)
+          .catch(() => null);
+        const taskModelRejection = issueTaskModelUnsupportedReason(taskModelOptions, dispatchTaskModel);
+        if (taskModelRejection) {
+          throw new ConfigurationIncompleteFailure(taskModelRejection, {
+            configurationIncomplete: {
+              reason: ISSUE_TASK_MODEL_UNSUPPORTED_CODE,
+              issueId,
+              agentId: agent.id,
+            },
+          });
+        }
+      }
       if (aiBinding) {
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
