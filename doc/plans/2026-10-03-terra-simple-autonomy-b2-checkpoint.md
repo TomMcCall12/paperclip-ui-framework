@@ -3,7 +3,7 @@
 **3 October 2026, afternoon session.** This continues step 1 of [[(C) Simple Autonomy Status — 2026-10-03]] and follows [[(C) Simple Autonomy B1 Candidate Checkpoint]]. Telegram remains out of scope. **Nothing was deployed, pushed, migrated or restarted.** The live Lab is still on `e6f2e353…` and was not touched.
 
 ## Candidate state
-- Worktree `/media/External SSD/paperclip/isolated-candidates/terra-simple-autonomy`, branch `feat/terra-simple-autonomy`, now **clean at the tip of `feat/terra-simple-autonomy`**: code last changed in `782562d` ("apply Hermes key rules to plugin-managed agents"), on top of `575d57d`.
+- Worktree `/media/External SSD/paperclip/isolated-candidates/terra-simple-autonomy`, branch `feat/terra-simple-autonomy`, now **clean at the tip of `feat/terra-simple-autonomy`**: code last changed in `b9648d1` ("harden hire approval reads, rejects and activation"), on top of `575d57d`.
 - The eight-file uncommitted approvals draft was inspected, tested and committed — it is no longer a loose draft.
 
 ## New commits (oldest first)
@@ -52,6 +52,33 @@
 - I self-reviewed the commits the first review never saw (`f735788`, `c405755`, `de43372`). This is **not independent**. It found no defect in the approval binding: the resubmit race is covered by the conditional update. Issue approval linking does not create payloads, and the built-in and plugin-managed hire approvals bind to the agent they just created.
 - **Residual found and closed:** plugin-managed agents (`plugin-managed-agents.ts`) are created and reset through the service, so the route guards never ran on plugin-declared Hermes configs. Create now refuses a stored-secret key, and reset may keep only the agent's own key at its own gateway, never under `token`. Two new tests were added; the suite passes 15/15.
 
+## Independent review of `575d57d..782562d` (3 October, evening)
+Eight separate reviewer agents ran over the range, each covering one angle: line-by-line, removed behaviour, cross-file tracing, language pitfalls, wrappers and transactions, design altitude, reuse, efficiency. The transaction and lock design of approve, and the savepoint use, were cleared. Confirmed findings, all fixed in three commits:
+
+- `6d19073` — **Company import / teams-catalog install bypassed every Hermes key rule.** A same-company CEO agent could import a Hermes agent that pointed an existing stored secret at its own URL. Import now applies the rule before normalisation. The rule is now one helper, `hermesAgentKeyViolation`, used by every agent writer: routes, hire approvals, plugin-managed agents and import. Previously it was hand-copied in three places, already drifting. `token` is now a schema secret field, stored managed and resolved at runtime, instead of being rejected at each writer; that rejection had locked legacy agents out of UI edits.
+- `f7f4a6e` — **Issue guards narrowed to real changes.**
+  - Checkout checks only unassigned issues. A checkout of another agent's issue is a 409 again. An override 422 inside heartbeat auto-checkout now blocks the issue as `configuration_incomplete` with its notice, instead of a generic `setup_failed`.
+  - `update()` checks only a real change. Before, it broke confirmation accept and reject on legacy rows.
+  - The agent lookup is company-scoped.
+  - The orphan-blocker sweep assigns and defers to the dispatch check, which blocks with a visible notice. Before, it was silently skipped on every sweep.
+  - Recovery next-action text names the real cause.
+  - Task models are trimmed before comparison.
+  - Unexpected verification errors are logged.
+- `b9648d1` — **Approval hardening.**
+  - Runner tools `list_approvals`/`get_approval`/`get_approval_context` now redact payloads. A typed gateway key in a hire approval was readable by any runner agent.
+  - A non-UUID legacy `agentId` returns 422, not a Postgres 500.
+  - Reject also terminates a hire paused while pending.
+  - Activation restores redaction placeholders from the pending agent's own saved values. Before, the placeholder was either refused, leaving the approval stuck open, or written into the live config; the test proves this against the pre-fix code.
+
+Checks: server `tsc` clean. **1237 passed / 1 skipped across 31 suites**, covering every changed area plus teams-catalog, hire, issue-thread interactions and secret bindings. Each new regression test targets one finding. One `heartbeat-process-recovery` test ("does not reap active adapter executions…") failed once under the full parallel load and passed twice alone. It is timing-sensitive and unrelated.
+
+**Recorded, not changed:**
+- The dispatch model-list call is uncached: one extra request per run, which is lighter than any redesign.
+- Concurrent writes can race the write-time guard; the dispatch check is the backstop.
+- Activation applies the payload's `reportsTo`/`defaultEnvironmentId` without manager or environment checks. This predates the branch.
+- Switching an agent onto Hermes does not re-check its issues; the dispatch check catches it.
+- Some duplicated helpers remain: the model-options parse branches, and the payload adapter-type derivation.
+
 ## Still open (cannot be done from this session)
-1. **Independent review of `782562d`** (range `575d57d..782562d`) by a separate reviewer.
+1. Independent review of the three review-fix commits (`86e2e34..b9648d1`). The range up to `782562d` has been reviewed (see above).
 2. **Real-team acceptance (step 4)** and **release (step 5)** need the host: either an image built from the candidate run beside or in place of the live container, or board credentials for a staging instance. This disposable container has neither host access nor board credentials, and it must not restart the live service. A smoke against a *restored copy of the live database* also needs host access to the backups.
