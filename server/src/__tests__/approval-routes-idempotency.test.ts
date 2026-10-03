@@ -578,7 +578,8 @@ describe("generic hire approval Hermes credential binding", () => {
     code:
       | "hermes_gateway_unbound_secret_ref"
       | "hermes_gateway_credential_rebind_required"
-      | "hire_approval_agent_not_pending",
+      | "hire_approval_agent_not_pending"
+      | "hire_approval_agent_mismatch",
   ) {
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(res.body.details).toEqual({ code });
@@ -589,51 +590,78 @@ describe("generic hire approval Hermes credential binding", () => {
     expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).not.toHaveBeenCalled();
   }
 
-  for (const alias of ["apiKey", "token"] as const) {
-    it(`rejects a generic create that borrows another company secret as the ${alias}`, async () => {
-      const res = await createHire(hermesPayload({}, { apiKey: undefined, [alias]: secretRef(FOREIGN_SECRET_ID) }));
-      expectRejected(res, "hermes_gateway_unbound_secret_ref");
+  function existingApprovalPayload(payload: Record<string, unknown>) {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-hermes",
+      companyId: COMPANY_ID,
+      type: "hire_agent",
+      status: "revision_requested",
+      payload,
+      requestedByAgentId: "agent-1",
+    });
+  }
+
+  // Only the agent hire flow creates an approval bound to an agent; a generic
+  // create cannot point one at any agent, pending or not, Hermes or not.
+  for (const [label, payload] of [
+    ["Hermes own-key", hermesPayload()],
+    ["non-Hermes", { name: "Process Agent", adapterType: "process", agentId: PENDING_AGENT_ID }],
+    ["adapter-type-omitted", { name: "No Type", agentId: PENDING_AGENT_ID }],
+  ] as const) {
+    it(`rejects a generic ${label} create that names an agent before any agent lookup`, async () => {
+      const res = await createHire(payload);
+      expectRejected(res, "hire_approval_agent_mismatch");
+      expect(mockApprovalService.assertHireApprovalPayload).not.toHaveBeenCalled();
       expect(mockApprovalService.create).not.toHaveBeenCalled();
     });
+  }
 
+  it("rejects a resubmit that points the approval at a different agent", async () => {
+    const res = await resubmitHire(hermesPayload({ agentId: "agent-other-pending" }));
+    expectRejected(res, "hire_approval_agent_mismatch");
+    expect(mockApprovalService.assertHireApprovalPayload).not.toHaveBeenCalled();
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a resubmit that drops the approval's agent", async () => {
+    const res = await resubmitHire(hermesPayload({ agentId: undefined }, { apiKey: "synthetic-plain-key" }));
+    expectRejected(res, "hire_approval_agent_mismatch");
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  for (const alias of ["apiKey", "token"] as const) {
     it(`rejects a generic resubmit that borrows another company secret as the ${alias}`, async () => {
       const res = await resubmitHire(hermesPayload({}, { apiKey: undefined, [alias]: secretRef(FOREIGN_SECRET_ID) }));
       expectRejected(res, "hermes_gateway_unbound_secret_ref");
       expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
     });
 
-    it(`rejects a generic create that sends the saved ${alias} to a new gateway URL`, async () => {
+    it(`rejects a generic resubmit that sends the saved ${alias} to a new gateway URL`, async () => {
       agentFixtures.set(PENDING_AGENT_ID, {
         companyId: COMPANY_ID,
         status: "pending_approval",
         adapterType: "hermes_gateway",
         adapterConfig: { apiBaseUrl: SAVED_URL, [alias]: secretRef(OWN_SECRET_ID) },
       });
-      const res = await createHire(
+      const res = await resubmitHire(
         hermesPayload({}, { apiKey: undefined, apiBaseUrl: ATTACKER_URL, [alias]: secretRef(OWN_SECRET_ID) }),
       );
       expectRejected(res, "hermes_gateway_credential_rebind_required");
-      expect(mockApprovalService.create).not.toHaveBeenCalled();
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
     });
   }
 
-  it("rejects a generic resubmit that sends the saved key to a new gateway URL", async () => {
-    const res = await resubmitHire(hermesPayload({}, { apiBaseUrl: ATTACKER_URL }));
+  it("rejects a generic resubmit that switches the plain-HTTP transport for the saved key", async () => {
+    const res = await resubmitHire(hermesPayload({}, { dangerouslyAllowInsecureRemoteHttp: true }));
     expectRejected(res, "hermes_gateway_credential_rebind_required");
     expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
   });
 
-  it("rejects a generic create that switches the plain-HTTP transport for the saved key", async () => {
-    const res = await createHire(hermesPayload({}, { dangerouslyAllowInsecureRemoteHttp: true }));
-    expectRejected(res, "hermes_gateway_credential_rebind_required");
-    expect(mockApprovalService.create).not.toHaveBeenCalled();
-  });
-
-  it("accepts the pending agent's own saved key for the same gateway", async () => {
+  it("accepts a resubmit that keeps the own saved key for the same gateway", async () => {
     const payload = hermesPayload();
-    const res = await createHire(payload);
+    const res = await resubmitHire(payload);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockApprovalService.assertHireApprovalPayload).toHaveBeenCalledWith(
       COMPANY_ID,
       payload,
@@ -644,18 +672,12 @@ describe("generic hire approval Hermes credential binding", () => {
       payload,
       { strictMode: false },
     );
-    expect(mockApprovalService.create).toHaveBeenCalledTimes(1);
-  });
-
-  it("accepts a resubmit that keeps the own saved key for the same gateway", async () => {
-    const res = await resubmitHire(hermesPayload());
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockApprovalService.resubmit).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts a new plain key typed for a new gateway URL on the pending agent", async () => {
-    const res = await createHire(hermesPayload({}, { apiBaseUrl: ATTACKER_URL, apiKey: "synthetic-new-key" }));
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
+  it("accepts a resubmit with a new plain key typed for a new gateway URL on the pending agent", async () => {
+    const res = await resubmitHire(hermesPayload({}, { apiBaseUrl: ATTACKER_URL, apiKey: "synthetic-new-key" }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
   });
 
   for (const [label, payload] of [
@@ -670,6 +692,8 @@ describe("generic hire approval Hermes credential binding", () => {
       expect(createRes.body.error).toContain("agent-hires");
       expect(mockApprovalService.create).not.toHaveBeenCalled();
 
+      // An old approval that names no agent stays bound to none.
+      existingApprovalPayload({ name: "Legacy", adapterType: "process" });
       const resubmitRes = await resubmitHire(payload);
       expectRejected(resubmitRes, "hermes_gateway_unbound_secret_ref");
       expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
@@ -705,13 +729,9 @@ describe("generic hire approval Hermes credential binding", () => {
 
   for (const [targetLabel, target] of TARGET_CASES) {
     for (const [payloadLabel, makePayload] of TARGET_PAYLOADS) {
-      it(`rejects a ${payloadLabel} hire approval that names ${targetLabel}`, async () => {
+      it(`rejects a ${payloadLabel} hire approval resubmit whose agent is ${targetLabel}`, async () => {
         if (target) agentFixtures.set(PENDING_AGENT_ID, { ...target, adapterConfig: { ...target.adapterConfig } });
         else agentFixtures.delete(PENDING_AGENT_ID);
-
-        const createRes = await createHire(makePayload());
-        expectRejected(createRes, "hire_approval_agent_not_pending");
-        expect(mockApprovalService.create).not.toHaveBeenCalled();
 
         const resubmitRes = await resubmitHire(makePayload());
         expectRejected(resubmitRes, "hire_approval_agent_not_pending");
@@ -722,24 +742,24 @@ describe("generic hire approval Hermes credential binding", () => {
 
   it("answers a missing agent and another company's agent identically", async () => {
     agentFixtures.delete(PENDING_AGENT_ID);
-    const missing = await createHire(hermesPayload());
+    const missing = await resubmitHire(hermesPayload());
     agentFixtures.set(PENDING_AGENT_ID, { ...TARGET_CASES[1][1], adapterConfig: {} });
-    const foreign = await createHire(hermesPayload());
+    const foreign = await resubmitHire(hermesPayload());
 
     expect(missing.status).toBe(422);
     expect(foreign.status).toBe(missing.status);
     expect(foreign.body).toEqual(missing.body);
   });
 
-  it("accepts a non-Hermes hire approval for this company's pending agent", async () => {
+  it("accepts a non-Hermes hire approval resubmit for this company's pending agent", async () => {
     agentFixtures.set(PENDING_AGENT_ID, {
       companyId: COMPANY_ID,
       status: "pending_approval",
       adapterType: "process",
       adapterConfig: { command: "echo ok" },
     });
-    const res = await createHire({ name: "Process Agent", adapterType: "process", agentId: PENDING_AGENT_ID });
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const res = await resubmitHire({ name: "Process Agent", adapterType: "process", agentId: PENDING_AGENT_ID });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
   });
 
   it("leaves non-Hermes generic hire approvals unchanged", async () => {

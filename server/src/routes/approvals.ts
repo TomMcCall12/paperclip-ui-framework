@@ -23,6 +23,11 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
+import {
+  hireApprovalAgentBindingViolation,
+  hireApprovalPayloadAgentId,
+} from "../services/agent-model-options.js";
+import { unprocessable } from "../errors.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -38,6 +43,11 @@ function isStatusOnlyRecoveryContext(contextSnapshot: unknown) {
     context.allowDeliverableWork === false &&
     context.allowDocumentUpdates === false &&
     context.resumeRequiresNormalModel === true;
+}
+
+function assertHireApprovalAgentBinding(payload: Record<string, unknown>, boundAgentId: string | null) {
+  const violation = hireApprovalAgentBindingViolation(payload, boundAgentId);
+  if (violation) throw unprocessable(violation.message, { code: violation.code });
 }
 
 export function approvalRoutes(
@@ -231,6 +241,7 @@ export function approvalRoutes(
     const uniqueIssueIds = Array.from(new Set(issueIds));
     const { issueIds: _issueIds, ...approvalInput } = req.body;
     if (approvalInput.type === "hire_agent") {
+      assertHireApprovalAgentBinding(approvalInput.payload, null);
       await svc.assertHireApprovalPayload(companyId, approvalInput.payload, { requireAgentHire: true });
     }
     const normalizedPayload =
@@ -476,6 +487,10 @@ export function approvalRoutes(
     }
 
     if (req.body.payload && existing.type === "hire_agent") {
+      assertHireApprovalAgentBinding(
+        req.body.payload,
+        hireApprovalPayloadAgentId(existing.payload as Record<string, unknown>),
+      );
       await svc.assertHireApprovalPayload(existing.companyId, req.body.payload, { requireAgentHire: true });
     }
     const normalizedPayload = req.body.payload

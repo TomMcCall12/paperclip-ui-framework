@@ -213,6 +213,25 @@ export type HireApprovalTargetViolation = {
 };
 
 /**
+ * A requester may not point a hire approval at a pending agent it was not
+ * created for. `boundAgentId` is null for a new generic approval, since only
+ * the agent hire flow creates one bound to an agent, and the approval's own
+ * agent on resubmit. Names no agent in its message.
+ */
+export function hireApprovalAgentBindingViolation(
+  payload: Record<string, unknown>,
+  boundAgentId: string | null,
+): { code: "hire_approval_agent_mismatch"; message: string } | null {
+  if (hireApprovalPayloadAgentId(payload) === boundAgentId) return null;
+  return {
+    code: "hire_approval_agent_mismatch",
+    message: boundAgentId === null
+      ? "A hire approval cannot name an existing agent. Request the hire through the agent hire flow instead."
+      : "A resubmitted hire approval must keep the agent it was created for.",
+  };
+}
+
+/**
  * A hire approval that names an agent may only activate a pending agent of the
  * approval's own company, whatever its adapter. A missing agent and another
  * company's agent get the same answer, and the message names neither.
