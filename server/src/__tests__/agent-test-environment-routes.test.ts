@@ -515,6 +515,39 @@ describe("agent test-environment route", () => {
       expect(JSON.stringify(res.body)).not.toContain("hermes_gateway_credential_rebind_required");
       expectNoSecretUseOrProbe();
     });
+
+    it.each([
+      { name: "apiKey", draft: { apiBaseUrl: draftUrl, apiKey: savedRef } },
+      { name: "token alias", draft: { url: draftUrl, token: savedRef } },
+    ])("rejects a company secret_ref $name on a new gateway test before resolving or sending it", async ({ draft }) => {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ adapterConfig: draft });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details).toEqual({ code: "hermes_gateway_unbound_secret_ref" });
+      expect(JSON.stringify(res.body)).not.toContain(savedRef.secretId);
+      expectNoSecretUseOrProbe();
+    });
+
+    it("rejects a company secret_ref on a new gateway test even with a probe key", async () => {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ adapterConfig: { apiBaseUrl: draftUrl, token: savedRef }, testCredentials: { API_SERVER_KEY: "fresh-probe-key" } });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details).toEqual({ code: "hermes_gateway_unbound_secret_ref" });
+      expectNoSecretUseOrProbe();
+    });
+
+    it("tests a new gateway with a fresh plain apiKey and no agent", async () => {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ adapterConfig: { apiBaseUrl: draftUrl, apiKey: "fresh-plain-key" } });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+    });
   });
 
   // The managed-adoption verdict, all three ways. An api_key account is

@@ -3478,6 +3478,16 @@ export function agentRoutes(
           throw unprocessable(credentialRebindReason, { code: "hermes_gateway_credential_rebind_required" });
         }
       }
+      // A new gateway has no saved key to reuse. Resolving an existing company
+      // secret here would send it to a gateway it was never saved for.
+      if (!savedAgent && type === "hermes_gateway" && ["apiKey", "token"].some(
+        (key) => asRecord(adapterConfigForTest[key])?.type === "secret_ref",
+      )) {
+        throw unprocessable(
+          "Testing a new Hermes gateway cannot use a stored secret. Enter the gateway API key instead.",
+          { code: "hermes_gateway_unbound_secret_ref" },
+        );
+      }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         adapterConfigForTest,
