@@ -77,13 +77,9 @@ import {
   READ_CHAT_ATTACHMENT_TOOL_NAME,
   type NativeChatAttachmentReadScope,
 } from "./chat-attachment-read.js";
-import { redactEventPayload } from "../../redaction.js";
-
 // Approval payloads can hold a typed key until the hire is activated; agents
 // see them redacted, as the HTTP approval routes return them.
-function redactedApproval<T extends { payload: unknown }>(approval: T): T {
-  return { ...approval, payload: redactEventPayload(approval.payload as Record<string, unknown>) ?? {} };
-}
+import { redactApprovalPayload as redactedApproval } from "../../redaction.js";
 
 const IMPLEMENTED_OPERATIONS = new Set([
   "search_api", "call_api", "hire_agent",

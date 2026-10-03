@@ -5264,6 +5264,32 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           { code: "paperclip_runner_rollout_disabled" },
         );
       }
+
+      // Check every imported agent against the Hermes key rule before any row
+      // is written, so a refused key cannot leave a partial import behind.
+      // The apply loop checks again against the agents it actually writes.
+      const updatesExisting = plan.preview.plan.agentPlans.some(
+        (entry) => entry.action === "update" && entry.existingAgentId,
+      );
+      const preflightExistingAgents = updatesExisting && input.target.mode === "existing_company"
+        ? await agents.list(input.target.companyId)
+        : [];
+      for (const planAgent of plan.preview.plan.agentPlans) {
+        if (planAgent.action === "skip") continue;
+        const manifestAgent = plan.selectedAgents.find((agent) => agent.slug === planAgent.slug);
+        if (!manifestAgent) continue;
+        const adapterOverride = input.adapterOverrides?.[planAgent.slug];
+        const violation = hermesAgentKeyViolation({
+          existing: planAgent.action === "update" && planAgent.existingAgentId
+            ? preflightExistingAgents.find((agent) => agent.id === planAgent.existingAgentId) ?? null
+            : null,
+          nextAdapterType: adapterOverride?.adapterType ?? manifestAgent.adapterType,
+          nextConfig: (adapterOverride?.adapterConfig ?? manifestAgent.adapterConfig ?? {}) as Record<string, unknown>,
+          newAgentMessage: `Imported Hermes gateway agent ${planAgent.slug} cannot use a stored secret. `
+            + "Enter its gateway API key instead.",
+        });
+        if (violation) throw unprocessable(violation.message, { code: violation.code });
+      }
     }
 
     // Content-addressed blobs double as the bundle's tamper seal. Verify every

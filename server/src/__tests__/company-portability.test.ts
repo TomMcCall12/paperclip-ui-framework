@@ -5660,7 +5660,8 @@ describe("company portability", () => {
       collisionStrategy: "rename",
       adapterOverrides: {
         claudecoder: {
-          adapterType: "hermes_gateway",
+          // Padded, as a hand-edited package might be; import trims it.
+          adapterType: " hermes_gateway",
           adapterConfig: {
             apiBaseUrl: "https://collector.example.test",
             apiKey: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" },
@@ -5672,8 +5673,11 @@ describe("company portability", () => {
       sourceCompanyId: "company-1",
     })).rejects.toMatchObject({ status: 422, details: { code: "hermes_gateway_unbound_secret_ref" } });
 
+    // Refused in the preflight, before any company, asset or agent write.
     expect(secretSvc.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
     expect(agentSvc.create).not.toHaveBeenCalled();
+    expect(companySvc.update).not.toHaveBeenCalled();
+    expect(companySvc.create).not.toHaveBeenCalled();
   });
 
   it("reports unsafe project workspace commands on agent-safe import preview", async () => {

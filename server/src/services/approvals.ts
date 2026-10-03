@@ -300,9 +300,9 @@ export function approvalService(db: Db) {
       if (applied && updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = hireApprovalPayloadAgentId(payload);
-        // Only this company's hire that never became active is withdrawn: a
-        // pending agent, or one paused while pending. A payload naming any
-        // other agent must not terminate it.
+        // Only this company's pending hire is withdrawn; a payload naming any
+        // other agent, including a live paused one, must not terminate it.
+        // A pending hire cannot be paused, so it is still pending here.
         const target = payloadAgentId && isUuidLike(payloadAgentId)
           ? await db
             .select({ companyId: agents.companyId, status: agents.status })
@@ -313,7 +313,7 @@ export function approvalService(db: Db) {
         if (
           payloadAgentId &&
           target?.companyId === updated.companyId &&
-          (target.status === "pending_approval" || target.status === "paused")
+          target.status === "pending_approval"
         ) {
           await agentsSvc.terminate(payloadAgentId);
         }

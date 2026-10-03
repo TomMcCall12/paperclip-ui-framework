@@ -1001,3 +1001,8 @@ export function redactSensitiveText(input: string): string {
     REDACTED_EVENT_VALUE,
   );
 }
+
+/** An approval as agents and board readers see it: its payload redacted. */
+export function redactApprovalPayload<T extends { payload: unknown }>(approval: T): T {
+  return { ...approval, payload: redactEventPayload(approval.payload as Record<string, unknown> | null) ?? {} };
+}

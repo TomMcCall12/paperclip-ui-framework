@@ -340,7 +340,7 @@ describe("approvalService resolution idempotency", () => {
       expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
     });
 
-    it("terminates this company's pending hire that was paused before the rejection", async () => {
+    it("does not terminate a paused agent named by a rejected approval", async () => {
       const dbStub = createDbStub(
         [[createApproval("pending")]],
         [createApproval("rejected")],
@@ -349,7 +349,7 @@ describe("approvalService resolution idempotency", () => {
 
       await approvalService(dbStub.db as any).reject("approval-1", "board", null);
 
-      expect(mockAgentService.terminate).toHaveBeenCalledWith(PENDING_AGENT.id);
+      expect(mockAgentService.terminate).not.toHaveBeenCalled();
     });
 
     it("does not terminate an active agent named by a rejected approval", async () => {

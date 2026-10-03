@@ -191,36 +191,62 @@ function containsRedactedMarker(value: unknown): boolean {
 
 const UNRESTORABLE = Symbol("unrestorable");
 
-/**
- * The agent hire flow stores a redacted copy of the pending agent's config in
- * its approval payload. Before that payload is applied, put back each
- * redaction placeholder from the pending agent's own saved value at the same
- * place, replacing a whole nested object when only its saved form differs.
- * Returns UNRESTORABLE when a placeholder has no saved counterpart.
- */
+/** Deep equality for JSON values, ignoring object key order (jsonb reorders keys). */
+function jsonValueEqual(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((item, index) => jsonValueEqual(item, right[index]));
+  }
+  if (isPlainRecord(left) || isPlainRecord(right)) {
+    if (!isPlainRecord(left) || !isPlainRecord(right)) return false;
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length
+      && keys.every((key) => Object.hasOwn(right, key) && jsonValueEqual(left[key], right[key]));
+  }
+  return left === right;
+}
+
 function restoreRedactedFromSaved(next: unknown, saved: unknown): unknown {
   if (next === REDACTED_EVENT_VALUE) return saved === undefined ? UNRESTORABLE : saved;
   if (!containsRedactedMarker(next)) return next;
-  if (!isPlainRecord(next) || !isPlainRecord(saved)) return saved === undefined ? UNRESTORABLE : saved;
+  if (!isPlainRecord(next) || !isPlainRecord(saved)) return UNRESTORABLE;
   const restored: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(next)) {
     const entry = restoreRedactedFromSaved(value, saved[key]);
-    if (entry === UNRESTORABLE) return saved;
+    if (entry === UNRESTORABLE) return UNRESTORABLE;
     restored[key] = entry;
   }
   return restored;
 }
 
+/**
+ * The agent hire flow stores a redacted copy of the pending agent's config in
+ * its approval payload. A field whose placeholders, once filled from the
+ * pending agent's own saved values, reproduce that saved field exactly is the
+ * unchanged copy, so the saved value is applied. Any other field holding a
+ * placeholder (an edited payload, another adapter, another destination) is
+ * left as-is, so persistence refuses the placeholder: a saved secret is never
+ * carried into config the board did not see.
+ */
 function restoreRedactedApprovalPayload(
   payload: Record<string, unknown>,
-  saved: { adapterConfig: unknown; runtimeConfig: unknown; metadata: unknown },
+  saved: { adapterType: string; adapterConfig: unknown; runtimeConfig: unknown; metadata: unknown },
 ) {
   const restored = { ...payload };
+  const sameAdapter = typeof payload.adapterType !== "string" || payload.adapterType === saved.adapterType;
   for (const field of ["adapterConfig", "runtimeConfig", "metadata"] as const) {
-    if (!isPlainRecord(payload[field])) continue;
+    if (!sameAdapter || !containsRedactedMarker(payload[field])) continue;
     const value = restoreRedactedFromSaved(payload[field], saved[field]);
-    // Left as-is when unrestorable, so persistence still refuses the placeholder.
-    if (value !== UNRESTORABLE) restored[field] = value;
+    if (value !== UNRESTORABLE && jsonValueEqual(value, saved[field])) restored[field] = saved[field];
+  }
+  // Only env bindings refuse a placeholder at persistence, so refuse any left
+  // here explicitly rather than writing it into the agent's live config.
+  if ((["adapterConfig", "runtimeConfig", "metadata"] as const).some((field) => containsRedactedMarker(restored[field]))) {
+    throw unprocessable(
+      "This hire approval holds hidden values that no longer match the pending agent. "
+        + "Request revision and resubmit it with those values entered again.",
+      { code: "hire_approval_redacted_values" },
+    );
   }
   return restored;
 }
@@ -989,6 +1015,12 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
+      // A pending hire does not run, and pausing it would hide it from the
+      // hire decision: a rejected hire could then be resumed into an agent.
+      if (existing.status === "pending_approval") {
+        if (reason === "manual") throw conflict("Approve or reject the pending hire instead of pausing it");
+        return existing;
+      }
 
       const updated = await db
         .update(agents)

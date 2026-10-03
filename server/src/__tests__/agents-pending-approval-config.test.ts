@@ -256,15 +256,12 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
         permissions: {},
         lastHeartbeatAt: null,
       });
-      // The agent hire flow stores a redacted copy of the config in the payload.
+      // The agent hire flow stores a redacted copy of the saved config.
+      const savedConfig = (await agentRow(pending.id))?.adapterConfig as Record<string, unknown>;
       const approval = await seedApproval(companyId, {
         name: pending.name,
         adapterType: "hermes_gateway",
-        adapterConfig: {
-          apiBaseUrl: SAVED_URL,
-          apiKey: secretRef(ownSecretId),
-          headers: { "X-Trace": "***REDACTED***" },
-        },
+        adapterConfig: { ...savedConfig, headers: { "X-Trace": "***REDACTED***" } },
         agentId: pending.id,
       });
 
@@ -274,6 +271,57 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       const activated = await agentRow(pending.id);
       expect(activated?.status).toBe("idle");
       expect((activated?.adapterConfig as Record<string, any>).headers).toEqual({ "X-Trace": "synthetic-real-header" });
+    });
+
+    for (const [label, makePayloadConfig, adapterType] of [
+      [
+        "an edited destination",
+        (ownSecretId: string) => ({ apiBaseUrl: "https://collector.example.test/v1", apiKey: secretRef(ownSecretId), headers: { "X-Trace": "***REDACTED***" } }),
+        "hermes_gateway",
+      ],
+      [
+        "another adapter",
+        () => ({ url: "https://collector.example.test/v1", headers: { "X-Trace": "***REDACTED***" } }),
+        "http",
+      ],
+    ] as const) {
+      it(`never fills a redacted placeholder from the saved config into ${label}`, async () => {
+        const companyId = await seedCompany();
+        const ownSecretId = await seedSecret(companyId, "own");
+        const pending = await agentService(db).create(companyId, {
+          name: `Gateway ${randomUUID().slice(0, 6)}`,
+          role: "engineer",
+          adapterType: "hermes_gateway",
+          adapterConfig: { apiBaseUrl: SAVED_URL, apiKey: secretRef(ownSecretId), headers: { "X-Trace": "synthetic-real-header" } },
+          status: "pending_approval",
+          spentMonthlyCents: 0,
+          permissions: {},
+          lastHeartbeatAt: null,
+        });
+        const approval = await seedApproval(companyId, {
+          name: pending.name,
+          adapterType,
+          adapterConfig: makePayloadConfig(ownSecretId),
+          agentId: pending.id,
+        });
+
+        await expect(approvalService(db).approve(approval.id, "board-user", null)).rejects.toMatchObject({ status: 422 });
+
+        expect(await approvalStatus(approval.id)).toBe("pending");
+        const row = await agentRow(pending.id);
+        expect(row?.status).toBe("pending_approval");
+        expect(JSON.stringify(row?.adapterConfig)).not.toContain("collector.example.test");
+      });
+    }
+
+    it("refuses a manual pause of a pending hire", async () => {
+      const companyId = await seedCompany();
+      const ownSecretId = await seedSecret(companyId, "own");
+      const pending = await seedPendingHermes(companyId, ownSecretId);
+      await expect(agentService(db).pause(pending.id)).rejects.toMatchObject({ status: 409 });
+      expect((await agentRow(pending.id))?.status).toBe("pending_approval");
+      await agentService(db).pause(pending.id, "budget");
+      expect((await agentRow(pending.id))?.status).toBe("pending_approval");
     });
 
     for (const [label, makeConfig, code] of [

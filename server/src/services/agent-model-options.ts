@@ -166,16 +166,18 @@ export function hermesAgentKeyViolation(input: {
   nextConfig: Record<string, unknown>;
   newAgentMessage?: string;
 }): HermesKeyViolation | null {
-  if (input.nextAdapterType !== "hermes_gateway") return null;
+  // Writers trim adapter types before saving, so a padded type is the same adapter.
+  const nextAdapterType = input.nextAdapterType.trim();
+  if (nextAdapterType !== "hermes_gateway") return null;
   if (!input.existing) {
-    return hermesConfigUsesStoredSecret(input.nextAdapterType, input.nextConfig)
+    return hermesConfigUsesStoredSecret(nextAdapterType, input.nextConfig)
       ? { code: "hermes_gateway_unbound_secret_ref", message: input.newAgentMessage ?? HERMES_NEW_AGENT_STORED_SECRET_MESSAGE }
       : null;
   }
   const credentialInput = {
-    existingAdapterType: input.existing.adapterType,
+    existingAdapterType: input.existing.adapterType.trim(),
     existingConfig: plainRecord(input.existing.adapterConfig) ?? {},
-    nextAdapterType: input.nextAdapterType,
+    nextAdapterType,
     nextConfig: input.nextConfig,
   };
   const rebindReason = hermesCredentialRebindReason(credentialInput);
