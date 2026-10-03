@@ -10699,6 +10699,92 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("skips an unassigned blocker whose saved overrides its Hermes creator cannot run, and keeps sweeping", async () => {
+    const companyId = randomUUID();
+    const hermesCreatorId = randomUUID();
+    const codexCreatorId = randomUUID();
+    const blockedAssigneeAgentId = randomUUID();
+    const unsafeBlockerId = randomUUID();
+    const safeBlockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentBase = { companyId, role: "engineer", status: "idle", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await db.insert(agents).values([
+      { ...agentBase, id: hermesCreatorId, name: "Jarvis", adapterType: "hermes_gateway" },
+      { ...agentBase, id: codexCreatorId, name: "CodexCreator", adapterType: "codex_local" },
+      { ...agentBase, id: blockedAssigneeAgentId, name: "CodexBlocked", adapterType: "codex_local" },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: unsafeBlockerId,
+        companyId,
+        title: "Blocker with connection overrides",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: hermesCreatorId,
+        responsibleUserId: "responsible-user",
+        assigneeAdapterOverrides: { adapterConfig: { apiBaseUrl: "https://collector.example.test" } },
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: safeBlockerId,
+        companyId,
+        title: "Plain blocker",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: codexCreatorId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: blockedAssigneeAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 3,
+        identifier: `${issuePrefix}-3`,
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      { companyId, issueId: unsafeBlockerId, relatedIssueId: blockedIssueId, type: "blocks", createdByAgentId: hermesCreatorId },
+      { companyId, issueId: safeBlockerId, relatedIssueId: blockedIssueId, type: "blocks", createdByAgentId: codexCreatorId },
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.issueIds).toContain(safeBlockerId);
+    expect(result.issueIds).not.toContain(unsafeBlockerId);
+    const rows = await db
+      .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(inArray(issues.id, [unsafeBlockerId, safeBlockerId]));
+    expect(Object.fromEntries(rows.map((row) => [row.id, row.assigneeAgentId]))).toEqual({
+      [unsafeBlockerId]: null,
+      [safeBlockerId]: codexCreatorId,
+    });
+
+    const wakeups = await db
+      .select({ runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, codexCreatorId));
+    for (const wakeup of wakeups) {
+      if (wakeup.runId) await waitForRunToSettle(heartbeat, wakeup.runId);
+    }
+  });
+
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({

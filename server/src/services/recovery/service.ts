@@ -68,7 +68,8 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
-import { forbidden, notFound } from "../../errors.js";
+import { HttpError, forbidden, notFound } from "../../errors.js";
+import { ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE } from "../issue-assignee-override-guard.js";
 import { logger } from "../../middleware/logger.js";
 import {
   isPidAlive,
@@ -2165,9 +2166,19 @@ export function recoveryService(
 
       const relations = await issuesSvc.getRelationSummaries(candidate.id);
       const blockingLinks = formatIssueLinksForComment(relations.blocks);
+      // Saved task overrides that the creator's adapter cannot run make the
+      // reassignment fail; leave that blocker for a person and keep sweeping.
       const updated = await issuesSvc.update(candidate.id, {
         assigneeAgentId: creatorAgent.id,
         assigneeUserId: null,
+      }).catch((error: unknown) => {
+        if (
+          error instanceof HttpError &&
+          (error.details as { code?: unknown } | undefined)?.code === ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE
+        ) {
+          return null;
+        }
+        throw error;
       });
       if (!updated) {
         skipped += 1;

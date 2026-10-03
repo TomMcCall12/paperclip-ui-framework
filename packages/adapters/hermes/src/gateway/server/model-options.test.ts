@@ -252,6 +252,18 @@ describe("listHermesGatewayModelOptions", () => {
     expect(JSON.stringify(result)).not.toContain(API_KEY);
   });
 
+  it("rejects a flat list with no models for the named current provider", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
+      provider: "openai-codex",
+      models: [{ id: "other/model", provider: "openrouter" }],
+    })));
+
+    const result = await listHermesGatewayModelOptions({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: API_KEY });
+
+    expect(result.status).toBe("invalid_response");
+    expect(result.models).toEqual([]);
+  });
+
   it("rejects an unrecognized response shape", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ hello: "world" })));
 

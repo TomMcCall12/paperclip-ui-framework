@@ -148,14 +148,14 @@ function parseModelOptions(payload: unknown): HermesGatewayModelOptionsResult | 
       "Hermes gateway listed models without naming its current provider, so Paperclip cannot tell which models this agent can run.",
     );
   }
-  const parsed = flat
+  const models = flat
     .map((entry) => parseModelEntry(entry, null))
-    .filter((model): model is HermesGatewayModelOption => model !== null);
-  return available(
-    currentProvider,
-    gatewayModel,
-    parsed.filter((model) => !model.provider || model.provider === currentProvider),
-  );
+    .filter((model): model is HermesGatewayModelOption => model !== null)
+    .filter((model) => !model.provider || model.provider === currentProvider);
+  if (models.length === 0) {
+    return failure("invalid_response", `Hermes gateway listed no models for its current provider "${currentProvider}".`);
+  }
+  return available(currentProvider, gatewayModel, models);
 }
 
 /**
