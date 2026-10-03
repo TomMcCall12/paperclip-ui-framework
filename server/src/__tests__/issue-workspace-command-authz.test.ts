@@ -6,6 +6,8 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   create: vi.fn(),
+  createChild: vi.fn(),
+  decomposeAcceptedPlan: vi.fn(),
   findMentionedAgents: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
@@ -320,12 +322,14 @@ describe("issue workspace command authorization", () => {
 });
 
 describe("issue assignee adapter override credential guard", () => {
+  // Dummy fixture value; no-leak assertions below check this exact string.
+  const savedHermesKey = "saved-hermes-key";
   const hermesAgent = {
     id: "33333333-3333-4333-8333-333333333333",
     companyId: "company-1",
     status: "idle",
     adapterType: "hermes_gateway",
-    adapterConfig: { apiBaseUrl: "https://hermes.internal", apiKey: "saved-hermes-key" },
+    adapterConfig: { apiBaseUrl: "https://hermes.internal", apiKey: savedHermesKey },
     permissions: null,
   };
   const claudeAgent = {
@@ -397,7 +401,7 @@ describe("issue assignee adapter override credential guard", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.details?.code).toBe("issue_assignee_override_not_allowed");
-    expect(JSON.stringify(res.body)).not.toContain("saved-hermes-key");
+    expect(JSON.stringify(res.body)).not.toContain(savedHermesKey);
     expect(JSON.stringify(res.body)).not.toContain("hermes.internal");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
@@ -506,5 +510,122 @@ describe("issue assignee adapter override credential guard", () => {
       "issue-1",
       expect.objectContaining({ assigneeAdapterOverrides }),
     );
+  });
+
+  describe("child issue routes", () => {
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue());
+      mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, ref: string) => ({
+        agent: agentsById.get(ref) ?? null,
+        ambiguous: false,
+      }));
+      mockIssueService.createChild.mockImplementation(async (parentId: string, input: Record<string, unknown>) => ({
+        issue: makeIssue({ ...input, parentId }),
+        parentBlockerAdded: false,
+      }));
+      mockIssueService.decomposeAcceptedPlan.mockImplementation(async (_sourceIssueId: string, input: Record<string, unknown>) => {
+        const children = input.children as Record<string, unknown>[];
+        return {
+          decomposition: { id: "decomposition-1", status: "completed", childIssueIds: children.map((c) => c.id) },
+          childIssueIds: children.map((c) => c.id),
+          newlyCreatedIssues: children.map((c) => makeIssue({ ...c, parentId: "issue-1" })),
+        };
+      });
+    });
+
+    it("rejects creating a Hermes-assigned child with a gateway URL override", async () => {
+      const app = await createApp(memberActor);
+
+      const res = await request(app)
+        .post("/api/issues/issue-1/children")
+        .send({
+          title: "Redirect child",
+          status: "todo",
+          assigneeAgentId: hermesAgent.id,
+          assigneeAdapterOverrides: { adapterConfig: { apiBaseUrl: "https://attacker.example" } },
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details?.code).toBe("issue_assignee_override_not_allowed");
+      expect(JSON.stringify(res.body)).not.toContain(savedHermesKey);
+      expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    });
+
+    it("accepts a Hermes child whose override only picks the model", async () => {
+      const app = await createApp(memberActor);
+      const assigneeAdapterOverrides = { adapterConfig: { model: "hermes-task-model" } };
+
+      const res = await request(app)
+        .post("/api/issues/issue-1/children")
+        .send({
+          title: "Model child",
+          status: "todo",
+          assigneeAgentId: hermesAgent.id,
+          assigneeAdapterOverrides,
+        });
+
+      expect(res.status).toBe(201);
+      expect(mockIssueService.createChild).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({ assigneeAgentId: hermesAgent.id, assigneeAdapterOverrides }),
+      );
+    });
+
+    it("rejects an accepted-plan decomposition when any child carries an unsafe Hermes override", async () => {
+      const app = await createApp(memberActor);
+
+      const res = await request(app)
+        .post("/api/issues/issue-1/accepted-plan-decompositions")
+        .send({
+          acceptedPlanRevisionId: "55555555-5555-4555-8555-555555555555",
+          children: [
+            {
+              title: "Safe child",
+              status: "todo",
+              assigneeAgentId: hermesAgent.id,
+              assigneeAdapterOverrides: { adapterConfig: { model: "hermes-task-model" } },
+            },
+            {
+              title: "Redirect child",
+              status: "todo",
+              assigneeAgentId: hermesAgent.id,
+              assigneeAdapterOverrides: { adapterConfig: { apiBaseUrl: "https://attacker.example" } },
+            },
+          ],
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details?.code).toBe("issue_assignee_override_not_allowed");
+      expect(JSON.stringify(res.body)).not.toContain(savedHermesKey);
+      expect(mockIssueService.decomposeAcceptedPlan).not.toHaveBeenCalled();
+      expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    });
+
+    it("accepts an accepted-plan decomposition with model-only Hermes and other-adapter overrides", async () => {
+      const app = await createApp(memberActor);
+      const hermesOverrides = { adapterConfig: { model: "hermes-task-model" } };
+      const claudeOverrides = { adapterConfig: { model: "claude-task-model", effort: "high" } };
+
+      const res = await request(app)
+        .post("/api/issues/issue-1/accepted-plan-decompositions")
+        .send({
+          acceptedPlanRevisionId: "55555555-5555-4555-8555-555555555555",
+          children: [
+            { title: "Hermes child", status: "todo", assigneeAgentId: hermesAgent.id, assigneeAdapterOverrides: hermesOverrides },
+            { title: "Claude child", status: "todo", assigneeAgentId: claudeAgent.id, assigneeAdapterOverrides: claudeOverrides },
+          ],
+        });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.decomposeAcceptedPlan).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({
+          children: [
+            expect.objectContaining({ assigneeAgentId: hermesAgent.id, assigneeAdapterOverrides: hermesOverrides }),
+            expect.objectContaining({ assigneeAgentId: claudeAgent.id, assigneeAdapterOverrides: claudeOverrides }),
+          ],
+        }),
+      );
+    });
   });
 });

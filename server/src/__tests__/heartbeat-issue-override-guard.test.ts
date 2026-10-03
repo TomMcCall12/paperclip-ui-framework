@@ -33,6 +33,9 @@ vi.mock("../services/secrets.js", async (importOriginal) => {
   };
 });
 
+// Dummy fixture value; the no-leak assertion checks this exact string.
+const SAVED_HERMES_KEY = "saved-hermes-key";
+
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
 suite("heartbeat issue assignee override guard", () => {
@@ -67,7 +70,7 @@ suite("heartbeat issue assignee override guard", () => {
     await db.insert(companies).values({ id: companyId, name: "Hermes", issuePrefix: `H${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
     await db.insert(agents).values({
       id: agentId, companyId, name: "Hermes", role: "engineer", status: "idle", adapterType: "hermes_gateway",
-      adapterConfig: { apiBaseUrl: "https://hermes.internal", apiKey: "saved-hermes-key", model: "hermes-default" },
+      adapterConfig: { apiBaseUrl: "https://hermes.internal", apiKey: SAVED_HERMES_KEY, model: "hermes-default" },
       runtimeConfig: {}, permissions: {},
     });
     // Written straight to the row, as a record saved before the write guard existed.
@@ -86,7 +89,7 @@ suite("heartbeat issue assignee override guard", () => {
     }, { timeout: 15_000 });
     const latest = await heartbeat.getRun(run!.id);
     expect(latest?.error).toContain("not allowed: apiBaseUrl");
-    expect(JSON.stringify(latest)).not.toContain("saved-hermes-key");
+    expect(JSON.stringify(latest)).not.toContain(SAVED_HERMES_KEY);
     expect((latest?.resultJson as any)?.configurationIncomplete?.reason).toBe("issue_assignee_override_not_allowed");
     expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(0);
     expect(resolvedAdapterConfigs.slice(resolvedBefore)).toHaveLength(0);

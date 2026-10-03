@@ -12209,6 +12209,10 @@ export function issueRoutes(
       if (sanitizedBody.assigneeAgentId || sanitizedBody.assigneeUserId) {
         await assertCanAssignTasks(req, parent.companyId, childAssignmentScope);
       }
+      await assertIssueAssigneeOverridesAllowed(
+        createBody.assigneeAgentId,
+        createBody.assigneeAdapterOverrides,
+      );
       await assertIssueEnvironmentSelection(
         parent.companyId,
         createBody.executionWorkspaceSettings?.environmentId,
@@ -12435,6 +12439,12 @@ export function issueRoutes(
             assigneeUserId: childBody.assigneeUserId ?? null,
           });
         }
+        // Every child is validated before any is persisted, so one unsafe
+        // override fails the whole decomposition.
+        await assertIssueAssigneeOverridesAllowed(
+          childBody.assigneeAgentId,
+          childBody.assigneeAdapterOverrides,
+        );
         await assertIssueEnvironmentSelection(
           sourceIssue.companyId,
           childBody.executionWorkspaceSettings?.environmentId,

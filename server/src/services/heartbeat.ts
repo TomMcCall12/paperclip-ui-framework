@@ -21220,7 +21220,8 @@ export function heartbeatService(
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
       // Rows written before the issue write guard may still carry overrides
-      // that reroute the saved credential; stop before any secret is resolved.
+      // that reroute the saved credential; stop before Hermes gateway
+      // credential resolution.
       const issueOverrideRejection = issueAssigneeOverrideRejectionReason(
         agent.adapterType,
         issueAssigneeOverrides,
