@@ -3,6 +3,10 @@ import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
 import { settleSlackConversation } from "./slack-conversation-lifecycle.js";
 import { publicChatTaskUrl } from "./chat-task-url.js";
+import {
+  ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+  issueAssigneeOverrideRejectionReason,
+} from "./issue-assignee-override-guard.js";
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
@@ -21215,6 +21219,21 @@ export function heartbeatService(
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
+      // Rows written before the issue write guard may still carry overrides
+      // that reroute the saved credential; stop before any secret is resolved.
+      const issueOverrideRejection = issueAssigneeOverrideRejectionReason(
+        agent.adapterType,
+        issueAssigneeOverrides,
+      );
+      if (issueOverrideRejection) {
+        throw new ConfigurationIncompleteFailure(issueOverrideRejection, {
+          configurationIncomplete: {
+            reason: ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+            issueId,
+            agentId: agent.id,
+          },
+        });
+      }
       const mergedConfig = {
         ...workspaceManagedConfig,
         ...(issueAssigneeOverrides?.adapterConfig ?? {}),

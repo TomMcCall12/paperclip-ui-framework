@@ -23,6 +23,7 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  resolveByReference: vi.fn(),
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
@@ -315,5 +316,195 @@ describe("issue workspace command authorization", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed workspace commands");
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("issue assignee adapter override credential guard", () => {
+  const hermesAgent = {
+    id: "33333333-3333-4333-8333-333333333333",
+    companyId: "company-1",
+    status: "idle",
+    adapterType: "hermes_gateway",
+    adapterConfig: { apiBaseUrl: "https://hermes.internal", apiKey: "saved-hermes-key" },
+    permissions: null,
+  };
+  const claudeAgent = {
+    id: "44444444-4444-4444-8444-444444444444",
+    companyId: "company-1",
+    status: "idle",
+    adapterType: "claude_local",
+    adapterConfig: {},
+    permissions: null,
+  };
+  const agentsById = new Map<string, Record<string, unknown>>([
+    [hermesAgent.id, hermesAgent],
+    [claudeAgent.id, claudeAgent],
+    ["agent-1", { id: "agent-1", companyId: "company-1", permissions: null }],
+  ]);
+  // A company member with issue write access who is not an instance admin.
+  const memberActor = {
+    type: "board",
+    userId: "member-user",
+    companyIds: ["company-1"],
+    source: "session",
+    isInstanceAdmin: false,
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    registerRouteMocks();
+    vi.clearAllMocks();
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.getByIdentifier.mockResolvedValue(null);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.update.mockImplementation(async (_id: string, data: Record<string, unknown>) =>
+      makeIssue({ assigneeAgentId: hermesAgent.id, ...data }),
+    );
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:mutate",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockImplementation(async (id: string) => agentsById.get(id) ?? null);
+    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockInstanceSettingsService.get.mockResolvedValue({
+      id: "instance-settings-1",
+      general: { censorUsernameInLogs: false, feedbackDataSharingPreference: "prompt" },
+    });
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    mockLogActivity.mockResolvedValue(undefined);
+    mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+  });
+
+  it("rejects an authorized non-admin PATCH that points a Hermes assignee at a new gateway URL", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: hermesAgent.id }));
+    const app = await createApp(memberActor);
+
+    const res = await request(app)
+      .patch("/api/issues/issue-1")
+      .send({
+        assigneeAdapterOverrides: {
+          adapterConfig: { apiBaseUrl: "https://attacker.example" },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details?.code).toBe("issue_assignee_override_not_allowed");
+    expect(JSON.stringify(res.body)).not.toContain("saved-hermes-key");
+    expect(JSON.stringify(res.body)).not.toContain("hermes.internal");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects credential and unknown keys, not only URL aliases", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: hermesAgent.id }));
+    const app = await createApp(memberActor);
+
+    for (const adapterConfig of [
+      { model: "hermes-task-model", token: "attacker-token" },
+      { headers: { Authorization: "Bearer x" } },
+      { someFutureTransportKey: "x" },
+      { model: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" } },
+    ]) {
+      const res = await request(app)
+        .patch("/api/issues/issue-1")
+        .send({ assigneeAdapterOverrides: { adapterConfig } });
+      expect(res.status).toBe(422);
+      expect(res.body.details?.code).toBe("issue_assignee_override_not_allowed");
+    }
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not reveal the assignee guard to a caller without access", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: hermesAgent.id }));
+    const app = await createApp({ ...memberActor, companyIds: ["company-2"] });
+
+    const res = await request(app)
+      .patch("/api/issues/issue-1")
+      .send({ assigneeAdapterOverrides: { adapterConfig: { apiBaseUrl: "https://attacker.example" } } });
+
+    // The issue is hidden from the caller, so it learns nothing about the assignee.
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(res.body)).not.toContain("issue_assignee_override_not_allowed");
+    expect(mockAgentService.getById).not.toHaveBeenCalledWith(hermesAgent.id);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects creating a Hermes-assigned issue with a gateway URL override", async () => {
+    mockAgentService.resolveByReference.mockResolvedValue({ agent: hermesAgent, ambiguous: false });
+    const app = await createApp(memberActor);
+
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Redirect",
+        status: "todo",
+        assigneeAgentId: hermesAgent.id,
+        assigneeAdapterOverrides: { adapterConfig: { apiBaseUrl: "https://attacker.example" } },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details?.code).toBe("issue_assignee_override_not_allowed");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects assigning a Hermes agent to an issue that already carries an unsafe override", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: null,
+      assigneeAdapterOverrides: { adapterConfig: { apiBaseUrl: "https://attacker.example" } },
+    }));
+    mockAgentService.resolveByReference.mockResolvedValue({ agent: hermesAgent, ambiguous: false });
+    const app = await createApp(memberActor);
+
+    const res = await request(app)
+      .patch("/api/issues/issue-1")
+      .send({ assigneeAgentId: hermesAgent.id });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details?.code).toBe("issue_assignee_override_not_allowed");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("accepts a Hermes model override and the top-level project workspace flag", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: hermesAgent.id }));
+    const app = await createApp(memberActor);
+    const assigneeAdapterOverrides = {
+      adapterConfig: { model: "hermes-task-model" },
+      useProjectWorkspace: true,
+    };
+
+    const res = await request(app)
+      .patch("/api/issues/issue-1")
+      .send({ assigneeAdapterOverrides });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-1",
+      expect.objectContaining({ assigneeAdapterOverrides }),
+    );
+  });
+
+  it("leaves other adapters' override keys unchanged", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: claudeAgent.id }));
+    const app = await createApp(memberActor);
+    const assigneeAdapterOverrides = {
+      adapterConfig: { model: "claude-task-model", effort: "high", chrome: true, timeoutSec: 30 },
+    };
+
+    const res = await request(app)
+      .patch("/api/issues/issue-1")
+      .send({ assigneeAdapterOverrides });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-1",
+      expect.objectContaining({ assigneeAdapterOverrides }),
+    );
   });
 });

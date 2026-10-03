@@ -31,6 +31,13 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.body).not.toContain("Recovery action:");
   });
 
+  it("names a disallowed task override instead of missing secrets when that is the configuration gap", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "issue_assignee_override_not_allowed" });
+    expect(seed.title).toBe("Task override not allowed");
+    expect(seed.body).toContain("adapter overrides");
+    expect(seed.body).not.toContain("secret/env bindings are missing");
+  });
+
   it("names the sandbox provider plugin and its status when that is the configuration gap", () => {
     const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
       reason: "sandbox_provider_plugin_not_ready",

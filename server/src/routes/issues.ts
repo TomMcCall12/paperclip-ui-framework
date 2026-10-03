@@ -222,6 +222,10 @@ import {
   unauthorized,
   unprocessable,
 } from "../errors.js";
+import {
+  ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+  issueAssigneeOverrideRejectionReason,
+} from "../services/issue-assignee-override-guard.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import {
@@ -7278,6 +7282,26 @@ export function issueRoutes(
     );
   }
 
+  // Issue overrides are merged over the assignee's saved adapter config at run
+  // time. Called after authorization, so a denied caller learns nothing about
+  // the assignee, and before anything is persisted.
+  async function assertIssueAssigneeOverridesAllowed(
+    assigneeAgentId: string | null | undefined,
+    overrides: unknown,
+  ) {
+    if (!assigneeAgentId || overrides == null) return;
+    const assignee = await agentsSvc.getById(assigneeAgentId);
+    const reason = issueAssigneeOverrideRejectionReason(
+      assignee?.adapterType,
+      overrides,
+    );
+    if (reason) {
+      throw unprocessable(reason, {
+        code: ISSUE_ASSIGNEE_OVERRIDE_NOT_ALLOWED_CODE,
+      });
+    }
+  }
+
   async function normalizeIssueAssigneeAgentReference(
     companyId: string,
     rawAssigneeAgentId: string | null | undefined,
@@ -11840,6 +11864,10 @@ export function issueRoutes(
       if (rawCreateBody.assigneeAgentId || rawCreateBody.assigneeUserId) {
         await assertCanAssignTasks(req, companyId, createAssignmentScope);
       }
+      await assertIssueAssigneeOverridesAllowed(
+        createBody.assigneeAgentId,
+        createBody.assigneeAdapterOverrides,
+      );
       await assertIssueEnvironmentSelection(
         companyId,
         createBody.executionWorkspaceSettings?.environmentId,
@@ -13456,6 +13484,19 @@ export function issueRoutes(
             assigneeUserId: nextAssigneeUserId,
           });
         }
+      }
+      // Overrides persist across reassignment, so a new assignee is checked
+      // against the saved overrides as well as any proposed ones.
+      if (
+        updateFields.assigneeAdapterOverrides !== undefined ||
+        nextAssigneeAgentId !== existing.assigneeAgentId
+      ) {
+        await assertIssueAssigneeOverridesAllowed(
+          nextAssigneeAgentId,
+          updateFields.assigneeAdapterOverrides === undefined
+            ? existing.assigneeAdapterOverrides
+            : updateFields.assigneeAdapterOverrides,
+        );
       }
 
       // Only this request may finish a mutation that intentionally stops its

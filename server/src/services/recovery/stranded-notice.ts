@@ -121,6 +121,16 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "issue_assignee_override_not_allowed") {
+    return {
+      body:
+        "Paperclip stopped before dispatching the adapter because this task's adapter overrides change settings " +
+        "the assignee does not allow tasks to override (for example its connection URL or credentials). Moving it to " +
+        "`blocked` so an operator can clear or reduce the task's adapter overrides before resuming.",
+      title: "Task override not allowed",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON) {
     const pluginKey = readNonEmptyStringField(configurationIncomplete, "pluginKey") ?? "the sandbox provider plugin";
     const pluginStatus = readNonEmptyStringField(configurationIncomplete, "pluginStatus") ?? "not ready";
