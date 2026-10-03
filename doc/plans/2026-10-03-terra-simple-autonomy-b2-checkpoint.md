@@ -3,7 +3,7 @@
 **3 October 2026, afternoon session.** This continues step 1 of [[(C) Simple Autonomy Status — 2026-10-03]] and follows [[(C) Simple Autonomy B1 Candidate Checkpoint]]. Telegram remains out of scope. **Nothing was deployed, pushed, migrated or restarted.** The live Lab is still on `e6f2e353…` and was not touched.
 
 ## Candidate state
-- Worktree `/media/External SSD/paperclip/isolated-candidates/terra-simple-autonomy`, branch `feat/terra-simple-autonomy`, now **clean at the tip of `feat/terra-simple-autonomy`**: code last changed in `b9648d1` ("harden hire approval reads, rejects and activation"), on top of `575d57d`.
+- Worktree `/media/External SSD/paperclip/isolated-candidates/terra-simple-autonomy`, branch `feat/terra-simple-autonomy`, now **clean at the tip of `feat/terra-simple-autonomy`**: code last changed in `510dfaa` ("address final review of the review-fix commits"), on top of `575d57d`.
 - The eight-file uncommitted approvals draft was inspected, tested and committed — it is no longer a loose draft.
 
 ## New commits (oldest first)
@@ -79,6 +79,22 @@ Checks: server `tsc` clean. **1237 passed / 1 skipped across 31 suites**, coveri
 - Switching an agent onto Hermes does not re-check its issues; the dispatch check catches it.
 - Some duplicated helpers remain: the model-options parse branches, and the payload adapter-type derivation.
 
+## Second independent review: the review-fix commits `86e2e34..b9648d1`
+This review found a hole in the redaction-restore fix and four smaller issues, all fixed in `510dfaa`:
+
+- **Critical, fixed:** activation could fill a redaction placeholder from the saved config into a payload whose adapter or destination had changed. A resubmit could then carry a saved key somewhere the board never saw. Now a field is restored only when the filled-in payload exactly equals the saved field (key order ignored). Any leftover placeholder fails activation with a 422. Only env bindings refuse placeholders at persistence; other fields such as headers would otherwise have been written as-is, and the tests prove this.
+- Reject again terminates only a `pending_approval` hire, so a live paused agent is never terminated. Instead, a pending hire can no longer be paused: a manual pause returns 409, and a budget or system pause is a no-op.
+- The Hermes key rule trims adapter types, so a padded `" hermes_gateway"` in an import is still checked.
+- Company import runs a **preflight** over every agent before any row is written, so a refused key no longer leaves a partial import.
+- One shared `redactApprovalPayload` now serves both the HTTP routes and the runner tools.
+- **Deliberately not changed:** config-revision rollback. A revision only replays a key-and-gateway pairing this same agent already held, so it exposes nothing new. An earlier reviewer cleared this path too.
+- Recorded only: a checkout race whose backstop is the dispatch check, and some remaining wrapper/restore helper duplication.
+
+**Final checks at `510dfaa`:**
+- 1247 passed / 1 skipped across 32 suites.
+- **Full `pnpm -r typecheck` and `pnpm build` both exit 0, stamped `510dfaa`.**
+- Rebuilt-artifact smoke: a Hermes agent configured with `token` stores it as a managed secret, leaves no plaintext, and authenticates to its gateway.
+
 ## Still open (cannot be done from this session)
-1. Independent review of the three review-fix commits (`86e2e34..b9648d1`). The range up to `782562d` has been reviewed (see above).
+1. Optional: a further independent review of `b9648d1..510dfaa`. Everything up to `b9648d1` has had independent review (see above).
 2. **Real-team acceptance (step 4)** and **release (step 5)** need the host: either an image built from the candidate run beside or in place of the live container, or board credentials for a staging instance. This disposable container has neither host access nor board credentials, and it must not restart the live service. A smoke against a *restored copy of the live database* also needs host access to the backups.
