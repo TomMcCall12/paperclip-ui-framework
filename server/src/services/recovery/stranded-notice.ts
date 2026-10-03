@@ -131,6 +131,17 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "issue_task_model_unsupported") {
+    return {
+      body:
+        "Paperclip stopped before dispatching the adapter because this task's model is not offered by the " +
+        "assignee's gateway for its current provider, or the gateway's model list could not be verified. Moving it " +
+        "to `blocked` so an operator can pick a listed task model, clear the task model, or check the gateway " +
+        "before resuming.",
+      title: "Task model unavailable",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON) {
     const pluginKey = readNonEmptyStringField(configurationIncomplete, "pluginKey") ?? "the sandbox provider plugin";
     const pluginStatus = readNonEmptyStringField(configurationIncomplete, "pluginStatus") ?? "not ready";

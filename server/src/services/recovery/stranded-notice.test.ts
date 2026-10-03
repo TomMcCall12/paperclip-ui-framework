@@ -38,6 +38,13 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.body).not.toContain("secret/env bindings are missing");
   });
 
+  it("names an unavailable task model instead of missing secrets when that is the configuration gap", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "issue_task_model_unsupported" });
+    expect(seed.title).toBe("Task model unavailable");
+    expect(seed.body).toContain("task model");
+    expect(seed.body).not.toContain("secret/env bindings are missing");
+  });
+
   it("names the sandbox provider plugin and its status when that is the configuration gap", () => {
     const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
       reason: "sandbox_provider_plugin_not_ready",
