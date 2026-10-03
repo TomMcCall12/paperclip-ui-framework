@@ -3,7 +3,7 @@
 **3 October 2026, afternoon session.** This continues step 1 of [[(C) Simple Autonomy Status — 2026-10-03]] and follows [[(C) Simple Autonomy B1 Candidate Checkpoint]]. Telegram remains out of scope. **Nothing was deployed, pushed, migrated or restarted.** The live Lab is still on `e6f2e353…` and was not touched.
 
 ## Candidate state
-- Worktree `/media/External SSD/paperclip/isolated-candidates/terra-simple-autonomy`, branch `feat/terra-simple-autonomy`, now **clean at `de433722a5d46827690716eb8f20d7f7698e7892`** (nine new local commits on top of `575d57d`, including this note).
+- Worktree `/media/External SSD/paperclip/isolated-candidates/terra-simple-autonomy`, branch `feat/terra-simple-autonomy`, now **clean at the tip of `feat/terra-simple-autonomy`**: code last changed in `782562d` ("apply Hermes key rules to plugin-managed agents"), on top of `575d57d`.
 - The eight-file uncommitted approvals draft was inspected, tested and committed — it is no longer a loose draft.
 
 ## New commits (oldest first)
@@ -53,5 +53,5 @@
 - **Residual found and closed:** plugin-managed agents (`plugin-managed-agents.ts`) are created and reset through the service, so the route guards never ran on plugin-declared Hermes configs. Create now refuses a stored-secret key, and reset may keep only the agent's own key at its own gateway, never under `token`. Two new tests were added; the suite passes 15/15.
 
 ## Still open (cannot be done from this session)
-1. **Independent review of `de43372`** by a separate reviewer.
+1. **Independent review of `782562d`** (range `575d57d..782562d`) by a separate reviewer.
 2. **Real-team acceptance (step 4)** and **release (step 5)** need the host: either an image built from the candidate run beside or in place of the live container, or board credentials for a staging instance. This disposable container has neither host access nor board credentials, and it must not restart the live service. A smoke against a *restored copy of the live database* also needs host access to the backups.
