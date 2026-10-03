@@ -124,6 +124,7 @@ import {
 } from "../adapters/index.js";
 import {
   DEFAULT_MODEL_CONTROL_ADAPTER_TYPES,
+  hermesConfigUsesStoredSecret,
   hermesCredentialRebindReason,
   resolveAgentModelOptions,
   unsupportedDefaultModelReason,
@@ -2483,6 +2484,18 @@ export function agentRoutes(
     );
   }
 
+  // A new Hermes gateway has no saved key to reuse. Resolving or binding an
+  // existing company secret would send it to a gateway it was never saved for.
+  // Call after authorization and before any secret is normalized or persisted.
+  function assertNewHermesGatewayHasNoStoredSecret(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+    message: string,
+  ) {
+    if (!hermesConfigUsesStoredSecret(adapterType, adapterConfig)) return;
+    throw unprocessable(message, { code: "hermes_gateway_unbound_secret_ref" });
+  }
+
   function generateEd25519PrivateKeyPem(): string {
     const { privateKey } = generateKeyPairSync("ed25519");
     return privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -3478,14 +3491,11 @@ export function agentRoutes(
           throw unprocessable(credentialRebindReason, { code: "hermes_gateway_credential_rebind_required" });
         }
       }
-      // A new gateway has no saved key to reuse. Resolving an existing company
-      // secret here would send it to a gateway it was never saved for.
-      if (!savedAgent && type === "hermes_gateway" && ["apiKey", "token"].some(
-        (key) => asRecord(adapterConfigForTest[key])?.type === "secret_ref",
-      )) {
-        throw unprocessable(
+      if (!savedAgent) {
+        assertNewHermesGatewayHasNoStoredSecret(
+          type,
+          adapterConfigForTest,
           "Testing a new Hermes gateway cannot use a stored secret. Enter the gateway API key instead.",
-          { code: "hermes_gateway_unbound_secret_ref" },
         );
       }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
@@ -4535,6 +4545,11 @@ export function agentRoutes(
     }
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertNewHermesGatewayHasNoStoredSecret(
+      hireInput.adapterType,
+      rawHireAdapterConfig,
+      "A new Hermes gateway agent cannot use a stored secret. Enter the gateway API key instead.",
+    );
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
       companyId,
@@ -4843,6 +4858,11 @@ export function agentRoutes(
     } = req.body;
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertNewHermesGatewayHasNoStoredSecret(
+      createInput.adapterType,
+      rawCreateAdapterConfig,
+      "A new Hermes gateway agent cannot use a stored secret. Enter the gateway API key instead.",
+    );
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
       companyId,

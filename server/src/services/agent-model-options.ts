@@ -122,6 +122,20 @@ export function hermesCredentialRebindReason(input: {
     : null;
 }
 
+/**
+ * True when a Hermes gateway config names a stored company secret as its key.
+ * A new gateway has no saved key to reuse, so such a reference would send an
+ * existing secret to a gateway it was never saved for. Inspects shape only.
+ */
+export function hermesConfigUsesStoredSecret(adapterType: string, config: Record<string, unknown>): boolean {
+  if (adapterType !== "hermes_gateway") return false;
+  return HERMES_CREDENTIAL_KEYS.some((key) => {
+    const value = config[key];
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      && (value as Record<string, unknown>).type === "secret_ref";
+  });
+}
+
 /** Returns why `model` cannot be saved as this agent's default, or null when it is supported. */
 export function unsupportedDefaultModelReason(options: AgentModelOptions, model: string): string | null {
   if (options.models.some((option) => option.id === model)) return null;
