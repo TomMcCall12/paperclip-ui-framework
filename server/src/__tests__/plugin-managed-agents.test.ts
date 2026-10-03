@@ -10,6 +10,9 @@ import {
   agents,
   approvals,
   companies,
+  companySecretBindings,
+  companySecretVersions,
+  companySecrets,
   createDb,
   pluginEntities,
   pluginCompanySettings,
@@ -95,6 +98,9 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(companySecretBindings);
+    await db.delete(companySecretVersions);
+    await db.delete(companySecrets);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(pluginEntities);
@@ -408,6 +414,52 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
 
     const [binding] = await db.select().from(pluginEntities);
     expect(binding?.data).toMatchObject({ agentId });
+  });
+
+  function hermesManifest(adapterConfig: Record<string, unknown>): PaperclipPluginManifestV1 {
+    const pluginManifest = manifest();
+    pluginManifest.agents![0] = {
+      ...pluginManifest.agents![0]!,
+      adapterType: "hermes_gateway",
+      adapterConfig,
+    };
+    return pluginManifest;
+  }
+
+  const OTHER_REF = { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" };
+
+  it("refuses a new plugin-managed Hermes agent declared with a stored secret key", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin({
+      manifest: hermesManifest({ apiBaseUrl: "https://gateway.example.test", apiKey: OTHER_REF }),
+    });
+    await expect(services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" }))
+      .rejects.toMatchObject({ status: 422, details: { code: "hermes_gateway_unbound_secret_ref" } });
+    expect(await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId))).toEqual([]);
+  });
+
+  it("refuses a reset that swaps a managed Hermes agent onto another stored key, and keeps its own", async () => {
+    const pluginManifest = hermesManifest({ apiBaseUrl: "https://gateway.example.test", apiKey: "typed-plain-key" });
+    const { companyId, services } = await seedCompanyAndPlugin({ manifest: pluginManifest });
+    const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    expect(created.agent?.adapterType).toBe("hermes_gateway");
+    // The typed key was stored as this agent's own managed secret on create.
+    const OWN_REF = (created.agent?.adapterConfig as Record<string, unknown>).apiKey as Record<string, unknown>;
+    expect(OWN_REF).toMatchObject({ type: "secret_ref" });
+
+    pluginManifest.agents![0]!.adapterConfig = { apiBaseUrl: "https://gateway.example.test", apiKey: OTHER_REF };
+    await expect(services.agents.managedReset({ companyId, agentKey: "wiki-maintainer" }))
+      .rejects.toMatchObject({ status: 422, details: { code: "hermes_gateway_unbound_secret_ref" } });
+
+    pluginManifest.agents![0]!.adapterConfig = { apiBaseUrl: "https://collector.example.test", apiKey: OWN_REF };
+    await expect(services.agents.managedReset({ companyId, agentKey: "wiki-maintainer" }))
+      .rejects.toMatchObject({ status: 422, details: { code: "hermes_gateway_credential_rebind_required" } });
+
+    const [row] = await db.select({ adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, created.agentId!));
+    expect(row?.adapterConfig).toMatchObject({ apiBaseUrl: "https://gateway.example.test", apiKey: { secretId: OWN_REF.secretId } });
+
+    pluginManifest.agents![0]!.adapterConfig = { apiBaseUrl: "https://gateway.example.test", apiKey: OWN_REF };
+    const reset = await services.agents.managedReset({ companyId, agentKey: "wiki-maintainer" });
+    expect(reset.status).toBe("reset");
   });
 
   it("respects board approval policy for new managed agents", async () => {

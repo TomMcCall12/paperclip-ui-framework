@@ -50,7 +50,7 @@
 ## Review status
 - An automated multi-angle review of `575d57d..c405755` was launched but **failed on a usage limit** (resets 19:40 UTC). No result was produced.
 - I self-reviewed the commits the first review never saw (`f735788`, `c405755`, `de43372`). This is **not independent**. It found no defect in the approval binding: the resubmit race is covered by the conditional update. Issue approval linking does not create payloads, and the built-in and plugin-managed hire approvals bind to the agent they just created.
-- **New residual (low):** the plugin-managed agent path (`plugin-managed-agents.ts`) creates agents through the service, so a plugin-declared Hermes agent config is not checked for a borrowed stored key at creation. The route guards do not run there. Plugins are installed by the board, but this should be closed before broad plugin use.
+- **Residual found and closed:** plugin-managed agents (`plugin-managed-agents.ts`) are created and reset through the service, so the route guards never ran on plugin-declared Hermes configs. Create now refuses a stored-secret key, and reset may keep only the agent's own key at its own gateway, never under `token`. Two new tests were added; the suite passes 15/15.
 
 ## Still open (cannot be done from this session)
 1. **Independent review of `de43372`** by a separate reviewer.

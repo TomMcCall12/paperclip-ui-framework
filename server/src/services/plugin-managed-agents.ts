@@ -12,9 +12,16 @@ import type {
   PluginManagedAgentDeclaration,
   PluginManagedAgentResolution,
 } from "@paperclipai/shared";
-import { notFound } from "../errors.js";
+import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
+import {
+  HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE,
+  hermesConfigBorrowsStoredSecret,
+  hermesConfigUsesStoredSecret,
+  hermesCredentialRebindReason,
+  hermesTokenAliasHoldsStoredSecret,
+} from "./agent-model-options.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 
@@ -102,6 +109,43 @@ function selectPreferredAdapterType(
     }
   }
   return selected?.adapterType ?? fallback;
+}
+
+/**
+ * A plugin declares a managed agent's adapter config, and these writers call
+ * the agent service directly, so they apply the same Hermes key rules as the
+ * agent routes: a new gateway agent holds no stored secret, and a reset may
+ * keep only the agent's own key, under apiKey, at the gateway it was saved for.
+ */
+function assertManagedHermesConfigAllowed(input: {
+  existing: { adapterType: string; adapterConfig: unknown } | null;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+}) {
+  if (input.adapterType !== "hermes_gateway") return;
+  const fail = (message: string, code: string) => {
+    throw unprocessable(message, { code });
+  };
+  if (hermesTokenAliasHoldsStoredSecret(input.adapterType, input.adapterConfig)) {
+    fail(HERMES_TOKEN_ALIAS_STORED_SECRET_MESSAGE, "hermes_gateway_unbound_secret_ref");
+  }
+  if (!input.existing) {
+    if (hermesConfigUsesStoredSecret(input.adapterType, input.adapterConfig)) {
+      fail("A new plugin-managed Hermes gateway agent cannot use a stored secret as its key.", "hermes_gateway_unbound_secret_ref");
+    }
+    return;
+  }
+  const credentialInput = {
+    existingAdapterType: input.existing.adapterType,
+    existingConfig: (input.existing.adapterConfig ?? {}) as Record<string, unknown>,
+    nextAdapterType: input.adapterType,
+    nextConfig: input.adapterConfig,
+  };
+  const rebindReason = hermesCredentialRebindReason(credentialInput);
+  if (rebindReason) fail(rebindReason, "hermes_gateway_credential_rebind_required");
+  if (hermesConfigBorrowsStoredSecret(credentialInput)) {
+    fail("This Hermes gateway can only use the stored key saved for it.", "hermes_gateway_unbound_secret_ref");
+  }
 }
 
 function declarationPatch(declaration: PluginManagedAgentDeclaration, input: { adapterType?: string } = {}) {
@@ -424,6 +468,7 @@ export function pluginManagedAgentService(
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const adapterType = await resolveManagedAdapterType(companyId, declaration);
     const initialStatus = requiresApproval ? "pending_approval" : declaration.status ?? "idle";
+    assertManagedHermesConfigAllowed({ existing: null, adapterType, adapterConfig: declaration.adapterConfig ?? {} });
     let created = await agentSvc.create(companyId, {
       ...declarationPatch(declaration, { adapterType }),
       status: initialStatus,
@@ -596,6 +641,11 @@ export function pluginManagedAgentService(
         ? reconciled.agent.metadata
         : {};
       const adapterType = await resolveManagedAdapterType(companyId, declaration);
+      assertManagedHermesConfigAllowed({
+        existing: reconciled.agent,
+        adapterType,
+        adapterConfig: declaration.adapterConfig ?? {},
+      });
       const updated = await agentSvc.update(reconciled.agent.id, {
         ...declarationPatch(declaration, { adapterType }),
         metadata: managedMetadata(options.pluginId, options.pluginKey, declaration, currentMetadata),
