@@ -104,9 +104,10 @@ function available(
 /**
  * Hermes lists models for every provider it knows, but this adapter runs on
  * the gateway's current provider only. With provider groups, only the current,
- * authenticated group counts. A flat list is accepted only when it cannot
- * claim models from a provider other than the current one. Anything else is
- * rejected so the caller never offers ids the agent cannot run.
+ * authenticated group counts. A flat list is accepted only when the gateway
+ * names its current provider, and is filtered to that provider; the current
+ * provider is never inferred from model entries. Anything else is rejected so
+ * the caller never offers ids the agent cannot run.
  */
 function parseModelOptions(payload: unknown): HermesGatewayModelOptionsResult | null {
   const record = asRecord(payload);
@@ -141,24 +142,20 @@ function parseModelOptions(payload: unknown): HermesGatewayModelOptionsResult | 
 
   const flat = Array.isArray(payload) ? payload : record ? modelEntryList(record) : null;
   if (!flat) return null;
+  if (!currentProvider) {
+    return failure(
+      "invalid_response",
+      "Hermes gateway listed models without naming its current provider, so Paperclip cannot tell which models this agent can run.",
+    );
+  }
   const parsed = flat
     .map((entry) => parseModelEntry(entry, null))
     .filter((model): model is HermesGatewayModelOption => model !== null);
-  if (currentProvider) {
-    return available(
-      currentProvider,
-      gatewayModel,
-      parsed.filter((model) => !model.provider || model.provider === currentProvider),
-    );
-  }
-  const providers = new Set(parsed.map((model) => model.provider).filter(Boolean));
-  if (providers.size > 1) {
-    return failure(
-      "invalid_response",
-      "Hermes gateway listed models from several providers without naming its current provider.",
-    );
-  }
-  return available(null, gatewayModel, parsed);
+  return available(
+    currentProvider,
+    gatewayModel,
+    parsed.filter((model) => !model.provider || model.provider === currentProvider),
+  );
 }
 
 /**

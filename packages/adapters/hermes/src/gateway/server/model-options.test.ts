@@ -158,6 +158,68 @@ describe("listHermesGatewayModelOptions", () => {
     expect(mixed.models).toEqual([]);
   });
 
+  it("fails closed on a flat model list without a current provider, even from a single provider", async () => {
+    const payloads: unknown[] = [
+      { models: [{ id: "model-b", provider: "anthropic" }] },
+      { models: ["model-b"] },
+      { model: "model-b", models: ["model-b"] },
+      [{ id: "model-b", provider: "anthropic" }],
+      ["model-b"],
+    ];
+
+    for (const payload of payloads) {
+      vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(payload)));
+      const result = await listHermesGatewayModelOptions({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: API_KEY });
+
+      expect(result.status).toBe("invalid_response");
+      expect(result.models).toEqual([]);
+      expect(result.provider).toBeNull();
+      expect(result.gatewayModel).toBeNull();
+      expect(result.message).toMatch(/current provider/i);
+      expect(JSON.stringify(result)).not.toContain(API_KEY);
+    }
+  });
+
+  it("keeps flat lists with an explicit current provider and grouped lists available", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
+      provider: "anthropic",
+      model: "model-b",
+      models: [
+        { id: "model-b", provider: "anthropic" },
+        "model-c",
+        { id: "openrouter/only-model", provider: "openrouter" },
+      ],
+    })));
+    const flat = await listHermesGatewayModelOptions({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: API_KEY });
+    expect(flat).toEqual({
+      status: "available",
+      message: null,
+      provider: "anthropic",
+      gatewayModel: "model-b",
+      models: [
+        { id: "model-b", label: "model-b", provider: "anthropic" },
+        { id: "model-c", label: "model-c" },
+      ],
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
+      provider: "anthropic",
+      model: "model-b",
+      providers: [
+        { slug: "openrouter", authenticated: true, models: ["openrouter/only-model"] },
+        { slug: "anthropic", authenticated: true, models: ["model-b"] },
+      ],
+    })));
+    const grouped = await listHermesGatewayModelOptions({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: API_KEY });
+    expect(grouped).toEqual({
+      status: "available",
+      message: null,
+      provider: "anthropic",
+      gatewayModel: "model-b",
+      models: [{ id: "model-b", label: "model-b", provider: "anthropic" }],
+    });
+  });
+
   it("fails closed with an auth reason and never echoes the key", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ error: `bad key ${API_KEY}` }, 401)));
 
