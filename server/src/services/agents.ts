@@ -189,6 +189,42 @@ function containsRedactedMarker(value: unknown): boolean {
   return Object.values(value as Record<string, unknown>).some((entry) => containsRedactedMarker(entry));
 }
 
+const UNRESTORABLE = Symbol("unrestorable");
+
+/**
+ * The agent hire flow stores a redacted copy of the pending agent's config in
+ * its approval payload. Before that payload is applied, put back each
+ * redaction placeholder from the pending agent's own saved value at the same
+ * place, replacing a whole nested object when only its saved form differs.
+ * Returns UNRESTORABLE when a placeholder has no saved counterpart.
+ */
+function restoreRedactedFromSaved(next: unknown, saved: unknown): unknown {
+  if (next === REDACTED_EVENT_VALUE) return saved === undefined ? UNRESTORABLE : saved;
+  if (!containsRedactedMarker(next)) return next;
+  if (!isPlainRecord(next) || !isPlainRecord(saved)) return saved === undefined ? UNRESTORABLE : saved;
+  const restored: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(next)) {
+    const entry = restoreRedactedFromSaved(value, saved[key]);
+    if (entry === UNRESTORABLE) return saved;
+    restored[key] = entry;
+  }
+  return restored;
+}
+
+function restoreRedactedApprovalPayload(
+  payload: Record<string, unknown>,
+  saved: { adapterConfig: unknown; runtimeConfig: unknown; metadata: unknown },
+) {
+  const restored = { ...payload };
+  for (const field of ["adapterConfig", "runtimeConfig", "metadata"] as const) {
+    if (!isPlainRecord(payload[field])) continue;
+    const value = restoreRedactedFromSaved(payload[field], saved[field]);
+    // Left as-is when unrestorable, so persistence still refuses the placeholder.
+    if (value !== UNRESTORABLE) restored[field] = value;
+  }
+  return restored;
+}
+
 function hasConfigPatchFields(data: Partial<typeof agents.$inferInsert>) {
   return CONFIG_REVISION_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(data, field));
 }
@@ -1099,6 +1135,7 @@ export function agentService(db: Db) {
         await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, id)).for("update");
         const existing = await agentService(txDb).getById(id);
         if (!existing || existing.status !== "pending_approval") return null;
+        if (approvedPayload) approvedPayload = restoreRedactedApprovalPayload(approvedPayload, existing);
         // Callers can reach activation without the approval routes, so check
         // the Hermes key binding again against the locked agent row before any
         // secret is normalized, persisted, or bound.

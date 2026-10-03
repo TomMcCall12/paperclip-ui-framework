@@ -612,6 +612,35 @@ describe("PaperclipRunnerToolAuthority", () => {
     ).resolves.toMatchObject({ approval: { id: approvalId }, tasks: [] });
   });
 
+  it("returns hire approval payloads redacted, so a typed gateway key never reaches an agent", async () => {
+    const approvalId = randomUUID();
+    const typedKey = `synthetic-gateway-key-${randomUUID()}`;
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: {
+        name: "Gateway hire",
+        adapterType: "hermes_gateway",
+        adapterConfig: { apiBaseUrl: "https://gateway.example.test", apiKey: typedKey },
+      },
+    });
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      for (const [tool, args] of [
+        ["get_approval", { approvalId }],
+        ["get_approval_context", { approvalId }],
+        ["list_approvals", {}],
+      ] as const) {
+        const result = await authority.execute({ tool, callId: `redacted-${tool}`, arguments: args });
+        expect(JSON.stringify(result)).not.toContain(typedKey);
+      }
+    } finally {
+      await db.delete(approvals).where(eq(approvals.id, approvalId));
+    }
+  });
+
   it("fits large assigned catalogs alongside workspace and completion tools without dropping task tools", async () => {
     const listToolsForNamedGateway = vi.fn().mockResolvedValue(Array.from({ length: 224 }, (_, i) => ({
       name: `app.action_${i}`, displayName: `Action ${i}`, description: "Read a fixture",

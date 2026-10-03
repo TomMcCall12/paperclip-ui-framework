@@ -1,4 +1,4 @@
-import { agentAppearanceSchema } from "@paperclipai/shared";
+import { agentAppearanceSchema, isUuidLike } from "@paperclipai/shared";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvalComments, approvals } from "@paperclipai/db";
@@ -56,7 +56,9 @@ export function approvalService(db: Db) {
   ) {
     const agentId = hireApprovalPayloadAgentId(payload);
     let target: typeof agents.$inferSelect | null = null;
-    if (agentId) {
+    // A legacy payload may hold a non-UUID agent id; it names no agent, so it
+    // gets the same 422 as a missing agent instead of a database error.
+    if (agentId && isUuidLike(agentId)) {
       const query = source.select().from(agents).where(eq(agents.id, agentId));
       target = await (opts.lockTarget ? query.for("update") : query).then((rows) => rows[0] ?? null);
     }
@@ -298,10 +300,21 @@ export function approvalService(db: Db) {
       if (applied && updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = hireApprovalPayloadAgentId(payload);
-        // Only this company's pending hire is withdrawn; a payload naming any
+        // Only this company's hire that never became active is withdrawn: a
+        // pending agent, or one paused while pending. A payload naming any
         // other agent must not terminate it.
-        const target = payloadAgentId ? await agentsSvc.getById(payloadAgentId) : null;
-        if (payloadAgentId && !hireApprovalTargetViolation({ companyId: updated.companyId, payload, target })) {
+        const target = payloadAgentId && isUuidLike(payloadAgentId)
+          ? await db
+            .select({ companyId: agents.companyId, status: agents.status })
+            .from(agents)
+            .where(eq(agents.id, payloadAgentId))
+            .then((rows) => rows[0] ?? null)
+          : null;
+        if (
+          payloadAgentId &&
+          target?.companyId === updated.companyId &&
+          (target.status === "pending_approval" || target.status === "paused")
+        ) {
           await agentsSvc.terminate(payloadAgentId);
         }
       }

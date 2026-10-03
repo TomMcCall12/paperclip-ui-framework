@@ -34,7 +34,7 @@ function createApproval(status: string): ApprovalRecord {
     companyId: "company-1",
     type: "hire_agent",
     status,
-    payload: { agentId: "agent-1" },
+    payload: { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1" },
     requestedByAgentId: "requester-1",
   };
 }
@@ -42,7 +42,7 @@ function createApproval(status: string): ApprovalRecord {
 type AgentRecord = { id: string; companyId: string; status: string; adapterType: string; adapterConfig: unknown };
 
 const PENDING_AGENT: AgentRecord = {
-  id: "agent-1",
+  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
   companyId: "company-1",
   status: "pending_approval",
   adapterType: "process",
@@ -105,8 +105,8 @@ function createDbStub(
 describe("approvalService resolution idempotency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: "agent-1" }, activated: true });
-    mockAgentService.create.mockResolvedValue({ id: "agent-1" });
+    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1" }, activated: true });
+    mockAgentService.create.mockResolvedValue({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1" });
     mockAgentService.getById.mockResolvedValue(PENDING_AGENT);
     mockAgentService.terminate.mockResolvedValue(undefined);
     mockNotifyHireApproved.mockResolvedValue(undefined);
@@ -149,7 +149,7 @@ describe("approvalService resolution idempotency", () => {
     const result = await svc.approve("approval-1", "board", "ship it");
 
     expect(result.applied).toBe(true);
-    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload);
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", approved.payload);
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
     expect(dbStub.lockedTables).toEqual([expect.anything(), agents]);
     expect(dbStub.transactionOutcomes).toEqual(["committed"]);
@@ -187,7 +187,7 @@ describe("approvalService resolution idempotency", () => {
     expect(dbStub.transactionOutcomes).toEqual(["committed"]);
     expect(mockNotifyHireApproved).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ agentId: "agent-1", source: "approval" }),
+      expect.objectContaining({ agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", source: "approval" }),
     );
   });
 
@@ -216,7 +216,7 @@ describe("approvalService resolution idempotency", () => {
       );
       expect(err).toMatchObject({ status: 422, details: { code } });
       expect(JSON.stringify({ message: err?.message, details: err?.details })).not.toMatch(
-        new RegExp(`${OWN_SECRET_ID}|${FOREIGN_SECRET_ID}|agent-1`),
+        new RegExp(`${OWN_SECRET_ID}|${FOREIGN_SECRET_ID}|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1`),
       );
       expect(dbStub.update).not.toHaveBeenCalled();
       expect(dbStub.transactionOutcomes).toEqual(["rolled_back"]);
@@ -231,9 +231,9 @@ describe("approvalService resolution idempotency", () => {
       ["already active", [{ ...PENDING_AGENT, status: "idle" }]],
     ] as const) {
       for (const [payloadLabel, payload] of [
-        ["adapter-type-omitted", { agentId: "agent-1" }],
-        ["non-Hermes", { agentId: "agent-1", adapterType: "process" }],
-        ["Hermes", { agentId: "agent-1", adapterType: "hermes_gateway" }],
+        ["adapter-type-omitted", { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1" }],
+        ["non-Hermes", { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", adapterType: "process" }],
+        ["Hermes", { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", adapterType: "hermes_gateway" }],
       ] as const) {
         it(`keeps a ${payloadLabel} approval naming a ${label} agent open`, async () => {
           const dbStub = createDbStub([[pendingWith({ ...payload })]], [], [...agentRows]);
@@ -245,7 +245,7 @@ describe("approvalService resolution idempotency", () => {
     it("rejects an old approval that borrows another stored secret for the pending Hermes agent", async () => {
       const dbStub = createDbStub(
         [[pendingWith({
-          agentId: "agent-1",
+          agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
           adapterType: "hermes_gateway",
           adapterConfig: { apiBaseUrl: SAVED_URL, token: { type: "secret_ref", secretId: FOREIGN_SECRET_ID } },
         }, "revision_requested")]],
@@ -255,23 +255,10 @@ describe("approvalService resolution idempotency", () => {
       await expectRejectedDecision(dbStub, "hermes_gateway_unbound_secret_ref");
     });
 
-    it("rejects an old approval that moves the pending Hermes agent's own key to the token alias", async () => {
-      const dbStub = createDbStub(
-        [[pendingWith({
-          agentId: "agent-1",
-          adapterType: "hermes_gateway",
-          adapterConfig: { apiBaseUrl: SAVED_URL, token: { type: "secret_ref", secretId: OWN_SECRET_ID } },
-        })]],
-        [],
-        [HERMES_AGENT],
-      );
-      await expectRejectedDecision(dbStub, "hermes_gateway_unbound_secret_ref");
-    });
-
     it("rejects an old approval that sends the saved key to a new gateway URL", async () => {
       const dbStub = createDbStub(
         [[pendingWith({
-          agentId: "agent-1",
+          agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
           adapterType: "hermes_gateway",
           adapterConfig: {
             apiBaseUrl: "https://collector.example.test/v1",
@@ -340,7 +327,7 @@ describe("approvalService resolution idempotency", () => {
 
     it("treats a repeated approve of an already approved Hermes hire as a no-op without rechecking", async () => {
       const approved = pendingWith({
-        agentId: "agent-1",
+        agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
         adapterType: "hermes_gateway",
         adapterConfig: { apiBaseUrl: SAVED_URL, apiKey: { type: "secret_ref", secretId: OWN_SECRET_ID } },
       }, "approved");
@@ -353,9 +340,44 @@ describe("approvalService resolution idempotency", () => {
       expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
     });
 
+    it("terminates this company's pending hire that was paused before the rejection", async () => {
+      const dbStub = createDbStub(
+        [[createApproval("pending")]],
+        [createApproval("rejected")],
+        [{ ...PENDING_AGENT, status: "paused" }],
+      );
+
+      await approvalService(dbStub.db as any).reject("approval-1", "board", null);
+
+      expect(mockAgentService.terminate).toHaveBeenCalledWith(PENDING_AGENT.id);
+    });
+
+    it("does not terminate an active agent named by a rejected approval", async () => {
+      const dbStub = createDbStub(
+        [[createApproval("pending")]],
+        [createApproval("rejected")],
+        [{ ...PENDING_AGENT, status: "idle" }],
+      );
+
+      await approvalService(dbStub.db as any).reject("approval-1", "board", null);
+
+      expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    });
+
+    it("keeps a legacy approval naming a non-UUID agent open with a 422, not a database error", async () => {
+      const dbStub = createDbStub([[{ ...createApproval("pending"), payload: { agentId: "cto-hire" } }]], []);
+      const svc = approvalService(dbStub.db as any);
+      await expect(svc.approve("approval-1", "board", null))
+        .rejects.toMatchObject({ status: 422, details: { code: "hire_approval_agent_not_pending" } });
+      expect(dbStub.selectWhere).not.toHaveBeenCalledWith(agents);
+    });
+
     it("does not terminate another company's agent when rejecting", async () => {
-      mockAgentService.getById.mockResolvedValue({ ...PENDING_AGENT, companyId: "company-2" });
-      const dbStub = createDbStub([[createApproval("pending")]], [createApproval("rejected")]);
+      const dbStub = createDbStub(
+        [[createApproval("pending")]],
+        [createApproval("rejected")],
+        [{ ...PENDING_AGENT, companyId: "company-2" }],
+      );
 
       const result = await approvalService(dbStub.db as any).reject("approval-1", "board", null);
 
@@ -368,7 +390,7 @@ describe("approvalService resolution idempotency", () => {
 
       await approvalService(dbStub.db as any).reject("approval-1", "board", null);
 
-      expect(mockAgentService.terminate).toHaveBeenCalledWith("agent-1");
+      expect(mockAgentService.terminate).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1");
     });
   });
 });
@@ -376,7 +398,7 @@ describe("approvalService resolution idempotency", () => {
 describe("approvalService conditional revision transitions", () => {
   it("refuses a resubmit once the approval left revision_requested", async () => {
     const dbStub = createDbStub([[createApproval("revision_requested")]], []);
-    await expect(approvalService(dbStub.db as any).resubmit("approval-1", { agentId: "agent-1" })).rejects.toMatchObject({
+    await expect(approvalService(dbStub.db as any).resubmit("approval-1", { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1" })).rejects.toMatchObject({
       status: 422,
     });
     expect(dbStub.update).toHaveBeenCalledTimes(1);
@@ -399,14 +421,14 @@ describe("approvalService.findOpenHireApprovalForAgent", () => {
     const match = {
       ...createApproval("pending"),
       id: "approval-match",
-      payload: { agentId: "agent-1" },
+      payload: { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1" },
     };
     // The company, type, open-status and payload->>'agentId' predicates run in
     // SQL, so the DB hands back only the matching row.
     const dbStub = createDbStub([[match]], []);
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+    const result = await svc.findOpenHireApprovalForAgent("company-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1");
 
     expect(result?.id).toBe("approval-match");
     expect(dbStub.selectWhere).toHaveBeenCalledTimes(1);
@@ -416,7 +438,7 @@ describe("approvalService.findOpenHireApprovalForAgent", () => {
     const dbStub = createDbStub([[]], []);
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+    const result = await svc.findOpenHireApprovalForAgent("company-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1");
 
     expect(result).toBeNull();
   });

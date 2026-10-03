@@ -239,6 +239,43 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       expect((activated?.adapterConfig as Record<string, any>).apiKey.secretId).toBe(ownSecretId);
     });
 
+    it("approves a hire whose stored payload was redacted, keeping the pending agent's real values", async () => {
+      const companyId = await seedCompany();
+      const ownSecretId = await seedSecret(companyId, "own");
+      const pending = await agentService(db).create(companyId, {
+        name: `Gateway ${randomUUID().slice(0, 6)}`,
+        role: "engineer",
+        adapterType: "hermes_gateway",
+        adapterConfig: {
+          apiBaseUrl: SAVED_URL,
+          apiKey: secretRef(ownSecretId),
+          headers: { "X-Trace": "synthetic-real-header" },
+        },
+        status: "pending_approval",
+        spentMonthlyCents: 0,
+        permissions: {},
+        lastHeartbeatAt: null,
+      });
+      // The agent hire flow stores a redacted copy of the config in the payload.
+      const approval = await seedApproval(companyId, {
+        name: pending.name,
+        adapterType: "hermes_gateway",
+        adapterConfig: {
+          apiBaseUrl: SAVED_URL,
+          apiKey: secretRef(ownSecretId),
+          headers: { "X-Trace": "***REDACTED***" },
+        },
+        agentId: pending.id,
+      });
+
+      const result = await approvalService(db).approve(approval.id, "board-user", null);
+
+      expect(result.applied).toBe(true);
+      const activated = await agentRow(pending.id);
+      expect(activated?.status).toBe("idle");
+      expect((activated?.adapterConfig as Record<string, any>).headers).toEqual({ "X-Trace": "synthetic-real-header" });
+    });
+
     for (const [label, makeConfig, code] of [
       [
         "sends the saved key to a new gateway URL",

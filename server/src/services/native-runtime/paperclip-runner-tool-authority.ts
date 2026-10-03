@@ -77,6 +77,13 @@ import {
   READ_CHAT_ATTACHMENT_TOOL_NAME,
   type NativeChatAttachmentReadScope,
 } from "./chat-attachment-read.js";
+import { redactEventPayload } from "../../redaction.js";
+
+// Approval payloads can hold a typed key until the hire is activated; agents
+// see them redacted, as the HTTP approval routes return them.
+function redactedApproval<T extends { payload: unknown }>(approval: T): T {
+  return { ...approval, payload: redactEventPayload(approval.payload as Record<string, unknown>) ?? {} };
+}
 
 const IMPLEMENTED_OPERATIONS = new Set([
   "search_api", "call_api", "hire_agent",
@@ -490,10 +497,10 @@ export class PaperclipRunnerToolAuthority {
         return { actor: redactedActor(actor) };
       }
       case "list_approvals":
-        return { approvals: await approvalService(this.db).list(this.binding.companyId) };
+        return { approvals: (await approvalService(this.db).list(this.binding.companyId)).map(redactedApproval) };
       case "get_approval": {
         const approval = await this.#approval(requiredString(input.approvalId));
-        return { approval };
+        return { approval: redactedApproval(approval) };
       }
       case "get_approval_context": {
         const approval = await this.#approval(requiredString(input.approvalId));
@@ -504,7 +511,7 @@ export class PaperclipRunnerToolAuthority {
             eq(issueApprovals.companyId, this.binding.companyId),
             eq(issues.companyId, this.binding.companyId),
           ));
-        return { approval, tasks: tasks.map((row) => row.issue) };
+        return { approval: redactedApproval(approval), tasks: tasks.map((row) => row.issue) };
       }
       case "report_progress": return this.#reportProgress(input);
       case "request_human_input": return this.#requestHumanInput(input,
