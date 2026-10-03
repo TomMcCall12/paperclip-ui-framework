@@ -3,7 +3,7 @@
 **3 October 2026, afternoon session.** This continues step 1 of [[(C) Simple Autonomy Status — 2026-10-03]] and follows [[(C) Simple Autonomy B1 Candidate Checkpoint]]. Telegram remains out of scope. **Nothing was deployed, pushed, migrated or restarted.** The live Lab is still on `e6f2e353…` and was not touched.
 
 ## Candidate state
-- Worktree `/media/External SSD/paperclip/isolated-candidates/terra-simple-autonomy`, branch `feat/terra-simple-autonomy`, now **clean at `c40575535787e17942452f61fdc09c64a3886d48`** (seven new local commits on top of `575d57d`).
+- Worktree `/media/External SSD/paperclip/isolated-candidates/terra-simple-autonomy`, branch `feat/terra-simple-autonomy`, now **clean at `de433722a5d46827690716eb8f20d7f7698e7892`** (nine new local commits on top of `575d57d`, including this note).
 - The eight-file uncommitted approvals draft was inspected, tested and committed — it is no longer a loose draft.
 
 ## New commits (oldest first)
@@ -32,3 +32,26 @@
 - This is **not an independent human or separate-agent review** of the exact commit `c405755`. Get one before release.
 - Still not done: the disposable-PostgreSQL smoke test of the built image; real-team acceptance (step 4: model selection through served runs, worktrees, blocked handoff with no wake loop, interruption and recovery); a rollback-safe release (step 5). The live board is unchanged.
 - The Obsidian vault was mounted **read-only** in this session, so this note could not be written into the vault directly; it was delivered as a file.
+
+## Update — 3 October, evening: disposable smoke of the built candidate
+
+**Environment fact:** this session runs in a *disposable* container made from the live image. PID 1 is the Claude remote-control session, and `/paperclip` is a private tmpfs. Live data is **not** mounted, so no live backup was available to restore. The smoke used a fresh embedded PostgreSQL in a throwaway home on a separate port (`127.0.0.1:3199`). The live board at `192.168.0.163:3100` was read only for health, and it stayed on `e6f2e353…` and `ok` throughout.
+
+- **Built and booted the exact candidate**, launched the same way the production image is (`node --import tsx/dist/loader.mjs server/dist/index.js`). From a first run, all migrations applied automatically and health was `ok` in **authenticated/private** mode, reporting the candidate commit. It then restarted in `local_trusted` mode for an HTTP-driven smoke, and later restarted on the **existing** database at `de43372` without issue.
+- **Over real HTTP, against a fake loopback Hermes gateway** (grouped provider list, as the live gateway returns):
+  - Hermes agent creation stored its plain key as a managed secret. Model options listed only the current provider's models; an OpenRouter model was excluded.
+  - Issue writes: a listed task model returned 201. An other-provider model returned 422 `issue_task_model_unsupported`. A key-redirecting override returned 422 `issue_assignee_override_not_allowed`. Reassigning an unsafe unassigned issue to the Hermes agent returned 422.
+  - Agent PATCH: the agent's own key moved to `token` returned 422. A model-only PATCH returned 200.
+  - Approvals: a generic approval naming an agent returned 422 `hire_approval_agent_mismatch`. A generic Hermes approval without an agent returned 422, pointing to the hire flow. A generic non-Hermes approval returned 201.
+  - Hire lifecycle: with board approval required, the agent-hire flow produced a pending agent plus an approval bound to it. Approve moved the agent to `idle`, with its key stored as its own secret and working. Re-approve was a no-op.
+  - **Dispatch-time check in real heartbeats:** after the gateway stopped offering the task model, both the assignment wake and the manual wake failed `configuration_incomplete` **before any run request**; the gateway saw only model-list calls. The issue moved to `blocked` with **no wake loop** (2 runs, then quiet). An unverifiable list (zero current-provider models) also blocked. After the model was restored and the issue unblocked, the check passed and a real `POST /v1/runs` reached the agent's own gateway with the right key. That run returned 404 only because the fake gateway does not implement runs.
+- **Bug found by the smoke and fixed (`de43372`):** the blocked-issue comment wrongly said "required secret/env bindings are missing". It now explains that the task model is unavailable or unverifiable. Unit test added, 22/22 pass, and the smoke confirmed the new wording.
+
+## Review status
+- An automated multi-angle review of `575d57d..c405755` was launched but **failed on a usage limit** (resets 19:40 UTC). No result was produced.
+- I self-reviewed the commits the first review never saw (`f735788`, `c405755`, `de43372`). This is **not independent**. It found no defect in the approval binding: the resubmit race is covered by the conditional update. Issue approval linking does not create payloads, and the built-in and plugin-managed hire approvals bind to the agent they just created.
+- **New residual (low):** the plugin-managed agent path (`plugin-managed-agents.ts`) creates agents through the service, so a plugin-declared Hermes agent config is not checked for a borrowed stored key at creation. The route guards do not run there. Plugins are installed by the board, but this should be closed before broad plugin use.
+
+## Still open (cannot be done from this session)
+1. **Independent review of `de43372`** by a separate reviewer.
+2. **Real-team acceptance (step 4)** and **release (step 5)** need the host: either an image built from the candidate run beside or in place of the live container, or board credentials for a staging instance. This disposable container has neither host access nor board credentials, and it must not restart the live service. A smoke against a *restored copy of the live database* also needs host access to the backups.
