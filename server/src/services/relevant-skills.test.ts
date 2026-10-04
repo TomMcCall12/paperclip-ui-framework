@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  RELEVANT_SKILL_ADAPTER_TYPES,
+  INLINE_SKILLS_TOTAL_MAX_CHARS,
+  INLINE_SKILL_MAX_CHARS,
+  INSTALLED_SKILL_ADAPTER_TYPES,
   expandTaskTerms,
   rankRelevantSkills,
   renderRelevantSkillInstructions,
@@ -113,8 +115,44 @@ describe("renderRelevantSkillInstructions", () => {
   });
 });
 
-describe("RELEVANT_SKILL_ADAPTER_TYPES", () => {
-  it("covers only adapters where Paperclip installs the skills", () => {
-    expect([...RELEVANT_SKILL_ADAPTER_TYPES].sort()).toEqual(["claude_local", "codex_local"]);
+describe("inline delivery for adapters without installed skills", () => {
+  const withMarkdown = LIBRARY.map((skill) => ({
+    ...skill,
+    markdown: `---\nname: ${skill.name}\ndescription: x\n---\n# ${skill.name}\n\n1. Step one for ${skill.name}.`,
+  }));
+
+  it("carries each skill's instructions without frontmatter", () => {
+    const text = renderRelevantSkillInstructions(
+      rankRelevantSkills({ taskText: "Review this from a user's point of view.", candidates: withMarkdown }),
+      { delivery: "inline" },
+    );
+    expect(text).toContain("from your Paperclip skill library");
+    expect(text).toContain("### Skill: design-critique");
+    expect(text).toContain("1. Step one for design-critique.");
+    expect(text).not.toContain("description: x");
+  });
+
+  it("caps each skill and the total so the prompt stays bounded", () => {
+    const huge = withMarkdown.map((skill) => ({ ...skill, markdown: `# ${skill.name}\n${"x".repeat(INLINE_SKILL_MAX_CHARS * 2)}` }));
+    const ranked = rankRelevantSkills({
+      taskText: "Plan the QA acceptance criteria, child tasks and owners, then debug the root cause of the TypeScript Expo failure.",
+      candidates: huge,
+    });
+    const text = renderRelevantSkillInstructions(ranked, { delivery: "inline" });
+    expect(text).toContain("[Truncated: the rest of this skill was omitted.]");
+    expect(text.length).toBeLessThan(INLINE_SKILLS_TOTAL_MAX_CHARS + 2_000);
+  });
+
+  it("names installed skills instead of inlining them", () => {
+    const text = renderRelevantSkillInstructions(
+      rankRelevantSkills({ taskText: "Review this from a user's point of view.", candidates: withMarkdown }),
+      { delivery: "installed" },
+    );
+    expect(text).toContain("load each one that applies");
+    expect(text).not.toContain("### Skill:");
+  });
+
+  it("treats only adapters where Paperclip installs skills as installed", () => {
+    expect([...INSTALLED_SKILL_ADAPTER_TYPES].sort()).toEqual(["claude_local", "codex_local"]);
   });
 });

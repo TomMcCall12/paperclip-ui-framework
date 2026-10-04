@@ -12,8 +12,17 @@ import { companySkills, issueComments, issues } from "@paperclipai/db";
  * skills are candidates, so this never grants a skill the board excluded.
  */
 
-/** Adapters where Paperclip installs the agent's skills for the run itself. */
-export const RELEVANT_SKILL_ADAPTER_TYPES: ReadonlySet<string> = new Set(["claude_local", "codex_local"]);
+/**
+ * Adapters where Paperclip installs the agent's skills into its runtime, so
+ * the prompt can just name them. Every other adapter (gateways and any future
+ * provider) receives the skills' instructions inline, so recommendations work
+ * for every agent in Paperclip whatever model it runs on.
+ */
+export const INSTALLED_SKILL_ADAPTER_TYPES: ReadonlySet<string> = new Set(["claude_local", "codex_local"]);
+
+/** Per-skill and total caps for skill instructions delivered inline. */
+export const INLINE_SKILL_MAX_CHARS = 6_000;
+export const INLINE_SKILLS_TOTAL_MAX_CHARS = 12_000;
 
 export const RELEVANT_SKILLS_DEFAULT_LIMIT = 3;
 /** Minimum weighted score for a skill to be recommended. */
@@ -91,6 +100,8 @@ export type SkillMatchCandidate = {
   key: string;
   name: string;
   description: string | null;
+  /** The skill's SKILL.md, used when its instructions are delivered inline. */
+  markdown?: string | null;
 };
 
 export type RelevantSkill = SkillMatchCandidate & {
@@ -149,17 +160,44 @@ export function rankRelevantSkills(input: {
   return ranked.slice(0, input.limit ?? RELEVANT_SKILLS_DEFAULT_LIMIT);
 }
 
-/** The wake-prompt section naming the selected skills, or an empty string. */
-export function renderRelevantSkillInstructions(skills: RelevantSkill[]): string {
+function stripFrontmatter(markdown: string): string {
+  return markdown.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+}
+
+/**
+ * The wake-prompt section for the selected skills, or an empty string. When
+ * the agent's runtime has the skills installed it names them; otherwise it
+ * carries each skill's instructions inline, capped per skill and in total.
+ */
+export function renderRelevantSkillInstructions(
+  skills: RelevantSkill[],
+  options: { delivery?: "installed" | "inline" } = {},
+): string {
   if (skills.length === 0) return "";
-  const lines = skills.map((skill) => {
+  const summary = (skill: RelevantSkill) => {
     const description = (skill.description ?? "").replace(/\s+/g, " ").trim();
     return `- **${skill.name}**${description ? ` — ${description}` : ""}`;
-  });
-  return [
-    "These installed skills match this task. Before you start, load each one that applies (with your Skill tool, or by reading its SKILL.md) and follow its procedure unless the task says otherwise:",
-    ...lines,
-  ].join("\n");
+  };
+  if (options.delivery !== "inline") {
+    return [
+      "These installed skills match this task. Before you start, load each one that applies (with your Skill tool, or by reading its SKILL.md) and follow its procedure unless the task says otherwise:",
+      ...skills.map(summary),
+    ].join("\n");
+  }
+  const sections: string[] = [
+    "These skills from your Paperclip skill library match this task. Their instructions follow; before you start, follow each one that applies unless the task says otherwise:",
+    ...skills.map(summary),
+  ];
+  let remaining = INLINE_SKILLS_TOTAL_MAX_CHARS;
+  for (const skill of skills) {
+    const body = stripFrontmatter(skill.markdown ?? "");
+    if (!body || remaining <= 0) continue;
+    const limit = Math.min(INLINE_SKILL_MAX_CHARS, remaining);
+    const text = body.length > limit ? `${body.slice(0, limit).trimEnd()}\n\n[Truncated: the rest of this skill was omitted.]` : body;
+    remaining -= text.length;
+    sections.push(`### Skill: ${skill.name}\n\n${text}`);
+  }
+  return sections.join("\n\n");
 }
 
 /**
@@ -191,7 +229,12 @@ export async function resolveRelevantSkillsForRun(input: {
     .orderBy(desc(issueComments.createdAt))
     .limit(RECENT_COMMENT_LIMIT);
   const candidates = await input.db
-    .select({ key: companySkills.key, name: companySkills.name, description: companySkills.description })
+    .select({
+      key: companySkills.key,
+      name: companySkills.name,
+      description: companySkills.description,
+      markdown: companySkills.markdown,
+    })
     .from(companySkills)
     .where(and(eq(companySkills.companyId, input.companyId), inArray(companySkills.key, input.desiredSkillKeys)));
   return rankRelevantSkills({

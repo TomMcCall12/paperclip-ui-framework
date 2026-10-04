@@ -12,7 +12,7 @@ import {
 } from "./issue-assignee-override-guard.js";
 import { resolveAgentModelOptions } from "./agent-model-options.js";
 import {
-  RELEVANT_SKILL_ADAPTER_TYPES,
+  INSTALLED_SKILL_ADAPTER_TYPES,
   renderRelevantSkillInstructions,
   resolveRelevantSkillsForRun,
 } from "./relevant-skills.js";
@@ -21440,11 +21440,11 @@ export function heartbeatService(
       // Both CLI adapters and native context materialization use the same resolved set.
       runtimeSkillEntries.splice(0, runtimeSkillEntries.length, ...connectorSkillConfig.paperclipRuntimeSkills);
       const connectorDelivery = await prepareConnectorSkillDelivery(connectorSkillConfig, agent.adapterType);
-      // Recommend the agent's own installed skills that match this task. Only
-      // adapters where Paperclip installs the skills for the run get this, and
-      // a failure here never blocks the run.
+      // Recommend the agent's own skills that match this task, for every
+      // adapter: named when Paperclip installed them into the runtime, and
+      // delivered inline otherwise. A failure here never blocks the run.
       let relevantSkillInstructions = "";
-      if (RELEVANT_SKILL_ADAPTER_TYPES.has(agent.adapterType) && issueId) {
+      if (issueId) {
         try {
           const relevantSkills = await resolveRelevantSkillsForRun({
             db,
@@ -21452,7 +21452,8 @@ export function heartbeatService(
             issueId,
             desiredSkillKeys: runtimeSkillPreference.desiredSkillEntries.map((entry) => entry.key),
           });
-          relevantSkillInstructions = renderRelevantSkillInstructions(relevantSkills);
+          const skillDelivery = INSTALLED_SKILL_ADAPTER_TYPES.has(agent.adapterType) ? "installed" : "inline";
+          relevantSkillInstructions = renderRelevantSkillInstructions(relevantSkills, { delivery: skillDelivery });
           if (relevantSkills.length > 0) {
             await appendRunEvent(run, {
               eventType: "lifecycle",
@@ -21460,6 +21461,7 @@ export function heartbeatService(
               level: "info",
               message: `Recommended ${relevantSkills.length} skill(s) matching this task`,
               payload: {
+                delivery: INSTALLED_SKILL_ADAPTER_TYPES.has(agent.adapterType) ? "installed" : "inline",
                 relevantSkills: relevantSkills.map((skill) => ({
                   key: skill.key,
                   score: skill.score,
