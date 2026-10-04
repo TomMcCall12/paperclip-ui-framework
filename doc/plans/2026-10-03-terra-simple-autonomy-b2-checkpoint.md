@@ -95,6 +95,31 @@ This review found a hole in the redaction-restore fix and four smaller issues, a
 - **Full `pnpm -r typecheck` and `pnpm build` both exit 0, stamped `510dfaa`.**
 - Rebuilt-artifact smoke: a Hermes agent configured with `token` stores it as a managed secret, leaves no plaintext, and authenticates to its gateway.
 
-## Still open (cannot be done from this session)
-1. Optional: a further independent review of `b9648d1..510dfaa`. Everything up to `b9648d1` has had independent review (see above).
-2. **Real-team acceptance (step 4)** and **release (step 5)** need the host: either an image built from the candidate run beside or in place of the live container, or board credentials for a staging instance. This disposable container has neither host access nor board credentials, and it must not restart the live service. A smoke against a *restored copy of the live database* also needs host access to the backups.
+## Release to the live Lab — 4 October 2026, ~07:30 UTC
+Host access (SSH as `hermes-operator`, with Docker and sudo) was granted on 4 October, so the remaining gates ran on the ZimaBoard:
+
+1. **Exact image built from source.** `git archive 510dfaa` was built as the production target, stamping commit `510dfaa`: `paperclip:tom40-terra-510dfaace1af65d925c211961b8558f013956621`. The same Rust 1.97.1 runtime layer live uses was then added (`Dockerfile.managed-capacity.tom40-terra`), giving `paperclip:tom40-terra-rust-1.97.1`. Inside the image: rustc/cargo 1.97.1 and `build-info.json` commit `510dfaa`.
+2. **Restored-database smoke.** The 06:33 hourly live dump was restored into a throwaway `postgres:16` on an **internal-only Docker network**, with no egress, so no Telegram, Hermes or webhook calls were possible. It holds 1 company, 9 agents, 62 issues and 176 runs. The candidate image ran against it with the scheduler off:
+   - health `ok` at `510dfaa`
+   - migrations "already applied": no schema change between live and the candidate
+   - 0 error-level logs; startup recovery `ready`
+   - Jarvis's real config (`apiKey` stored secret, `http://192.168.0.163:8642`, insecure-HTTP opt-in) passes the new key rule, and a model-only PATCH returns 200
+   - the only real issue with Hermes overrides is TOM-28 (`done`)
+
+   The smoke containers and network were removed afterwards.
+3. **Release.** Live had no running, queued or retrying runs; the last run was the 04:00 nightly.
+   - Compose backed up to `docker-compose.yml.pre-tom40-terra-20261004T072739Z.bak`.
+   - Live stopped, and a full data copy taken: `data.pre-tom40-terra-510dfaa-20261004T072739Z`.
+   - Compose image set to `paperclip:tom40-terra-rust-1.97.1`, then `up -d`.
+4. **Readback.**
+   - Health `ok`, commit `510dfaa`, authenticated/private, bootstrap `ready`, database backup `ok`.
+   - UI returns 200; an unauthenticated `/api/companies` returns 403.
+   - 0 error-level logs; migrations already applied; restart count 0.
+   - Hermes gateway health 200.
+
+**Rollback:** `cd "/media/External SSD/paperclip" && sudo cp docker-compose.yml.pre-tom40-terra-20261004T072739Z.bak docker-compose.yml && sudo docker compose up -d paperclip`. The previous image `paperclip:tom39-rust-1.97.1-fast-tmpfs` (`982597be1180`) is still present. No migration ran, so the database needs no rollback. A full pre-release data copy also exists.
+
+## Still open
+1. **A fresh end-to-end task on the released build.** This needs a board session. A CLI-auth challenge was offered for Tom to approve; otherwise the 02:00–04:00 UTC nightly routines will exercise the new dispatch path on real Jarvis work. Read back `heartbeat_runs` after that window.
+2. **Real-team acceptance (step 4):** model selection through served runs, parallel worktrees, blocked handoff with no wake loop, and interruption/recovery truth. This is now possible on live.
+3. Optional: an independent review of `b9648d1..510dfaa`.
