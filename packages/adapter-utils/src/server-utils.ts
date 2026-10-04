@@ -2196,6 +2196,26 @@ export function selectPaperclipTaskMarkdown(
   return compact || full;
 }
 
+/**
+ * The run-bound Paperclip credential the server issues to remote gateway
+ * agents, which cannot receive an injected PAPERCLIP_API_KEY. It acts as this
+ * agent for this run only and stops working when the run ends.
+ */
+function renderRunApiCredential(value: unknown): string {
+  const credential = parseObject(value);
+  const token = asString(credential.token, "").trim();
+  const runId = asString(credential.runId, "").trim();
+  if (!token || !runId) return "";
+  return [
+    "## Paperclip API access for this run",
+    "",
+    "Use this credential for every Paperclip API call in this run (reads and writes such as comments, status and hand-offs). It acts as you, for this run only, and stops working when the run ends. Prefer it over any shared or bridge key. Never print or repeat it.",
+    "",
+    `- Header \`Authorization: Bearer ${token}\``,
+    `- Header \`X-Paperclip-Run-Id: ${runId}\``,
+  ].join("\n");
+}
+
 // Runtime-only connector skills are supplied by the server after assignment resolution.
 // Shared-home adapters consume them here on fresh and resumed runs without installing
 // files into a user-wide skills directory. They are not part of serialized wake data.
@@ -2211,6 +2231,7 @@ export function renderPaperclipWakePrompt(
     renderPaperclipWakePromptBody(value, options),
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
     relevantSkills ? `## Relevant skills for this task\n\n${relevantSkills}` : "",
+    renderRunApiCredential(wake.runApiCredential),
   ]);
 }
 

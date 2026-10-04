@@ -4478,6 +4478,19 @@ type ManagedMcpGatewayRunConfig = {
   }>;
 };
 
+/** The run context to persist: never the gateway run credential itself. */
+function withoutRunApiCredential(context: Record<string, unknown>): Record<string, unknown> {
+  const wake = parseObject(context.paperclipWake);
+  if (!("runApiCredential" in wake)) return context;
+  const { runApiCredential: _credential, ...rest } = wake;
+  return { ...context, paperclipWake: rest };
+}
+
+/** Adapters that run the agent on a remote gateway rather than in Paperclip. */
+function isGatewayAdapterType(adapterType: string): boolean {
+  return adapterType.endsWith("_gateway");
+}
+
 function configuredPaperclipApiBaseUrl(): string | null {
   const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
   return configured
@@ -23937,6 +23950,33 @@ export function heartbeatService(
             "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
           );
         }
+        // Remote gateway agents run outside Paperclip and cannot receive the
+        // injected PAPERCLIP_API_KEY, so they act as themselves through a
+        // run-bound credential carried in the wake message. It authenticates
+        // as this agent for this run only, and stops working when the run ends.
+        if (
+          nativeRuntimeResolution.kind === "legacy" &&
+          !adapter.supportsLocalAgentJwt &&
+          isGatewayAdapterType(agent.adapterType)
+        ) {
+          const gatewayTimeoutSec = Number(parseObject(agent.adapterConfig).timeoutSec);
+          const runCredential = createLocalAgentJwt(
+            agent.id,
+            agent.companyId,
+            agent.adapterType,
+            run.id,
+            run.responsibleUserId,
+            localAgentJwtScope,
+            {
+              runBound: true,
+              ttlSeconds: (Number.isFinite(gatewayTimeoutSec) && gatewayTimeoutSec > 0 ? gatewayTimeoutSec : 1800) + 600,
+            },
+          );
+          context.paperclipWake = {
+            ...parseObject(context.paperclipWake),
+            runApiCredential: runCredential ? { token: runCredential, runId: run.id, agentId: agent.id } : null,
+          };
+        }
         let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
         const inspectFinalizeWorkspaceBranch = async () => {
           const workspaceRecord = persistedExecutionWorkspace?.id
@@ -24801,7 +24841,7 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
-              contextSnapshot: context,
+              contextSnapshot: withoutRunApiCredential(context),
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));

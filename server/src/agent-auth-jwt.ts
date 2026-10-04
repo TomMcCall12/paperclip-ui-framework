@@ -14,6 +14,12 @@ export interface LocalAgentJwtClaims {
   run_id: string;
   responsible_user_id?: string | null;
   key_scope?: AgentApiKeyScope | null;
+  /**
+   * Set on credentials handed to remote gateway agents through their wake
+   * message. Such a credential authenticates only while its run is active, so
+   * a copy left in the gateway's conversation history is useless afterwards.
+   */
+  run_bound?: true;
   iat: number;
   exp: number;
   iss?: string;
@@ -126,11 +132,16 @@ export function createLocalAgentJwt(
   runId: string,
   responsibleUserId?: string | null,
   keyScope: AgentApiKeyScope = { kind: "standard" },
+  options: { runBound?: boolean; ttlSeconds?: number } = {},
 ) {
   const config = jwtConfig();
   if (!config) return null;
 
   const now = Math.floor(Date.now() / 1000);
+  // A run-bound credential may be shorter-lived than the default, never longer.
+  const ttlSeconds = options.ttlSeconds && options.ttlSeconds > 0
+    ? Math.min(Math.floor(options.ttlSeconds), config.ttlSeconds)
+    : config.ttlSeconds;
   const claims: LocalAgentJwtClaims = {
     sub: agentId,
     company_id: companyId,
@@ -138,8 +149,9 @@ export function createLocalAgentJwt(
     run_id: runId,
     responsible_user_id: responsibleUserId?.trim() || null,
     ...(keyScope.kind === "standard" ? {} : { key_scope: keyScope }),
+    ...(options.runBound ? { run_bound: true as const } : {}),
     iat: now,
-    exp: now + config.ttlSeconds,
+    exp: now + ttlSeconds,
     iss: config.issuer,
     aud: config.audience,
     instance_id: config.instanceId,
@@ -245,6 +257,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     run_id: runId,
     ...(responsibleUserClaim !== undefined ? { responsible_user_id: responsibleUserClaim } : {}),
     ...(keyScopeClaim !== undefined ? { key_scope: keyScopeClaim } : {}),
+    ...(claims.run_bound === true ? { run_bound: true as const } : {}),
     iat,
     exp,
     ...(issuer ? { iss: issuer } : {}),

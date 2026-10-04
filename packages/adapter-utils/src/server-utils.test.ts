@@ -913,6 +913,25 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("renders a gateway run credential as headers to use, and nothing without one", () => {
+    const base = {
+      reason: "issue_assigned",
+      issue: { id: "issue-1", status: "todo" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    };
+    const prompt = renderPaperclipWakePrompt({
+      ...base,
+      runApiCredential: { token: "header.payload.signature", runId: "run-123", agentId: "agent-1" },
+    });
+    expect(prompt).toContain("## Paperclip API access for this run");
+    expect(prompt).toContain("`Authorization: Bearer header.payload.signature`");
+    expect(prompt).toContain("`X-Paperclip-Run-Id: run-123`");
+    expect(prompt).toContain("stops working when the run ends");
+    expect(renderPaperclipWakePrompt({ ...base, runApiCredential: null })).not.toContain("Paperclip API access");
+  });
+
   it("adds server-selected relevant skills as their own section, and nothing when there are none", () => {
     const base = {
       reason: "issue_assigned",

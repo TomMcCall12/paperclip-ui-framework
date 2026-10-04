@@ -253,6 +253,29 @@ describe("agent local JWT", () => {
     expect(verifyLocalAgentJwt(legacyToken)).toBeNull();
   });
 
+  it("marks gateway credentials run-bound and keeps that claim through verification", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "hermes_gateway", "run-1", null, { kind: "standard" }, {
+      runBound: true,
+      ttlSeconds: 900,
+    });
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).toMatchObject({ sub: "agent-1", run_id: "run-1", run_bound: true });
+    expect(claims!.exp - claims!.iat).toBe(900);
+    const ordinary = verifyLocalAgentJwt(createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1")!);
+    expect(ordinary!.run_bound).toBeUndefined();
+  });
+
+  it("never lets a run-bound TTL exceed the configured maximum", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "hermes_gateway", "run-1", null, { kind: "standard" }, {
+      runBound: true,
+      ttlSeconds: 999_999,
+    });
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims!.exp - claims!.iat).toBe(3600);
+  });
+
   it("defaults TTL to 48h when PAPERCLIP_AGENT_JWT_TTL_SECONDS is unset", () => {
     // Must match DEFAULT_AGENT_JWT_TTL_SECONDS in cli/src/commands/env.ts. Run
     // tokens are minted once at adapter spawn, and a suspended host (laptop lid

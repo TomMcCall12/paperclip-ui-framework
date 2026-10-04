@@ -206,6 +206,52 @@ describe("agent auth middleware", () => {
     expect(read.body.readable).toBe(true);
   });
 
+  describe("run-bound gateway credentials", () => {
+    function setup(status: string) {
+      const agentId = randomUUID();
+      const companyId = randomUUID();
+      const runId = randomUUID();
+      const { db } = createDbState({ agent: { id: agentId, companyId }, run: { id: runId, companyId, agentId, status } });
+      const token = createLocalAgentJwt(agentId, companyId, "hermes_gateway", runId, null, { kind: "standard" }, {
+        runBound: true,
+        ttlSeconds: 600,
+      });
+      return { client: createApp(db), token: token!, endpoint: `/companies/${companyId}/issues/${randomUUID()}`, runId };
+    }
+
+    it.each(["queued", "running"])("acts as the agent for reads and writes while its run is %s", async (status) => {
+      const { client, token, endpoint, runId } = setup(status);
+      const write = await request(client).patch(endpoint).set("Authorization", `Bearer ${token}`)
+        .set("X-Paperclip-Run-Id", runId).send({ status: "done" });
+      expect(write.status).toBe(200);
+      const read = await request(client).get(endpoint).set("Authorization", `Bearer ${token}`);
+      expect(read.status).toBe(200);
+    });
+
+    it.each(["succeeded", "failed", "timed_out", "cancelled"])(
+      "stops working, for reads too, once its run is %s",
+      async (status) => {
+        const { client, token, endpoint } = setup(status);
+        const read = await request(client).get(endpoint).set("Authorization", `Bearer ${token}`);
+        expect(read.status).toBe(401);
+        expect(read.body.error).toContain("run is no longer active");
+        const write = await request(client).patch(endpoint).set("Authorization", `Bearer ${token}`).send({ status: "done" });
+        expect(write.status).toBe(401);
+      },
+    );
+
+    it("leaves ordinary local agent JWTs usable for reads after their run ends", async () => {
+      const agentId = randomUUID();
+      const companyId = randomUUID();
+      const runId = randomUUID();
+      const { db } = createDbState({ agent: { id: agentId, companyId }, run: { id: runId, companyId, agentId, status: "succeeded" } });
+      const token = createLocalAgentJwt(agentId, companyId, "claude_local", runId, null);
+      const read = await request(createApp(db)).get(`/companies/${companyId}/issues/${randomUUID()}`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(read.status).toBe(200);
+    });
+  });
+
   it("keeps header-less local requests as the implicit board actor with their run id", async () => {
     const runId = randomUUID();
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });

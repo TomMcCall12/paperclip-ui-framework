@@ -83,6 +83,9 @@ function invalidAgentTokenMessage(token: string) {
   return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
+/** Run statuses in which a run-bound gateway credential still authenticates. */
+const RUN_BOUND_ACTIVE_RUN_STATUSES: ReadonlySet<string> = new Set(["queued", "running"]);
+
 async function resolveLegacyRunResponsibleUserId(
   db: Db,
   input: { companyId: string; agentId: string; runId: string },
@@ -397,6 +400,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id), eq(heartbeatRuns.agentId, claims.sub),
         ));
+      // A run-bound credential (delivered to a remote gateway agent in its wake
+      // message) works only while its own run is active, for reads and writes.
+      if (claims.run_bound === true && !RUN_BOUND_ACTIVE_RUN_STATUSES.has(identityRun?.status ?? "")) {
+        next(unauthorized("This run-bound credential has expired because its run is no longer active"));
+        return;
+      }
       if (agentRunWritesRevoked(identityRun)
         && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
         const conversation = identityRun?.contextSnapshot?.conversationMode === true;
