@@ -119,7 +119,18 @@ Host access (SSH as `hermes-operator`, with Docker and sudo) was granted on 4 Oc
 
 **Rollback:** `cd "/media/External SSD/paperclip" && sudo cp docker-compose.yml.pre-tom40-terra-20261004T072739Z.bak docker-compose.yml && sudo docker compose up -d paperclip`. The previous image `paperclip:tom39-rust-1.97.1-fast-tmpfs` (`982597be1180`) is still present. No migration ran, so the database needs no rollback. A full pre-release data copy also exists.
 
+## Post-release acceptance on live — 4 October 2026, 07:52–07:57 UTC
+Board session approved by Tom through a CLI-auth challenge, scoped to the Tom's Lab company. The token was **revoked afterwards** (now returns 401).
+
+- **Jarvis model options (new in this release)** against the real gateway: `available`, provider `openai-codex`, `gpt-6.1-sol` listed, and only that provider's 15 models shown.
+- **TOM-63** (`2145d7f7-96f5-4a04-b374-8c7d3bfd97e8`) was created for Jarvis with task model `gpt-6.1-sol`. The **write-time task-model check passed against the real gateway.**
+- Jarvis run `2d80d085-e5fb-425d-9daa-4409db4ae375` (assignment, gateway run `run_ef8df13359d946618d9405c40d98ac52`) **succeeded, exit 0**. The **dispatch-time model check passed before it was sent.** Jarvis created **exactly one** child, TOM-64 (`dab0d8c7-ab8e-41ac-8d03-21b02a1d3905`), for the Software Engineer.
+- Engineer run `29233236-2b1c-4…` (assignment) **succeeded**. Its worker-authored comment reads exactly `LAB_RELEASE_OK-10040752`, and TOM-64 is done.
+- Jarvis then posted a verifying comment on TOM-63 citing the child, the comment id and the Engineer run, and marked TOM-63 **done**. No other issues were created, and there was no wake loop.
+
+Scope: this proves the single-chain delegation and both model checks on the released build. It is **not** the full real-team acceptance; parallel worktrees, blocked handoff and interruption/recovery remain open.
+
 ## Still open
-1. **A fresh end-to-end task on the released build.** This needs a board session. A CLI-auth challenge was offered for Tom to approve; otherwise the 02:00–04:00 UTC nightly routines will exercise the new dispatch path on real Jarvis work. Read back `heartbeat_runs` after that window.
+1. Done: post-release end-to-end chain TOM-63/TOM-64 (see above).
 2. **Real-team acceptance (step 4):** model selection through served runs, parallel worktrees, blocked handoff with no wake loop, and interruption/recovery truth. This is now possible on live.
 3. Optional: an independent review of `b9648d1..510dfaa`.
