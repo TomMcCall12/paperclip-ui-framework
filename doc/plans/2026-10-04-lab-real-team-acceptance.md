@@ -59,3 +59,7 @@ A redundant second pre-repair copy, `state.db.pre-fts-repair-20261004T081934Z`, 
 - **Redundant Hermes backup deleted:** `state.db.pre-fts-repair-20261004T081934Z`. The real pre-repair backup `…082053Z` is kept.
 - **Family-payment safeguard — still needs Tom.** The Google Workspace token (`google_token.json`, issued 25 Sep) returns `invalid_grant: Token has been expired or revoked` on a one-cell read. Re-authorising needs Tom's Google consent.
 - **Codex Direct Standby provider switch — needs a board session** (not available while Tom is away).
+
+## Board items done via Tailscale approval (~08:50 UTC)
+- Codex Direct Standby: codex_local (no credentials) -> claude_local / claude-sonnet-4-6, verified with TOM-70 (nonce LAB_STANDBY_OK-0851, status error -> idle). Restore Codex later via the agent's config revision rollback.
+- TOM-69 closed as cancelled. Board session revoked (401).
