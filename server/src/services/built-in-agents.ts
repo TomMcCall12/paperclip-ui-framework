@@ -149,6 +149,36 @@ const require = createRequire(import.meta.url);
 const BUILT_INS_DIR = path.resolve(moduleDir, "../built-ins/agents");
 const SOURCE_BUILT_INS_DIR = path.resolve(moduleDir, "../../src/built-ins/agents");
 
+const FALLBACK_SKILL_CURATOR_INSTRUCTIONS = [
+  "# Skill Curator",
+  "",
+  "You are Paperclip's built-in Skill Curator.",
+  "Keep the company skill library useful: learn skills from completed work, keep curated skills accurate, and flag stale or unused skills for the board.",
+  "Never delete a skill. Edit only skills in the `curated` category; propose changes to every other skill.",
+  "",
+].join("\n");
+
+const FALLBACK_SKILL_CURATOR_ROUTINE = [
+  "Curate the company skill library.",
+  "",
+  "Read the skills usage report, review recently completed work, create or update curated skills from the evidence, and report stale or archive-candidate skills for the board.",
+  "",
+].join("\n");
+
+const FALLBACK_SKILL_CURATOR_SKILL = [
+  "---",
+  "name: skill-curator",
+  "description: Curate the company skill library from completed work. Never deletes a skill.",
+  "key: paperclipai/bundled/paperclip-operations/skill-curator",
+  "---",
+  "",
+  "# Skill Curator",
+  "",
+  "Read GET /api/companies/{companyId}/skills/usage, review recently completed work, create or update skills in the `curated` category from the evidence, and report stale skills. Never delete a skill.",
+  "",
+].join("\n");
+
+
 const FALLBACK_REFLECTION_COACH_INSTRUCTIONS = [
   "# Reflection Coach",
   "",
@@ -281,6 +311,25 @@ const REFLECTION_COACH_SKILL = readBuiltInTextWithFallback(
   FALLBACK_REFLECTION_COACH_SKILL,
 );
 
+const SKILL_CURATOR_INSTRUCTIONS = readBuiltInText("skill-curator/AGENTS.md", FALLBACK_SKILL_CURATOR_INSTRUCTIONS);
+const SKILL_CURATOR_ROUTINE = readBuiltInText(
+  "skill-curator/routines/weekly-skill-curation.md",
+  FALLBACK_SKILL_CURATOR_ROUTINE,
+);
+const SKILL_CURATOR_SKILL = readBuiltInTextWithFallback(
+  "skill-curator/SKILL.md",
+  [
+    path.resolve(
+      moduleDir,
+      "../../../packages/skills-catalog/catalog/bundled/paperclip-operations/skill-curator/SKILL.md",
+    ),
+    ...(skillsCatalogRoot
+      ? [path.join(skillsCatalogRoot, "catalog/bundled/paperclip-operations/skill-curator/SKILL.md")]
+      : []),
+  ],
+  FALLBACK_SKILL_CURATOR_SKILL,
+);
+
 const SUMMARIZER_INSTRUCTIONS = readBuiltInText("summarizer/AGENTS.md", FALLBACK_SUMMARIZER_INSTRUCTIONS);
 const SUMMARIZER_ROUTINE = readBuiltInText(
   "summarizer/routines/refresh-stale-summaries.md",
@@ -397,6 +446,66 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
   },
   {
+    key: "skill-curator",
+    displayName: "Skill Curator",
+    featureKeys: ["skill-curator"],
+    shortPurpose:
+      "Learns skills from completed work, keeps curated skills accurate, and flags stale or unused skills for the board. Never deletes a skill.",
+    defaultInstructions: SKILL_CURATOR_INSTRUCTIONS,
+    defaultRole: "general",
+    defaultTitle: "Skill Curator",
+    defaultIcon: "sparkles",
+    defaultPermissions: {
+      canCreateAgents: false,
+      canCreateSkills: true,
+    },
+    defaultStatus: "paused",
+    defaultManager: "single_root_agent",
+    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
+    defaultBudgetMonthlyCents: 0,
+    bundle: {
+      stockVersion: "2026-10-04",
+      instructions: {
+        entryFile: "AGENTS.md",
+        files: {
+          "AGENTS.md": SKILL_CURATOR_INSTRUCTIONS,
+        },
+      },
+      skill: {
+        skillKey: "skill-curator",
+        displayName: "Skill Curator",
+        slug: "skill-curator",
+        canonicalKey: "paperclipai/bundled/paperclip-operations/skill-curator",
+        files: {
+          "skill-curator/SKILL.md": SKILL_CURATOR_SKILL,
+        },
+      },
+      routine: {
+        routineKey: "weekly-skill-curation",
+        title: "Curate the company skill library",
+        description: SKILL_CURATOR_ROUTINE,
+        status: "paused",
+        priority: "low",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "lookbackDays", label: "Completed work to review (days)", type: "number", defaultValue: 7, required: true, options: [] },
+          { name: "usageWindowDays", label: "Usage report window (days)", type: "number", defaultValue: 30, required: true, options: [] },
+          { name: "maxNewSkills", label: "Max new skills per run", type: "number", defaultValue: 3, required: true, options: [] },
+        ],
+        triggers: [
+          {
+            kind: "schedule",
+            label: "Weekly skill curation",
+            enabled: false,
+            cronExpression: "0 6 * * 0",
+            timezone: "UTC",
+          },
+        ],
+      },
+    },
+  },
+  {
     key: "summarizer",
     displayName: "Summarizer",
     featureKeys: ["summarizer"],
@@ -480,6 +589,7 @@ const AUTO_PROVISION_ON_COMPANY_CREATE_KEYS = new Set<string>([]);
 const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
 const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
   "reflection-coach": ["agents:suggest-changes", "skills:suggest-changes"],
+  "skill-curator": ["skills:create"],
 };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

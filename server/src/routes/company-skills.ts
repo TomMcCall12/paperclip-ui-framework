@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { activityLog } from "@paperclipai/db";
 import { persistActivity, publishActivity } from "../services/activity-log.js";
 import { projectToolContext } from "../services/project-tool-context.js";
+import { clampSkillUsageWindowDays, skillUsageService } from "../services/skill-usage.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -92,6 +93,7 @@ export function companySkillRoutes(db: Db) {
   const router = Router();
   const access = accessService(db);
   const svc = companySkillService(db);
+  const usage = skillUsageService(db);
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
   const skillPolicies = companySkillPolicyService(db);
@@ -339,6 +341,13 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json(await svc.categoryCounts(companyId));
+  });
+
+  // Recommendation activity and lifecycle per skill, for the skill curator.
+  router.get("/companies/:companyId/skills/usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await usage.report(companyId, { windowDays: clampSkillUsageWindowDays(req.query.days) }));
   });
 
   router.get("/companies/:companyId/skills/:skillId", async (req, res) => {

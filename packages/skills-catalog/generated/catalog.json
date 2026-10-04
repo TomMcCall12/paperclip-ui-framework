@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-11T15:05:34.526Z",
+  "generatedAt": "2026-10-04T15:16:11.290Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -107,6 +107,42 @@
         }
       ],
       "contentHash": "sha256:f2592d81f616628a3eba92636616424f2eed82ec22bb504240a58f6be115e407"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:skill-curator",
+      "key": "paperclipai/bundled/paperclip-operations/skill-curator",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "skill-curator",
+      "name": "skill-curator",
+      "description": "Curate the company skill library from completed work. Turn repeated procedures and hard-won fixes into skills, keep curated skills accurate, and flag stale or unused skills for archiving, using recommendation activity from the skills usage report. Never deletes a skill.",
+      "path": "catalog/bundled/paperclip-operations/skill-curator",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "ceo",
+        "general"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "skills",
+        "curation",
+        "learning",
+        "maintenance"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 6283,
+          "sha256": "770a65fcc8a1706fb3f0c86e9d364ac34a7b98894b0582b12aa669358eeaceee"
+        }
+      ],
+      "contentHash": "sha256:14acd05f4f490574519078a5c53131181ef502922dd27a9365197b04a75722d3"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:status-card-query",

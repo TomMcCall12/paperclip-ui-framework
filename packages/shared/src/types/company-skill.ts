@@ -705,3 +705,36 @@ export interface CompanySkillInstallCatalogResult {
   catalogSkill: CatalogSkill;
   warnings: string[];
 }
+
+/** Skill-curator lifecycle, derived from recommendation activity. Advisory only. */
+export type CompanySkillUsageLifecycle = "new" | "active" | "stale" | "archive_candidate";
+
+export interface CompanySkillUsageItem {
+  skillId: string;
+  key: string;
+  name: string;
+  sourceType: string;
+  /** Written and maintained by the skill curator (category "curated"). */
+  curated: boolean;
+  /** Active agents whose desired skills include this one. */
+  agentCount: number;
+  /** Runs, within the window, whose wake prompt recommended this skill. */
+  recommendedRuns: number;
+  recommendedRunsSucceeded: number;
+  recommendedRunsFailed: number;
+  lastRecommendedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lifecycle: CompanySkillUsageLifecycle;
+}
+
+export interface CompanySkillUsageReport {
+  companyId: string;
+  generatedAt: string;
+  windowDays: number;
+  /** When recommendation tracking started for this company, or null if it has not. */
+  trackingStartedAt: string | null;
+  staleAfterDays: number;
+  archiveAfterDays: number;
+  skills: CompanySkillUsageItem[];
+}

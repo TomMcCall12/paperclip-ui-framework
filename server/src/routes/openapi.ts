@@ -9719,6 +9719,11 @@ for (const route of [
     "List company skill categories",
   ],
   [
+    "get",
+    "/api/companies/{companyId}/skills/usage",
+    "Skill recommendation activity and lifecycle, for the skill curator",
+  ],
+  [
     "post",
     "/api/companies/{companyId}/skills/{skillId}/audit",
     "Audit a company skill",
