@@ -477,6 +477,22 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   );
 });
 
+/** Saves the task's chosen model as the assignee's default when the task is created. */
+function MakeDefaultModelToggle({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+      <input
+        type="checkbox"
+        data-testid="new-issue-make-default-model"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="h-3.5 w-3.5 accent-current"
+      />
+      Make default model
+    </label>
+  );
+}
+
 export function NewIssueDialog() {
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
@@ -511,6 +527,7 @@ export function NewIssueDialog() {
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [assigneeModelLane, setAssigneeModelLane] = useState<IssueModelLane>("primary");
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
+  const [makeDefaultModel, setMakeDefaultModel] = useState(false);
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
@@ -615,6 +632,17 @@ export function NewIssueDialog() {
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
+  // Offered only when a task model differs from the agent's saved default.
+  const canMakeDefaultModel = Boolean(
+    supportsAssigneeOverrides
+      && selectedAssigneeAgentId
+      && assigneeModelOverride
+      && assigneeModelOverride !== assigneePrimaryModel,
+  );
+  // A choice to change an agent's default applies to one agent and model only.
+  useEffect(() => {
+    setMakeDefaultModel(false);
+  }, [selectedAssigneeAgentId, assigneeModelOverride]);
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
       agents,
@@ -637,8 +665,13 @@ export function NewIssueDialog() {
     mutationFn: async ({
       companyId,
       stagedFiles: pendingStagedFiles,
+      makeDefault,
       ...data
-    }: { companyId: string; stagedFiles: StagedIssueFile[] } & Record<string, unknown>) => {
+    }: {
+      companyId: string;
+      stagedFiles: StagedIssueFile[];
+      makeDefault?: { agentId: string; agentName: string; model: string } | null;
+    } & Record<string, unknown>) => {
       const issue = await issuesApi.create(companyId, data);
       const failures: string[] = [];
 
@@ -660,9 +693,37 @@ export function NewIssueDialog() {
         }
       }
 
-      return { issue, companyId, failures };
+      // The task keeps its own model override either way, so a refused default
+      // never changes what this task runs on.
+      let defaultModelResult: { agentId: string; agentName: string; model: string; error: string | null } | null = null;
+      if (makeDefault) {
+        try {
+          await agentsApi.update(makeDefault.agentId, { adapterConfig: { model: makeDefault.model } }, companyId);
+          defaultModelResult = { ...makeDefault, error: null };
+        } catch (error) {
+          defaultModelResult = { ...makeDefault, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+
+      return { issue, companyId, failures, defaultModelResult };
     },
-    onSuccess: ({ issue, companyId, failures }) => {
+    onSuccess: ({ issue, companyId, failures, defaultModelResult }) => {
+      if (defaultModelResult) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(defaultModelResult.agentId) });
+        pushToast(
+          defaultModelResult.error
+            ? {
+              title: `${defaultModelResult.model} was not made ${defaultModelResult.agentName}'s default`,
+              body: `${defaultModelResult.error} This task still runs on ${defaultModelResult.model}.`,
+              tone: "warn",
+            }
+            : {
+              title: `${defaultModelResult.model} is now ${defaultModelResult.agentName}'s default model`,
+              tone: "success",
+            },
+        );
+      }
       if (streamlinedUiEnabled) recordRecentTask(issue, currentUserId);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
@@ -1078,6 +1139,13 @@ export function NewIssueDialog() {
     createIssue.mutate({
       companyId: effectiveCompanyId,
       stagedFiles,
+      makeDefault: canMakeDefaultModel && makeDefaultModel && selectedAssigneeAgentId
+        ? {
+          agentId: selectedAssigneeAgentId,
+          agentName: selectedAssigneeAgent?.name ?? "the agent",
+          model: assigneeModelOverride,
+        }
+        : null,
       title: currentTitle,
       description: currentDescription || undefined,
       status,
@@ -1598,6 +1666,9 @@ export function NewIssueDialog() {
                   </select>
                 </label>
               ) : null}
+              {canMakeDefaultModel ? (
+                <MakeDefaultModelToggle checked={makeDefaultModel} onChange={setMakeDefaultModel} />
+              ) : null}
               <span>in</span>
               <InlineEntitySelector
                 ref={projectSelectorRef}
@@ -2014,6 +2085,9 @@ export function NewIssueDialog() {
                       emptyMessage="No models found."
                       onChange={setAssigneeModelOverride}
                     />
+                    {canMakeDefaultModel ? (
+                      <MakeDefaultModelToggle checked={makeDefaultModel} onChange={setMakeDefaultModel} />
+                    ) : null}
                   </div>
                 )}
                 {assigneeModelLane === "custom" && (

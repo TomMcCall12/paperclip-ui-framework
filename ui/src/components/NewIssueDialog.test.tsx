@@ -62,6 +62,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   adapterModels: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -358,6 +359,7 @@ describe("NewIssueDialog", () => {
     ]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.update.mockReset();
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
@@ -716,6 +718,91 @@ describe("NewIssueDialog", () => {
     });
     await flush();
     expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ assigneeAgentId: "agent-hermes", assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-terra" } } }));
+    act(() => root.unmount());
+  });
+
+  async function chooseHermesTaskModel(container: HTMLDivElement, model: string) {
+    dialogState.newIssueDefaults = { title: "Hermes model", assigneeAgentId: "agent-hermes" };
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-hermes", name: "Jarvis", status: "active", adapterType: "hermes_gateway", adapterConfig: { model: "gpt-5.6-luna" }, runtimeConfig: {}, permissions: {} }]);
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+      { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+    ]);
+    const rendered = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="new-issue-model-select"]')).not.toBeNull());
+    const modelSelect = container.querySelector('[data-testid="new-issue-model-select"]') as HTMLSelectElement;
+    await waitForAssertion(() => expect(modelSelect.options.length).toBe(3));
+    expect(container.querySelector('[data-testid="new-issue-make-default-model"]')).toBeNull();
+    await act(async () => {
+      modelSelect.value = model;
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    return rendered;
+  }
+
+  async function submitTask(container: HTMLDivElement) {
+    const submitButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create Task"));
+    await waitForAssertion(() => expect(submitButton?.hasAttribute("disabled")).toBe(false));
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+  }
+
+  it("offers Make default model only for a task model that differs from the agent default", async () => {
+    const { root } = await chooseHermesTaskModel(container, "gpt-5.6-terra");
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="new-issue-make-default-model"]')).not.toBeNull());
+    const modelSelect = container.querySelector('[data-testid="new-issue-model-select"]') as HTMLSelectElement;
+    await act(async () => {
+      modelSelect.value = "gpt-5.6-luna";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="new-issue-make-default-model"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
+  it("saves the task model as the agent's default when Make default model is ticked", async () => {
+    mockAgentsApi.update.mockResolvedValue({ id: "agent-hermes" });
+    const { root } = await chooseHermesTaskModel(container, "gpt-5.6-terra");
+    const toggle = await (async () => {
+      await waitForAssertion(() => expect(container.querySelector('[data-testid="new-issue-make-default-model"]')).not.toBeNull());
+      return container.querySelector('[data-testid="new-issue-make-default-model"]') as HTMLInputElement;
+    })();
+    await act(async () => {
+      toggle.click();
+    });
+    expect(toggle.checked).toBe(true);
+    await submitTask(container);
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      assigneeAgentId: "agent-hermes",
+      assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-terra" } },
+    }));
+    expect(mockAgentsApi.update).toHaveBeenCalledWith("agent-hermes", { adapterConfig: { model: "gpt-5.6-terra" } }, "company-1");
+    expect(toastState.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "success", title: "gpt-5.6-terra is now Jarvis's default model" }));
+    act(() => root.unmount());
+  });
+
+  it("still creates the task on its chosen model when saving the default is refused", async () => {
+    mockAgentsApi.update.mockRejectedValue(new Error("Cannot save default model"));
+    const { root } = await chooseHermesTaskModel(container, "gpt-5.6-terra");
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="new-issue-make-default-model"]')).not.toBeNull());
+    await act(async () => {
+      (container.querySelector('[data-testid="new-issue-make-default-model"]') as HTMLInputElement).click();
+    });
+    await submitTask(container);
+    expect(mockIssuesApi.create).toHaveBeenCalledTimes(1);
+    expect(toastState.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+      tone: "warn",
+      body: expect.stringContaining("This task still runs on gpt-5.6-terra."),
+    }));
+    act(() => root.unmount());
+  });
+
+  it("does not change the agent's default when Make default model is left unticked", async () => {
+    const { root } = await chooseHermesTaskModel(container, "gpt-5.6-terra");
+    await submitTask(container);
+    expect(mockIssuesApi.create).toHaveBeenCalledTimes(1);
+    expect(mockAgentsApi.update).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
 
