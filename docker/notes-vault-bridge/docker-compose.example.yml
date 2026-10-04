@@ -6,16 +6,20 @@ services:
     image: node:24-bookworm
     container_name: paperclip-notes-vault-bridge
     restart: unless-stopped
-    # Run as the user and group that own the vault files.
-    user: "1000:1000"
+    # Root with only file-permission capabilities, so it can read and write
+    # notes whatever their owner; new files and folders go to VAULT_OWNER_*.
+    user: "0:0"
     command: ["node", "/bridge/server.mjs"]
     environment:
       VAULT_ROOT: /vault
       VAULT_BRIDGE_TOKEN: ${PAPERCLIP_NOTES_VAULT_BRIDGE_TOKEN:?set a long random token}
       VAULT_CHANGELOG_PATH: vault-changelog.md
+      VAULT_OWNER_UID: "1000"
+      VAULT_OWNER_GID: "1000"
     volumes:
       - "/path/to/your/vault:/vault"
       - "./notes-vault-bridge:/bridge:ro"
     read_only: true
     cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE, CHOWN, FOWNER]
     security_opt: ["no-new-privileges:true"]

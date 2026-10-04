@@ -34,7 +34,7 @@ All routes are company-scoped. If the caller has no vault access, the status rou
 
 ## Setup
 
-1. Add the bridge service from `docker/notes-vault-bridge/docker-compose.example.yml`. Mount the vault into it and run it as the user and group that own the vault files.
+1. Add the bridge service from `docker/notes-vault-bridge/docker-compose.example.yml` and mount the vault into it. It runs as root with only file-permission capabilities (`DAC_OVERRIDE`, `CHOWN`, `FOWNER`), sees nothing but the vault and its own script, and gives new files and folders to `VAULT_OWNER_UID`/`VAULT_OWNER_GID`. Existing files keep their owner and mode.
 2. Set these variables on the `paperclip` service:
 
    | Variable | Value |

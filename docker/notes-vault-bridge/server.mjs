@@ -12,6 +12,7 @@
 //   VAULT_BRIDGE_PORT       listen port (default 8787)
 //   VAULT_MAX_FILE_BYTES    largest file read or written (default 524288)
 //   VAULT_UMASK             octal umask for new files and folders (default 002, group-writable)
+//   VAULT_OWNER_UID/GID     owner given to new files and folders (optional; needs CAP_CHOWN)
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
@@ -112,6 +113,33 @@ export function createVaultBridge(options) {
   const changelogPath = options.changelogPath ?? "vault-changelog.md";
   const maxBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const now = options.now ?? (() => new Date());
+  const owner = Number.isInteger(options.ownerUid) && Number.isInteger(options.ownerGid)
+    ? { uid: options.ownerUid, gid: options.ownerGid }
+    : null;
+
+  /** Gives new files and folders the vault owner, so people can still edit them. */
+  async function adopt(absolutePath) {
+    if (owner) await fs.chown(absolutePath, owner.uid, owner.gid);
+  }
+
+  /** Creates missing parent folders and adopts each one it created. */
+  async function makeParents(absoluteDir) {
+    const missing = [];
+    for (let probe = absoluteDir; probe !== root && probe.startsWith(`${root}${path.sep}`); probe = path.dirname(probe)) {
+      try {
+        await fs.stat(probe);
+        break;
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+        missing.unshift(probe);
+      }
+    }
+    for (const dir of missing) {
+      await fs.mkdir(dir);
+      await assertRealPathInside(root, dir);
+      await adopt(dir);
+    }
+  }
 
   async function list(relativePath) {
     const absolute = resolveVaultPath(root, relativePath ?? "", { allowRoot: true });
@@ -178,11 +206,12 @@ export function createVaultBridge(options) {
 
     let previousSha256 = null;
     if (mode === "create") {
-      await fs.mkdir(path.dirname(absolute), { recursive: true });
+      await makeParents(path.dirname(absolute));
       await assertRealPathInside(root, path.dirname(absolute));
       if (Buffer.byteLength(content, "utf8") > maxBytes) throw new VaultBridgeError(413, "vault_file_too_large", "Content is larger than the bridge limit.");
       try {
         await fs.writeFile(absolute, content, { encoding: "utf8", flag: "wx" });
+        await adopt(absolute);
       } catch (error) {
         if (error?.code === "EEXIST") throw new VaultBridgeError(409, "vault_file_exists", "File already exists; use append or replace.");
         throw error;
@@ -274,6 +303,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     root,
     token: process.env.VAULT_BRIDGE_TOKEN ?? "",
     changelogPath: process.env.VAULT_CHANGELOG_PATH || "vault-changelog.md",
+    ownerUid: process.env.VAULT_OWNER_UID ? Number.parseInt(process.env.VAULT_OWNER_UID, 10) : undefined,
+    ownerGid: process.env.VAULT_OWNER_GID ? Number.parseInt(process.env.VAULT_OWNER_GID, 10) : undefined,
     maxFileBytes: process.env.VAULT_MAX_FILE_BYTES ? Number.parseInt(process.env.VAULT_MAX_FILE_BYTES, 10) : undefined,
   });
   server.listen(port, "0.0.0.0", () => console.log(`vault bridge listening on ${port}`));

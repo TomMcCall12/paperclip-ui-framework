@@ -32,7 +32,11 @@ let bridgeUrl: string;
 
 beforeAll(async () => {
   root = await mkdtemp(path.join(tmpdir(), "notes-vault-"));
-  bridgeServer = bridgeModule.createVaultBridgeServer({ root, token: TOKEN, now: () => new Date("2026-10-04T12:00:00Z") });
+  bridgeServer = bridgeModule.createVaultBridgeServer({
+    root, token: TOKEN, now: () => new Date("2026-10-04T12:00:00Z"),
+    // Our own ids, so chown is permitted without root while still exercised.
+    ownerUid: process.getuid?.(), ownerGid: process.getgid?.(),
+  });
   await new Promise<void>((resolve) => bridgeServer.listen(0, "127.0.0.1", () => resolve()));
   bridgeUrl = `http://127.0.0.1:${(bridgeServer.address() as AddressInfo).port}`;
 });
@@ -146,6 +150,13 @@ describe("notes vault routes with a real bridge", () => {
       .send({ path: "03 Projects/Note.md", mode: "create", content: "x", summary: "board note" });
     expect(boardRes.status).toBe(200);
     expect(await readFile(path.join(root, "vault-changelog.md"), "utf8")).toContain("| Board (Paperclip) |");
+  });
+
+  it("creates missing folders for a new file", async () => {
+    const res = await request(app(agent(WRITER))).post(`/api/companies/${COMPANY}/notes-vault/file`)
+      .send({ path: "04 Reviews/2026/Q4/(C) Review.md", mode: "create", content: "# Q4\n", summary: "Q4 review" });
+    expect(res.status).toBe(200);
+    expect(await readFile(path.join(root, "04 Reviews", "2026", "Q4", "(C) Review.md"), "utf8")).toBe("# Q4\n");
   });
 
   it("never creates over an existing file", async () => {
