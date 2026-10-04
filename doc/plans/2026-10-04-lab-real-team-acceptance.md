@@ -63,3 +63,6 @@ A redundant second pre-repair copy, `state.db.pre-fts-repair-20261004T081934Z`, 
 ## Board items done via Tailscale approval (~08:50 UTC)
 - Codex Direct Standby: codex_local (no credentials) -> claude_local / claude-sonnet-4-6, verified with TOM-70 (nonce LAB_STANDBY_OK-0851, status error -> idle). Restore Codex later via the agent's config revision rollback.
 - TOM-69 closed as cancelled. Board session revoked (401).
+
+## Make default model option released (~09:41 UTC)
+- 570b907 (UI only), image paperclip:tom41-rust-1.97.1; health ok, 0 errors. Rollback: docker-compose.yml.pre-tom41-20261004T094043Z.bak (returns to 510dfaa).
