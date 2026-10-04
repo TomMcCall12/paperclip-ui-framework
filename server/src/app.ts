@@ -46,6 +46,7 @@ import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { notesVaultRoutes } from "./routes/notes-vault.js";
+import { legacyApprovalPolicyGuard } from "./middleware/legacy-approval-policy-guard.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
 import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
@@ -647,6 +648,7 @@ export async function createApp(
   const agentAvatars = agentAvatarRoutes();
   api.use(agentAvatars.router);
   api.use(boardMutationGuard());
+  api.use(legacyApprovalPolicyGuard());
   api.use(
     "/health",
     healthRoutes(db, {

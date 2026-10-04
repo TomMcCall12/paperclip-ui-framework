@@ -1214,6 +1214,7 @@ describeEmbeddedPostgres("authorization service", () => {
     });
     expect(decision.explanation).toContain("assignment is blocked");
     expect(decision.explanation).toContain("company administrator");
+    expect(decision.explanation).toContain("retired legacy flag");
     expect(decision.explanation).not.toContain("approval");
   });
 

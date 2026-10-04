@@ -314,7 +314,10 @@ function evaluateAuthorizationPolicyForAssignment(
       kind: "blocked",
       explanation:
         `${label} assignment is blocked by protected-agent policy. ` +
-        "A company administrator can remove the assignment block, then retry.",
+        (readBoolean(protectedAgent?.blockAssignment) === true
+          ? "A company administrator can remove the assignment block, then retry."
+          : "It uses a retired legacy flag (`requiresApproval`) that blocks every assignment and never asks anyone. " +
+            "A company administrator should remove that flag from the authorization policy, then retry."),
     };
   }
 
