@@ -66,3 +66,16 @@ A redundant second pre-repair copy, `state.db.pre-fts-repair-20261004T081934Z`, 
 
 ## Make default model option released (~09:41 UTC)
 - 570b907 (UI only), image paperclip:tom41-rust-1.97.1; health ok, 0 errors. Rollback: docker-compose.yml.pre-tom41-20261004T094043Z.bak (returns to 510dfaa).
+
+## Skills, gateway credentials, curator and notes vault (11:15–16:20 UTC)
+- **Make default improvements:** `df9f575`, image `tom42`.
+- **Relevant skills for every adapter (Option 2):** `fcd15fb`, image `tom43`. Proven by TOM-75 (Claude) and TOM-76 (Hermes).
+- **Per-run gateway credentials:** `86dc716`, image `tom44`. Proven by TOM-78: UXDesigner acted as itself, not Jarvis.
+- **Skill curator:** `2616b30`, image `tom45`.
+  - Adds the usage report `GET /companies/:id/skills/usage`, the bundled `skill-curator` skill and a built-in Skill Curator definition (built-in agents are experimental and off on this Lab).
+  - On this Lab, the Weekly skill curation routine runs on the Strategic Advisor, Sundays 07:00 Europe/London.
+  - First run TOM-79 created 3 curated skills.
+- **Notes vault:** `98cc04a`, image `tom46`. See `doc/NOTES-VAULT.md`.
+  - The vault is mounted only in `paperclip-notes-vault-bridge`, and Jarvis is the only writer.
+  - Proven by TOM-80: Jarvis created and appended a vault note through the API, and the changelog rows were added automatically.
+  - **Rollback:** `docker-compose.yml.pre-tom46-20261004T161001Z.bak` plus `.env.pre-tom46-20261004T161001Z.bak`.
