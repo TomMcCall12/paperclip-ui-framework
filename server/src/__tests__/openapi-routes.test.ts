@@ -34,6 +34,7 @@ const apiPrefixes: Record<string, string> = {
   "cloud.ts": "/api/cloud",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
+  "notes-vault.ts": "/api",
   "company-skill-policy.ts": "/api",
   "connection-intents.ts": "/api",
   "costs.ts": "/api",

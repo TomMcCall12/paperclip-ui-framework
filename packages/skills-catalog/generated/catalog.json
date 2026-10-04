@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-10-04T15:16:11.290Z",
+  "generatedAt": "2026-10-04T15:50:20.303Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -72,6 +72,42 @@
         }
       ],
       "contentHash": "sha256:88dc13560371fb364963782cb4f6eeb4090fcde92ee3774479428ed6b90e11c1"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:notes-vault",
+      "key": "paperclipai/bundled/paperclip-operations/notes-vault",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "notes-vault",
+      "name": "notes-vault",
+      "description": "Read and write the company's notes vault (for example the board's Obsidian vault) through the Paperclip API. Use it to record notes, decisions, journals or project updates in the vault, whatever model you run on.",
+      "path": "catalog/bundled/paperclip-operations/notes-vault",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "ceo",
+        "manager",
+        "general"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "vault",
+        "obsidian",
+        "notes",
+        "memory"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 3158,
+          "sha256": "baf1b80872570387dcebd50a11d26b5c608429ef13d3e0efdd83b9b3ac8c49b3"
+        }
+      ],
+      "contentHash": "sha256:18c275ca1ea420d97a63d94319f2af29d37b8f1a0b8245bb3c3bb8a0783a351f"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:reflection-coach",

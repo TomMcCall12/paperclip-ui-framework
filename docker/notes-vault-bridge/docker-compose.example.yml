@@ -1,0 +1,21 @@
+# Add this service beside `paperclip` in your docker-compose.yml, then set the
+# PAPERCLIP_NOTES_VAULT_* variables on the paperclip service (doc/NOTES-VAULT.md).
+# Only this container mounts the vault, and it publishes no port.
+services:
+  notes-vault-bridge:
+    image: node:24-bookworm
+    container_name: paperclip-notes-vault-bridge
+    restart: unless-stopped
+    # Run as the user and group that own the vault files.
+    user: "1000:1000"
+    command: ["node", "/bridge/server.mjs"]
+    environment:
+      VAULT_ROOT: /vault
+      VAULT_BRIDGE_TOKEN: ${PAPERCLIP_NOTES_VAULT_BRIDGE_TOKEN:?set a long random token}
+      VAULT_CHANGELOG_PATH: vault-changelog.md
+    volumes:
+      - "/path/to/your/vault:/vault"
+      - "./notes-vault-bridge:/bridge:ro"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]

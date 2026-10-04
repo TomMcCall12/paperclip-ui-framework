@@ -9718,6 +9718,10 @@ for (const route of [
     "/api/companies/{companyId}/skills/categories",
     "List company skill categories",
   ],
+  ["get", "/api/companies/{companyId}/notes-vault", "Notes vault status and the caller's access"],
+  ["get", "/api/companies/{companyId}/notes-vault/list", "List a notes vault folder"],
+  ["get", "/api/companies/{companyId}/notes-vault/file", "Read a notes vault file"],
+  ["post", "/api/companies/{companyId}/notes-vault/file", "Create, append to or replace a notes vault file"],
   [
     "get",
     "/api/companies/{companyId}/skills/usage",

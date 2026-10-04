@@ -349,6 +349,8 @@ export * from "./validators/chat-channels.js";
 export * from "./types/commands.js";
 export * from "./validators/commands.js";
 export * from "./commands.js";
+export * from "./types/notes-vault.js";
+export * from "./validators/notes-vault.js";
 export {
   humanizeConnectionDisplayName,
   connectionDisplaySecondaryHint,
