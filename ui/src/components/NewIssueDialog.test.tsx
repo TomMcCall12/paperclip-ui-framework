@@ -778,7 +778,22 @@ describe("NewIssueDialog", () => {
       assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-terra" } },
     }));
     expect(mockAgentsApi.update).toHaveBeenCalledWith("agent-hermes", { adapterConfig: { model: "gpt-5.6-terra" } }, "company-1");
-    expect(toastState.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "success", title: "gpt-5.6-terra is now Jarvis's default model" }));
+    expect(toggle.closest("label")?.textContent).toBe("Make this Jarvis's default");
+    expect(toastState.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+      tone: "success",
+      title: "GPT-5.6 Terra is now Jarvis's default model",
+      action: expect.objectContaining({ label: "Undo" }),
+    }));
+
+    // Undo restores the agent's previous default.
+    const successToast = toastState.pushToast.mock.calls.find(([toast]) => toast.tone === "success")![0];
+    mockAgentsApi.update.mockClear();
+    await act(async () => {
+      successToast.action.onClick();
+    });
+    await flush();
+    expect(mockAgentsApi.update).toHaveBeenCalledWith("agent-hermes", { adapterConfig: { model: "gpt-5.6-luna" } }, "company-1");
+    expect(toastState.pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "GPT-5.6 Luna is Jarvis's default model again" }));
     act(() => root.unmount());
   });
 
@@ -793,7 +808,9 @@ describe("NewIssueDialog", () => {
     expect(mockIssuesApi.create).toHaveBeenCalledTimes(1);
     expect(toastState.pushToast).toHaveBeenCalledWith(expect.objectContaining({
       tone: "warn",
-      body: expect.stringContaining("This task still runs on gpt-5.6-terra."),
+      title: "GPT-5.6 Terra was not made Jarvis's default",
+      body: expect.stringContaining("This task still runs on GPT-5.6 Terra."),
+      action: expect.objectContaining({ label: "Open agent settings", href: expect.stringContaining("/agents/") }),
     }));
     act(() => root.unmount());
   });

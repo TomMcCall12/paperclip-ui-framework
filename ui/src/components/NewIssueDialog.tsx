@@ -74,7 +74,7 @@ import {
   ScanEye,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "../lib/utils";
+import { agentUrl, cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
@@ -477,18 +477,36 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   );
 });
 
+type MakeDefaultModelRequest = {
+  agentId: string;
+  agentName: string;
+  agentPath: string;
+  model: string;
+  modelLabel: string;
+  previousModel: string;
+  previousModelLabel: string;
+};
+
 /** Saves the task's chosen model as the assignee's default when the task is created. */
-function MakeDefaultModelToggle({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+function MakeDefaultModelToggle({
+  agentName,
+  checked,
+  onChange,
+}: {
+  agentName: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
   return (
-    <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+    <label className="inline-flex cursor-pointer items-center gap-2 py-1 text-xs text-muted-foreground">
       <input
         type="checkbox"
         data-testid="new-issue-make-default-model"
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
-        className="h-3.5 w-3.5 accent-current"
+        className="h-4 w-4 accent-current"
       />
-      Make default model
+      {`Make this ${agentName}'s default`}
     </label>
   );
 }
@@ -670,7 +688,7 @@ export function NewIssueDialog() {
     }: {
       companyId: string;
       stagedFiles: StagedIssueFile[];
-      makeDefault?: { agentId: string; agentName: string; model: string } | null;
+      makeDefault?: MakeDefaultModelRequest | null;
     } & Record<string, unknown>) => {
       const issue = await issuesApi.create(companyId, data);
       const failures: string[] = [];
@@ -695,7 +713,7 @@ export function NewIssueDialog() {
 
       // The task keeps its own model override either way, so a refused default
       // never changes what this task runs on.
-      let defaultModelResult: { agentId: string; agentName: string; model: string; error: string | null } | null = null;
+      let defaultModelResult: (MakeDefaultModelRequest & { error: string | null }) | null = null;
       if (makeDefault) {
         try {
           await agentsApi.update(makeDefault.agentId, { adapterConfig: { model: makeDefault.model } }, companyId);
@@ -711,18 +729,45 @@ export function NewIssueDialog() {
       if (defaultModelResult) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(defaultModelResult.agentId) });
-        pushToast(
-          defaultModelResult.error
-            ? {
-              title: `${defaultModelResult.model} was not made ${defaultModelResult.agentName}'s default`,
-              body: `${defaultModelResult.error} This task still runs on ${defaultModelResult.model}.`,
-              tone: "warn",
-            }
-            : {
-              title: `${defaultModelResult.model} is now ${defaultModelResult.agentName}'s default model`,
-              tone: "success",
-            },
-        );
+        const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
+        const agentHref = prefix ? `/${prefix}${defaultModelResult.agentPath}` : undefined;
+        const { agentId, agentName, modelLabel, previousModel, previousModelLabel } = defaultModelResult;
+        if (defaultModelResult.error) {
+          pushToast({
+            title: `${modelLabel} was not made ${agentName}'s default`,
+            body: `${defaultModelResult.error} This task still runs on ${modelLabel}.`,
+            tone: "warn",
+            action: agentHref ? { label: "Open agent settings", href: agentHref } : undefined,
+          });
+        } else {
+          pushToast({
+            title: `${modelLabel} is now ${agentName}'s default model`,
+            body: `Future tasks for ${agentName} will use it unless a task picks another model.`,
+            tone: "success",
+            action: previousModel
+              ? {
+                label: "Undo",
+                onClick: () => {
+                  void agentsApi
+                    .update(agentId, { adapterConfig: { model: previousModel } }, companyId)
+                    .then(() => {
+                      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+                      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+                      pushToast({ title: `${previousModelLabel} is ${agentName}'s default model again`, tone: "success" });
+                    })
+                    .catch((error: unknown) => {
+                      pushToast({
+                        title: `Could not restore ${agentName}'s previous default`,
+                        body: error instanceof Error ? error.message : String(error),
+                        tone: "error",
+                        action: agentHref ? { label: "Open agent settings", href: agentHref } : undefined,
+                      });
+                    });
+                },
+              }
+              : undefined,
+          });
+        }
       }
       if (streamlinedUiEnabled) recordRecentTask(issue, currentUserId);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
@@ -1143,7 +1188,11 @@ export function NewIssueDialog() {
         ? {
           agentId: selectedAssigneeAgentId,
           agentName: selectedAssigneeAgent?.name ?? "the agent",
+          agentPath: agentUrl(selectedAssigneeAgent ?? { id: selectedAssigneeAgentId }),
           model: assigneeModelOverride,
+          modelLabel: modelDisplayName(assigneeModelOverride),
+          previousModel: assigneePrimaryModel,
+          previousModelLabel: modelDisplayName(assigneePrimaryModel),
         }
         : null,
       title: currentTitle,
@@ -1389,6 +1438,9 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
+  // Toasts name models as the picker does, falling back to the raw id.
+  const modelDisplayName = (modelId: string) =>
+    modelOverrideOptions.find((option) => option.id === modelId)?.label ?? modelId;
   const currentWorkMode = workModeMetaFor(workMode);
   const CurrentWorkModeIcon = currentWorkMode.icon;
   const dialogViewportStyle = useMemo<NewIssueDialogViewportStyle>(() => {
@@ -1667,7 +1719,11 @@ export function NewIssueDialog() {
                 </label>
               ) : null}
               {canMakeDefaultModel ? (
-                <MakeDefaultModelToggle checked={makeDefaultModel} onChange={setMakeDefaultModel} />
+                <MakeDefaultModelToggle
+                  agentName={selectedAssigneeAgent?.name ?? "agent"}
+                  checked={makeDefaultModel}
+                  onChange={setMakeDefaultModel}
+                />
               ) : null}
               <span>in</span>
               <InlineEntitySelector
@@ -2086,7 +2142,11 @@ export function NewIssueDialog() {
                       onChange={setAssigneeModelOverride}
                     />
                     {canMakeDefaultModel ? (
-                      <MakeDefaultModelToggle checked={makeDefaultModel} onChange={setMakeDefaultModel} />
+                      <MakeDefaultModelToggle
+                  agentName={selectedAssigneeAgent?.name ?? "agent"}
+                  checked={makeDefaultModel}
+                  onChange={setMakeDefaultModel}
+                />
                     ) : null}
                   </div>
                 )}
