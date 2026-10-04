@@ -41,3 +41,21 @@ A redundant second pre-repair copy, `state.db.pre-fts-repair-20261004T081934Z`, 
 - Nightly vault job `3568738e340a` is still pinned to DeepSeek/OpenRouter and failing with 401.
 - The legacy Hermes post-update review job `53f1f5a66747` duplicates Paperclip's review and is allowed to make changes.
 - The family-payment safeguard's Google OAuth has expired.
+
+## Follow-up fixes — 4 Oct 2026, 08:35–08:45 UTC
+- **Jarvis anonymous readbacks — fixed.**
+  - Root cause, from the TOM-69 session transcript in Hermes `state.db`: Jarvis's scripts read only `PAPERCLIP_API_KEY`, which gateway wakes never inject, so they silently sent no header and got 404s.
+  - The bridge key is **valid** (`/api/agents/me` returns 200 as Jarvis) and can read issues, comments and runs. The "401" in the old migration document is out of date.
+  - Fix: skill `paperclip-agent-operations` step 2 now says to use `PAPERCLIP_API_KEY`, falling back to `PAPERCLIP_BRIDGE_API_KEY`, gives the exact snippet, and warns that a 404 from this instance can mean "not authenticated". Backup: `SKILL.md.bak-20261004T084326Z`.
+  - Proof: Jarvis's original readback rerun in the Hermes container returned run `succeeded` and TOM-69 `blocked`, with the key sent.
+  - Also tested and ruled out: Hermes secret-stripping. The key already reaches terminal children, and the trial skill-frontmatter change was reverted to the original byte-for-byte.
+- **Duplicate Hermes cron jobs — paused** (reversible with `hermes cron resume <id>`; backup `cron/jobs.json.pre-dedupe-20261004T083859Z`):
+  - `3568738e340a` Nightly vault update. This was the DeepSeek/OpenRouter job failing with 401.
+  - `53f1f5a66747` Hermes post-update review. It was mutation-capable and duplicated Paperclip's review.
+  - `ea5b8fb54c2f` Sunday weekly check-in.
+  - `42a68fc7dfac` Weekly host crontab audit.
+
+  All four are Paperclip routines owned by Jarvis, as the Hermes→Paperclip migration intended. Hermes now runs only host and no-agent scripts: Expo shutdown, Drive sync, parent payments, Claude continuity. Paperclip's two nightly vault routines are *not* duplicates (one is a read-only review, the other the writing update), so both stay.
+- **Redundant Hermes backup deleted:** `state.db.pre-fts-repair-20261004T081934Z`. The real pre-repair backup `…082053Z` is kept.
+- **Family-payment safeguard — still needs Tom.** The Google Workspace token (`google_token.json`, issued 25 Sep) returns `invalid_grant: Token has been expired or revoked` on a one-cell read. Re-authorising needs Tom's Google consent.
+- **Codex Direct Standby provider switch — needs a board session** (not available while Tom is away).
