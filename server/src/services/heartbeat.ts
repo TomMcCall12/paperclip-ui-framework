@@ -11,6 +11,11 @@ import {
   issueTaskModelUnsupportedReason,
 } from "./issue-assignee-override-guard.js";
 import { resolveAgentModelOptions } from "./agent-model-options.js";
+import {
+  RELEVANT_SKILL_ADAPTER_TYPES,
+  renderRelevantSkillInstructions,
+  resolveRelevantSkillsForRun,
+} from "./relevant-skills.js";
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
@@ -21435,8 +21440,44 @@ export function heartbeatService(
       // Both CLI adapters and native context materialization use the same resolved set.
       runtimeSkillEntries.splice(0, runtimeSkillEntries.length, ...connectorSkillConfig.paperclipRuntimeSkills);
       const connectorDelivery = await prepareConnectorSkillDelivery(connectorSkillConfig, agent.adapterType);
-      // Always replace this runtime-only field; caller wake data cannot supply skills.
-      context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
+      // Recommend the agent's own installed skills that match this task. Only
+      // adapters where Paperclip installs the skills for the run get this, and
+      // a failure here never blocks the run.
+      let relevantSkillInstructions = "";
+      if (RELEVANT_SKILL_ADAPTER_TYPES.has(agent.adapterType) && issueId) {
+        try {
+          const relevantSkills = await resolveRelevantSkillsForRun({
+            db,
+            companyId: agent.companyId,
+            issueId,
+            desiredSkillKeys: runtimeSkillPreference.desiredSkillEntries.map((entry) => entry.key),
+          });
+          relevantSkillInstructions = renderRelevantSkillInstructions(relevantSkills);
+          if (relevantSkills.length > 0) {
+            await appendRunEvent(run, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "info",
+              message: `Recommended ${relevantSkills.length} skill(s) matching this task`,
+              payload: {
+                relevantSkills: relevantSkills.map((skill) => ({
+                  key: skill.key,
+                  score: skill.score,
+                  matchedTerms: skill.matchedTerms,
+                })),
+              },
+            });
+          }
+        } catch (error) {
+          logger.warn({ runId: run.id, errorName: error instanceof Error ? error.name : typeof error }, "Relevant skill selection failed; continuing without recommendations");
+        }
+      }
+      // Always replace these runtime-only fields; caller wake data cannot supply skills.
+      context.paperclipWake = {
+        ...parseObject(context.paperclipWake),
+        connectorSkillInstructions: connectorDelivery.instructions,
+        relevantSkillInstructions,
+      };
       let runtimeConfig: Record<string, unknown> = connectorDelivery.config;
       const latestAgentConfigRevision = await getLatestAgentConfigRevision(
         agent.companyId,

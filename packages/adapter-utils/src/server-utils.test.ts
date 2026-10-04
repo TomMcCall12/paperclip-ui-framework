@@ -913,6 +913,24 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("adds server-selected relevant skills as their own section, and nothing when there are none", () => {
+    const base = {
+      reason: "issue_assigned",
+      issue: { id: "issue-1", status: "todo" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    };
+    const withSkills = renderPaperclipWakePrompt({
+      ...base,
+      relevantSkillInstructions: "These installed skills match this task.\n- **design-critique** — Give a critique.",
+    });
+    expect(withSkills).toContain("## Relevant skills for this task");
+    expect(withSkills).toContain("- **design-critique** — Give a critique.");
+    const without = renderPaperclipWakePrompt({ ...base, relevantSkillInstructions: "   " });
+    expect(without).not.toContain("Relevant skills for this task");
+  });
+
   it("leaves conversation disposition and accepted-plan handoff to the injected chat policy", () => {
     const payload = {
       reason: "issue_commented",

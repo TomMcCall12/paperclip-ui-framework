@@ -2203,10 +2203,14 @@ export function renderPaperclipWakePrompt(
   value: unknown,
   options: Parameters<typeof renderPaperclipWakePromptBody>[1] = {},
 ): string {
-  const instructions = asString(parseObject(value).connectorSkillInstructions, "").trim();
+  const wake = parseObject(value);
+  const instructions = asString(wake.connectorSkillInstructions, "").trim();
+  // Server-selected skills that match this task (see relevant-skills.ts).
+  const relevantSkills = asString(wake.relevantSkillInstructions, "").trim();
   return joinPromptSections([
     renderPaperclipWakePromptBody(value, options),
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
+    relevantSkills ? `## Relevant skills for this task\n\n${relevantSkills}` : "",
   ]);
 }
 
