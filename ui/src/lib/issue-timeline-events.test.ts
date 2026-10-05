@@ -412,3 +412,39 @@ describe("workModeInEffectAt", () => {
     ).toBe("ask");
   });
 });
+
+describe("skill activity in the task thread", () => {
+  const event = (action: string, details: Record<string, unknown>, minute = 0) => ({
+    id: `evt-${action}`,
+    companyId: "company-1",
+    actorType: "agent" as const,
+    actorId: "agent-1",
+    action,
+    entityType: action.startsWith("issue.") ? "issue" : "company_skill",
+    entityId: "x",
+    agentId: "agent-1",
+    runId: "run-1",
+    details,
+    createdAt: new Date(Date.UTC(2026, 9, 5, 12, minute)),
+  });
+
+  it("turns skill recommendations, creations and updates into one-line events", () => {
+    const events = extractIssueTimelineEvents([
+      event("issue.skills_recommended", { skills: [{ key: "a/design-critique", name: "design-critique" }, { key: "a/qa" }] }),
+      event("company.skill_created", { name: "paperclip-api-local-fallback", slug: "paperclip-api-local-fallback" }, 1),
+      event("company.skill_file_updated", { name: "vault-maintenance", path: "SKILL.md" }, 2),
+    ] as never);
+    expect(events.map((item) => item.skillActivity)).toEqual([
+      { kind: "recommended", skills: ["design-critique", "a/qa"] },
+      { kind: "created", skills: ["paperclip-api-local-fallback"] },
+      { kind: "updated", skills: ["vault-maintenance"] },
+    ]);
+  });
+
+  it("ignores skill events without a usable name", () => {
+    expect(extractIssueTimelineEvents([
+      event("issue.skills_recommended", { skills: [] }),
+      event("company.skill_updated", {}),
+    ] as never)).toEqual([]);
+  });
+});

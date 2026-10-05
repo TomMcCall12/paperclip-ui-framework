@@ -50,6 +50,7 @@ import type {
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { findUIAdapter } from "../adapters/registry";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { friendlyToolLabel } from "../lib/tool-labels";
 import { useSecondTick } from "../hooks/useSecondTick";
 import {
   usePaperclipIssueRuntime,
@@ -80,6 +81,7 @@ import {
   type StableThreadMessageCacheEntry,
   type IssueChatTranscriptEntry,
   type SegmentTiming,
+  describeSkillActivity,
 } from "../lib/issue-chat-messages";
 import type {
   AskUserQuestionsAnswer,
@@ -443,13 +445,13 @@ function IssueChatLiveRunStatusLine({
   if (!active) return null;
 
   const primary = currentToolName
-    ? `Using ${currentToolName}`
+    ? friendlyToolLabel(currentToolName)
     : lastAssistantSnippet
       ? lastAssistantSnippet
       : currentStatusMessage;
   const activityText = lastActivityElapsed
     ? lastActivityAgeMs !== null && lastActivityAgeMs >= 15_000
-      ? `no output for ${lastActivityElapsed} - still running`
+      ? `still working, no update for ${lastActivityElapsed}`
       : `${lastActivityElapsed} ago`
     : "";
   const text = [primary, activityText].filter(Boolean).join(" · ");
@@ -3292,6 +3294,16 @@ function isTimelineWorkspace(value: unknown): value is IssueTimelineWorkspace {
   );
 }
 
+function isTimelineSkillActivity(
+  value: unknown,
+): value is NonNullable<IssueTimelineEvent["skillActivity"]> {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (record.kind === "recommended" || record.kind === "created" || record.kind === "updated")
+    && Array.isArray(record.skills)
+    && record.skills.every((skill) => typeof skill === "string");
+}
+
 function isTimelineWorkspaceChange(
   value: unknown,
 ): value is NonNullable<IssueTimelineEvent["workspaceChange"]> {
@@ -3757,6 +3769,9 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   const workspaceChange = isTimelineWorkspaceChange(custom.workspaceChange)
     ? custom.workspaceChange
     : null;
+  const skillActivity = isTimelineSkillActivity(custom.skillActivity)
+    ? custom.skillActivity
+    : null;
   const interaction = isIssueThreadInteraction(custom.interaction)
     ? custom.interaction
     : null;
@@ -3820,9 +3835,11 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs">
           <span className="font-medium text-foreground">{actorName}</span>
           <span className="text-muted-foreground">
-            {custom.followUpRequested === true
-              ? "requested follow-up"
-              : "updated this task"}
+            {skillActivity
+              ? describeSkillActivity(skillActivity)
+              : custom.followUpRequested === true
+                ? "requested follow-up"
+                : "updated this task"}
           </span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}

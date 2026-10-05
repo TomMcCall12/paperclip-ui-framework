@@ -2219,6 +2219,22 @@ function renderRunApiCredential(value: unknown): string {
 // Runtime-only connector skills are supplied by the server after assignment resolution.
 // Shared-home adapters consume them here on fresh and resumed runs without installing
 // files into a user-wide skills directory. They are not part of serialized wake data.
+/**
+ * How agents write for the board, whatever model they run on: a plain-English
+ * summary first, technical detail folded away (the UI collapses a
+ * "Technical details" section), progress notes on long work, and a line when
+ * a skill is used, created or updated.
+ */
+export const PAPERCLIP_BOARD_WRITING_GUIDANCE = [
+  "## Writing for the board",
+  "",
+  "The board reads your comments and is not always technical.",
+  "- Start every comment with a short plain-English summary: what you did or found, what it means, and anything the board needs to do. Keep IDs, hashes, file paths, commands and log output out of this part.",
+  "- Put technical detail last, under a heading `### Technical details`. Paperclip folds that section away for the board.",
+  "- On work that takes more than a few minutes, post a one- or two-sentence plain-English progress comment at each key milestone (for example \"Found the cause; fixing it now.\" or \"Tests pass; deploying.\"), so the board can see the work is moving.",
+  "- When you follow a skill, or create or update one, say so in one line (for example \"Used the design-critique skill.\").",
+].join("\n");
+
 export function renderPaperclipWakePrompt(
   value: unknown,
   options: Parameters<typeof renderPaperclipWakePromptBody>[1] = {},
@@ -2227,10 +2243,19 @@ export function renderPaperclipWakePrompt(
   const instructions = asString(wake.connectorSkillInstructions, "").trim();
   // Server-selected skills that match this task (see relevant-skills.ts).
   const relevantSkills = asString(wake.relevantSkillInstructions, "").trim();
+  const body = renderPaperclipWakePromptBody(value, options);
+  const normalized = normalizePaperclipWakePayload(value);
+  // External chat turns (Telegram, Slack, ...) and agent chat have their own
+  // reply contracts; the board-writing guidance is for ordinary task work.
+  const boardWriting = body && normalized && options.conversationMode !== true
+    && !isNormalizedPaperclipExternalChatTurn(normalized)
+    ? PAPERCLIP_BOARD_WRITING_GUIDANCE
+    : "";
   return joinPromptSections([
-    renderPaperclipWakePromptBody(value, options),
+    body,
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
     relevantSkills ? `## Relevant skills for this task\n\n${relevantSkills}` : "",
+    boardWriting,
     renderRunApiCredential(wake.runApiCredential),
   ]);
 }

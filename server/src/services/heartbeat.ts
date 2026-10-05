@@ -21482,6 +21482,21 @@ export function heartbeatService(
                 })),
               },
             });
+            // A one-line entry in the task thread, so the board can see which
+            // skills the agent was pointed at for this run.
+            await logActivity(db, {
+              companyId: agent.companyId,
+              actorType: "agent",
+              actorId: agent.id,
+              agentId: agent.id,
+              runId: run.id,
+              action: "issue.skills_recommended",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                skills: relevantSkills.map((skill) => ({ key: skill.key, name: skill.name })),
+              },
+            });
           }
         } catch (error) {
           logger.warn({ runId: run.id, errorName: error instanceof Error ? error.name : typeof error }, "Relevant skill selection failed; continuing without recommendations");

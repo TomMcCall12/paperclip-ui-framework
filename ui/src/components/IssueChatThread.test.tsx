@@ -4551,7 +4551,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(container.textContent).toContain("Working...");
-    expect(container.textContent).toContain("Using bash");
+    expect(container.textContent).toContain("Running a command");
     expect(container.textContent).not.toContain("last activity");
     expect(container.textContent).toMatch(/\d+ seconds? ago/);
 

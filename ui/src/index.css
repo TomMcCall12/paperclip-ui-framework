@@ -1884,6 +1884,23 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
    light and dark instead of pinning the old Catppuccin #1e1e2e/#cdd6f4 in
    both modes. Override prose CSS variables so prose-invert can't revert to
    defaults. */
+/* "Technical details" sections in agent comments fold away behind a disclosure
+   (see ui/src/lib/remark-collapse-technical-details.ts). */
+.paperclip-technical-details {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+.paperclip-technical-details > summary {
+  cursor: pointer;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.paperclip-technical-details[open] > summary {
+  margin-bottom: 0.5rem;
+}
+
 .paperclip-markdown {
   --tw-prose-pre-bg: var(--muted);
   --tw-prose-pre-code: var(--foreground);

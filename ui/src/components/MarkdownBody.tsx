@@ -29,6 +29,7 @@ import {
   type WorkspaceFileRefResolver,
 } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
+import { remarkCollapseTechnicalDetails } from "../lib/remark-collapse-technical-details";
 import { StatusIcon } from "./StatusIcon";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
 import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
@@ -749,7 +750,7 @@ function MarkdownBodyImpl({
   // parent re-renders frequently (see PAP-10767). Memoize both so re-renders
   // that don't change the inputs are cheap and non-destructive.
   const remarkPlugins = useMemo<NonNullable<Options["remarkPlugins"]>>(() => {
-    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm, remarkDropHtmlComments];
+    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm, remarkDropHtmlComments, remarkCollapseTechnicalDetails];
     if (enableWikiLinks) {
       plugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
     }

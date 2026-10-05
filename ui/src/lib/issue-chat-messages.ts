@@ -640,6 +640,15 @@ function createCommentMessage(args: {
   return message;
 }
 
+/** Plain words for a skill line in the thread, e.g. "used the skill design-critique". */
+export function describeSkillActivity(activity: { kind: "recommended" | "created" | "updated"; skills: string[] }): string {
+  const list = activity.skills.join(", ");
+  const noun = activity.skills.length === 1 ? "the skill" : "the skills";
+  if (activity.kind === "created") return `created ${noun} ${list}`;
+  if (activity.kind === "updated") return `updated ${noun} ${list}`;
+  return `was given ${noun} ${list} for this task`;
+}
+
 function createTimelineEventMessage(args: {
   event: IssueTimelineEvent;
   agentMap?: Map<string, Agent>;
@@ -654,7 +663,9 @@ function createTimelineEventMessage(args: {
       : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? "Board");
 
   const lines: string[] = [
-    event.followUpRequested ? `${actorName} requested follow-up` : `${actorName} updated this issue`,
+    event.skillActivity
+      ? `${actorName} ${describeSkillActivity(event.skillActivity)}`
+      : event.followUpRequested ? `${actorName} requested follow-up` : `${actorName} updated this issue`,
   ];
   if (event.statusChange) {
     lines.push(
@@ -693,6 +704,7 @@ function createTimelineEventMessage(args: {
         assigneeChange: event.assigneeChange ?? null,
         workspaceChange: event.workspaceChange ?? null,
         followUpRequested: event.followUpRequested === true,
+        skillActivity: event.skillActivity ?? null,
       },
     },
   };

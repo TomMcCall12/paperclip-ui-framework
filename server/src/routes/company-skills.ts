@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { persistActivity, publishActivity } from "../services/activity-log.js";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { clampSkillUsageWindowDays, skillUsageService } from "../services/skill-usage.js";
@@ -94,6 +94,16 @@ export function companySkillRoutes(db: Db) {
   const access = accessService(db);
   const svc = companySkillService(db);
   const usage = skillUsageService(db);
+
+  /** The task an agent's current run is working on, so skill edits show in that task's thread. */
+  async function sourceIssueIdForAgentRun(req: Request, companyId: string): Promise<string | null> {
+    if (req.actor.type !== "agent" || !req.actor.runId) return null;
+    const [run] = await db
+      .select({ issueId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'issueId'` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, req.actor.runId), eq(heartbeatRuns.companyId, companyId)));
+    return run?.issueId ?? null;
+  }
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
   const skillPolicies = companySkillPolicyService(db);
@@ -1094,6 +1104,8 @@ export function companySkillRoutes(db: Db) {
         entityType: "company_skill",
         entityId: result.id,
         details: {
+          name: result.name,
+          sourceIssueId: await sourceIssueIdForAgentRun(req, companyId),
           slug: result.slug,
           categories: result.categories,
           sharingScope: result.sharingScope,
@@ -1131,6 +1143,8 @@ export function companySkillRoutes(db: Db) {
         entityType: "company_skill",
         entityId: skillId,
         details: {
+          name: (await svc.getById(companyId, skillId))?.name ?? null,
+          sourceIssueId: await sourceIssueIdForAgentRun(req, companyId),
           path: result.path,
           markdown: result.markdown,
         },

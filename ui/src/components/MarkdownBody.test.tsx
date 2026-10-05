@@ -93,6 +93,30 @@ function renderMarkdown(
 }
 
 describe("MarkdownBody", () => {
+  it("folds a Technical details section behind a closed disclosure", () => {
+    const html = renderMarkdown([
+      "Fixed the shopping categories and deployed them.",
+      "",
+      "### Technical details",
+      "",
+      "- commit `abc1234`",
+      "- 50/50 tests passed",
+      "",
+      "## Next steps",
+      "",
+      "Nothing needed from you.",
+    ].join("\n"));
+
+    expect(html).toContain("<details");
+    expect(html).not.toContain("<details open");
+    expect(html).toMatch(/<summary>Technical details<\/summary>/);
+    const details = html.slice(html.indexOf("<details"), html.indexOf("</details>"));
+    expect(details).toContain("abc1234");
+    expect(details).not.toContain("Next steps");
+    expect(html.indexOf("Fixed the shopping categories")).toBeLessThan(html.indexOf("<details"));
+    expect(html.indexOf("Next steps")).toBeGreaterThan(html.indexOf("</details>"));
+  });
+
   it("renders markdown images without a resolver", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>

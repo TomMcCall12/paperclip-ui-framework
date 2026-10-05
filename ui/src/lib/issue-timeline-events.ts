@@ -26,6 +26,13 @@ export interface IssueTimelineEvent {
   };
   commentId?: string | null;
   followUpRequested?: boolean;
+  skillActivity?: IssueTimelineSkillActivity;
+}
+
+/** Skills an agent was pointed at for a run, or created/updated while working on the task. */
+export interface IssueTimelineSkillActivity {
+  kind: "recommended" | "created" | "updated";
+  skills: string[];
 }
 
 export interface IssueTimelineWorkspace {
@@ -155,6 +162,30 @@ export function workModeInEffectAt(
   return mode ?? fallback;
 }
 
+function skillActivityFromEvent(
+  action: string,
+  details: Record<string, unknown>,
+): IssueTimelineSkillActivity | null {
+  if (action === "issue.skills_recommended") {
+    const skills = Array.isArray(details.skills)
+      ? details.skills.flatMap((skill) => {
+        const record = asRecord(skill);
+        const name = nullableString(record?.name) ?? nullableString(record?.key);
+        return name ? [name] : [];
+      })
+      : [];
+    return skills.length > 0 ? { kind: "recommended", skills } : null;
+  }
+  const kind = action === "company.skill_created"
+    ? "created"
+    : action === "company.skill_updated" || action === "company.skill_file_updated"
+      ? "updated"
+      : null;
+  if (!kind) return null;
+  const name = nullableString(details.name) ?? nullableString(details.slug);
+  return name ? { kind, skills: [name] } : null;
+}
+
 export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | undefined): IssueTimelineEvent[] {
   const events: IssueTimelineEvent[] = [];
 
@@ -174,6 +205,19 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
         runId: event.runId ?? null,
         commentId,
         followUpRequested: true,
+      });
+      continue;
+    }
+
+    const skillActivity = skillActivityFromEvent(event.action, details);
+    if (skillActivity) {
+      events.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        actorType: event.actorType,
+        actorId: event.actorId,
+        runId: event.runId ?? null,
+        skillActivity,
       });
       continue;
     }
