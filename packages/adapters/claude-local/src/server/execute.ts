@@ -72,6 +72,7 @@ import {
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
+  isClaudePromptTooLongError,
   isClaudeModelNotFoundError,
 } from "./parse.js";
 import {
@@ -1315,6 +1316,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "poisoned"
           : isClaudeImageProcessingError(initial.parsed)
           ? "image"
+          : isClaudePromptTooLongError(initial.parsed)
+          ? "too_long"
           : null
         : null;
 
@@ -1324,6 +1327,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "returned a poisoned message-id"
           : sessionErrorKind === "image"
           ? "contains an unprocessable image"
+          : sessionErrorKind === "too_long"
+          ? "is too long to resume"
           : "is unavailable";
       await onLog(
         "stdout",

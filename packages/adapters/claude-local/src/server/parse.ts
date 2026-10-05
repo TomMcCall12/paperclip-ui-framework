@@ -331,6 +331,22 @@ export function isClaudePoisonedPreviousMessageIdError(parsed: Record<string, un
   );
 }
 
+/**
+ * A resumed session that has grown past the model's context window. Claude
+ * answers "Prompt is too long" and every later resume fails the same way, so
+ * the run must start a fresh session (the wake prompt carries the task state).
+ */
+export function isClaudePromptTooLongError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /prompt is too long|input is too long for (?:the )?requested model|exceeds? the (?:model's )?context (?:window|length)/i.test(msg),
+  );
+}
+
 export function isClaudeImageProcessingError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
@@ -521,7 +537,7 @@ export function isClaudeTransientUpstreamError(input: {
 }): boolean {
   const parsed = input.parsed ?? null;
   // Deterministic failures are handled by their own classifiers.
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed) || isClaudePromptTooLongError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({
@@ -544,7 +560,7 @@ export function isClaudeProviderQuotaError(input: {
   errorMessage?: string | null;
 }): boolean {
   const parsed = input.parsed ?? null;
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed) || isClaudePromptTooLongError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({

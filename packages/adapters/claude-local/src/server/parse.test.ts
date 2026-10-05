@@ -10,6 +10,7 @@ import {
   isClaudeRefusalResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
+  isClaudePromptTooLongError,
   isClaudeModelNotFoundError,
 } from "./parse.js";
 
@@ -463,6 +464,18 @@ describe("isClaudeImageProcessingError", () => {
 
   it("returns false for empty parsed result", () => {
     expect(isClaudeImageProcessingError({})).toBe(false);
+  });
+});
+
+describe("isClaudePromptTooLongError", () => {
+  it("detects an overlong resumed session", () => {
+    expect(isClaudePromptTooLongError({ subtype: "success", is_error: true, result: "Prompt is too long" })).toBe(true);
+    expect(isClaudePromptTooLongError({ is_error: true, result: "", errors: [{ message: "input is too long for requested model" }] })).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(isClaudePromptTooLongError({ is_error: true, result: "No conversation found with session id abc-123" })).toBe(false);
+    expect(isClaudePromptTooLongError({})).toBe(false);
   });
 });
 

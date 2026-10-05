@@ -218,6 +218,42 @@ console.log(JSON.stringify({ type: "result", session_id: "bbbbbbbb-bbbb-4bbb-8bb
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writePromptTooLongClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const statePath = process.env.PAPERCLIP_TEST_STATE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+};
+if (capturePath) {
+  const entries = fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : [];
+  entries.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(entries), "utf8");
+}
+const resumed = process.argv.includes("--resume");
+const shouldFailResume = resumed && statePath && !fs.existsSync(statePath);
+if (shouldFailResume) {
+  fs.writeFileSync(statePath, "retried", "utf8");
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: "success",
+    session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    is_error: true,
+    result: "Prompt is too long",
+  }));
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function writeAlwaysPoisonedMessageIdClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -1628,6 +1664,45 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("starts a fresh session when the resumed session is too long", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-too-long-"));
+    const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writePromptTooLongClaudeCommand,
+    });
+    const logs: string[] = [];
+    try {
+      const result = await execute({
+        runId: "run-too-long",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_TEST_STATE_PATH: statePath,
+          },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async (_stream, chunk) => { logs.push(chunk); },
+      });
+
+      const captured: Array<{ argv: string[] }> = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      expect(captured).toHaveLength(2);
+      expect(captured[0]?.argv).toContain("--resume");
+      expect(captured[1]?.argv).not.toContain("--resume");
+      expect(result.sessionId).toBe("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+      expect(result.errorCode).toBeNull();
+      expect(logs.some((l) => l.includes("is too long to resume"))).toBe(true);
+    } finally {
+      restore();
       await fs.rm(root, { recursive: true, force: true });
     }
   });
