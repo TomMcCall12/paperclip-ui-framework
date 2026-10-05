@@ -926,12 +926,14 @@ describe("renderPaperclipWakePrompt", () => {
     expect(task).toContain("## Learning (do this before you finish)");
     expect(task).toContain("`Learning: <what you saved or changed>`");
     expect(task).not.toContain("`/learn`");
+    expect(task).toContain("where your instructions say you keep memory");
 
-    // Chats stay lean: only the /learn command, and no task-writing rules.
+    // Chats stay lean: memory, the /learn command, and no task-writing rules.
     const chat = renderPaperclipWakePrompt(base, { conversationMode: true });
     expect(chat).not.toContain("## Learning (do this before you finish)");
     expect(chat).not.toContain("## Writing for the board");
     expect(chat).toContain("`/learn`");
+    expect(chat).toContain("where your instructions say you keep memory");
   });
 
   it("renders a gateway run credential as headers to use, and nothing without one", () => {

@@ -2261,14 +2261,23 @@ export const PAPERCLIP_SKILL_LEARNING_GUIDANCE = [
   "",
   "Do not capture: missing tools or credentials (capture the fix instead), \"X does not work\" claims, transient errors that resolved, one-off task narratives, or failed approaches you never got working.",
   "",
+  "Memory is separate from skills: if the board told you a lasting preference, decision or fact about themselves, save it where your instructions say you keep memory (skip this if they don't say).",
+  "",
   "API: list skills with `GET /api/companies/{companyId}/skills`; read one with `GET /api/companies/{companyId}/skills/{skillId}` before you change it; create with `POST /api/companies/{companyId}/skills` (`name`, `description` saying when to use it, `markdown`); update a file with `PATCH /api/companies/{companyId}/skills/{skillId}/files` (`path`, `content`). Skills you create are yours and are handed to the agents who need them. Shipped, hand-written and pinned skills are protected: if one is wrong, say so in your comment instead.",
   "",
   "Finish your final comment with one line: `Learning: <what you saved or changed>` or `Learning: nothing to save`.",
 ].join("\n");
 
-/** In chats, the same review runs only when the board asks for it with /learn. */
-export const PAPERCLIP_CHAT_LEARN_COMMAND_GUIDANCE =
-  "If the board's latest message is `/learn`, review this conversation for skill lessons (board corrections, hard-won fixes, wrong or missing skill steps) and save them to the skill library through the Paperclip skills API: update an existing skill you own first, otherwise create a class-level skill. Then reply with what you saved, or \"Nothing to save\".";
+/**
+ * In chats, the skill review runs only when the board asks for it with /learn;
+ * lasting preferences go to the agent's memory as they come up, as Hermes's
+ * memory review does.
+ */
+export const PAPERCLIP_CHAT_LEARNING_GUIDANCE = [
+  "If the board states a lasting preference, decision or fact about themselves, also save it where your instructions say you keep memory (skip this if they don't say). Don't mention it unless asked.",
+  "",
+  "If the board's latest message is `/learn`, review this conversation for skill lessons (board corrections, hard-won fixes, wrong or missing skill steps) and save them to the skill library through the Paperclip skills API: update an existing skill you own first, otherwise create a class-level skill. Then reply with what you saved, or \"Nothing to save\".",
+].join("\n");
 
 export function renderPaperclipWakePrompt(
   value: unknown,
@@ -2289,7 +2298,7 @@ export function renderPaperclipWakePrompt(
   const learning = boardWriting
     ? PAPERCLIP_SKILL_LEARNING_GUIDANCE
     : body && normalized && options.conversationMode === true
-      ? PAPERCLIP_CHAT_LEARN_COMMAND_GUIDANCE
+      ? PAPERCLIP_CHAT_LEARNING_GUIDANCE
       : "";
   return joinPromptSections([
     body,
