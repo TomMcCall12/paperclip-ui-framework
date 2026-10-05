@@ -79,3 +79,18 @@ A redundant second pre-repair copy, `state.db.pre-fts-repair-20261004T081934Z`, 
   - The vault is mounted only in `paperclip-notes-vault-bridge`, and Jarvis is the only writer.
   - Proven by TOM-80: Jarvis created and appended a vault note through the API, and the changelog rows were added automatically.
   - **Rollback:** `docker-compose.yml.pre-tom46-20261004T161001Z.bak` plus `.env.pre-tom46-20261004T161001Z.bak`.
+
+## Tom's decisions, outage and tom47 (4–5 Oct)
+- **Plated block removed.**
+  - The legacy `requiresApproval` flag came from Hermes's setup board key. Both "Hermes Paperclip setup" board keys are revoked.
+  - New writes of the retired flags are refused with 422 (`126e592`).
+- **Ship rule.** Jarvis always pushes and deploys once all tests pass.
+- **Jarvis moved to Claude Code** (`claude-opus-5-5`, medium effort). Host routines moved to Hermes Runtime.
+- **Outage.** During an image build, a Docker daemon that had run for 17 days grew to about 10 GB and filled RAM and swap. Recovered by restarting Docker. Builds now run through a memory-guarded script.
+- **Live since 5 Oct, 12:30 UTC:** `8fca1cd` (image `tom47`).
+  - The notes vault bridge runs as root with only DAC_OVERRIDE, CHOWN and FOWNER, and gives new files the vault owner.
+  - **Rollback:** `docker-compose.yml.pre-tom47-20261005T123022Z.bak`.
+- **Open, waiting on Tom:**
+  - GitHub connection grant/secret mismatch: a personal grant points at a company secret.
+  - Hermes Runtime gateway URL and key.
+  - Codex Direct Standby device sign-in.
