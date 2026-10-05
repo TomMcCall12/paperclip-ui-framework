@@ -31,7 +31,7 @@ export interface IssueTimelineEvent {
 
 /** Skills an agent was pointed at for a run, or created/updated while working on the task. */
 export interface IssueTimelineSkillActivity {
-  kind: "recommended" | "created" | "updated";
+  kind: "recommended" | "used" | "created" | "updated";
   skills: string[];
 }
 
@@ -166,7 +166,7 @@ function skillActivityFromEvent(
   action: string,
   details: Record<string, unknown>,
 ): IssueTimelineSkillActivity | null {
-  if (action === "issue.skills_recommended") {
+  if (action === "issue.skills_recommended" || action === "issue.skills_used") {
     const skills = Array.isArray(details.skills)
       ? details.skills.flatMap((skill) => {
         const record = asRecord(skill);
@@ -174,7 +174,8 @@ function skillActivityFromEvent(
         return name ? [name] : [];
       })
       : [];
-    return skills.length > 0 ? { kind: "recommended", skills } : null;
+    if (skills.length === 0) return null;
+    return { kind: action === "issue.skills_used" ? "used" : "recommended", skills };
   }
   const kind = action === "company.skill_created"
     ? "created"

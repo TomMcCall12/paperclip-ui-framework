@@ -2235,6 +2235,41 @@ export const PAPERCLIP_BOARD_WRITING_GUIDANCE = [
   "- When you follow a skill, or create or update one, say so in one line (for example \"Used the design-critique skill.\").",
 ].join("\n");
 
+/**
+ * The end-of-run learning step, adapted from Hermes's background skill review
+ * (MIT): agents turn corrections, hard-won fixes and reusable procedures into
+ * skills, the way Hermes does after a turn with enough tool work. Agents may
+ * only change agent-owned skills; Paperclip enforces that.
+ */
+export const PAPERCLIP_SKILL_LEARNING_GUIDANCE = [
+  "## Learning (do this before you finish)",
+  "",
+  "Before your final comment, review what happened in this task and update the skill library. Be active: most real tasks teach something, and a pass that saves nothing is a missed lesson, not a neutral result. Skip this only for trivial tasks.",
+  "",
+  "Save a skill lesson when any of these happened:",
+  "- The board or a reviewer corrected your approach, format, tone or steps.",
+  "- You found a non-obvious fix, workaround, debugging path or tool pattern that a future task would need.",
+  "- A skill you used turned out wrong, missing a step, or out of date.",
+  "",
+  "Where to put it (pick the first that fits):",
+  "1. Update a skill you used in this task, if it is yours to change.",
+  "2. Update an existing broader skill that covers this kind of task.",
+  "3. Add a support file under an existing skill: `references/<topic>.md` for depth, `templates/` for starter files, `scripts/` for re-runnable checks. Add a one-line pointer in its SKILL.md.",
+  "4. Create a new skill, named for the class of task (never a task number, error string or one-off).",
+  "",
+  "How to write it: steps in order with the commands that work, then pitfalls as short imperative rules with one clause of why. No task numbers, dates or quoted chat. State each rule once; fix a wrong sentence in place rather than appending a correction.",
+  "",
+  "Do not capture: missing tools or credentials (capture the fix instead), \"X does not work\" claims, transient errors that resolved, one-off task narratives, or failed approaches you never got working.",
+  "",
+  "API: list skills with `GET /api/companies/{companyId}/skills`; read one with `GET /api/companies/{companyId}/skills/{skillId}` before you change it; create with `POST /api/companies/{companyId}/skills` (`name`, `description` saying when to use it, `markdown`); update a file with `PATCH /api/companies/{companyId}/skills/{skillId}/files` (`path`, `content`). Skills you create are yours and are handed to the agents who need them. Shipped, hand-written and pinned skills are protected: if one is wrong, say so in your comment instead.",
+  "",
+  "Finish your final comment with one line: `Learning: <what you saved or changed>` or `Learning: nothing to save`.",
+].join("\n");
+
+/** In chats, the same review runs only when the board asks for it with /learn. */
+export const PAPERCLIP_CHAT_LEARN_COMMAND_GUIDANCE =
+  "If the board's latest message is `/learn`, review this conversation for skill lessons (board corrections, hard-won fixes, wrong or missing skill steps) and save them to the skill library through the Paperclip skills API: update an existing skill you own first, otherwise create a class-level skill. Then reply with what you saved, or \"Nothing to save\".";
+
 export function renderPaperclipWakePrompt(
   value: unknown,
   options: Parameters<typeof renderPaperclipWakePromptBody>[1] = {},
@@ -2251,11 +2286,17 @@ export function renderPaperclipWakePrompt(
     && !isNormalizedPaperclipExternalChatTurn(normalized)
     ? PAPERCLIP_BOARD_WRITING_GUIDANCE
     : "";
+  const learning = boardWriting
+    ? PAPERCLIP_SKILL_LEARNING_GUIDANCE
+    : body && normalized && options.conversationMode === true
+      ? PAPERCLIP_CHAT_LEARN_COMMAND_GUIDANCE
+      : "";
   return joinPromptSections([
     body,
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
     relevantSkills ? `## Relevant skills for this task\n\n${relevantSkills}` : "",
     boardWriting,
+    learning,
     renderRunApiCredential(wake.runApiCredential),
   ]);
 }

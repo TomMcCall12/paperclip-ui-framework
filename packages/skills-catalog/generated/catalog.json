@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-10-04T15:50:20.303Z",
+  "generatedAt": "2026-10-05T23:42:58.540Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -151,7 +151,7 @@
       "category": "paperclip-operations",
       "slug": "skill-curator",
       "name": "skill-curator",
-      "description": "Curate the company skill library from completed work. Turn repeated procedures and hard-won fixes into skills, keep curated skills accurate, and flag stale or unused skills for archiving, using recommendation activity from the skills usage report. Never deletes a skill.",
+      "description": "Curate the company skill library from completed work. Turn repeated procedures and hard-won fixes into skills, catch complex tasks that saved no lesson, keep agent-owned skills (learned, curated, Hermes-imported) accurate, and archive idle ones, using the skills usage report. Never deletes a skill.",
       "path": "catalog/bundled/paperclip-operations/skill-curator",
       "entrypoint": "SKILL.md",
       "trustLevel": "markdown_only",
@@ -174,11 +174,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 6283,
-          "sha256": "770a65fcc8a1706fb3f0c86e9d364ac34a7b98894b0582b12aa669358eeaceee"
+          "sizeBytes": 8617,
+          "sha256": "2374ad7fce65407afef9de8afed328e947b3ddc91b3265e6d4553cc9a980276c"
         }
       ],
-      "contentHash": "sha256:14acd05f4f490574519078a5c53131181ef502922dd27a9365197b04a75722d3"
+      "contentHash": "sha256:8055c3190121fddec8265957fe0daa94c3891667dfe3153d9a0a1c2ba85b3bc7"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:status-card-query",

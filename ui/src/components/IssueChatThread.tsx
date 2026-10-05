@@ -3299,7 +3299,7 @@ function isTimelineSkillActivity(
 ): value is NonNullable<IssueTimelineEvent["skillActivity"]> {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
-  return (record.kind === "recommended" || record.kind === "created" || record.kind === "updated")
+  return (record.kind === "recommended" || record.kind === "used" || record.kind === "created" || record.kind === "updated")
     && Array.isArray(record.skills)
     && record.skills.every((skill) => typeof skill === "string");
 }

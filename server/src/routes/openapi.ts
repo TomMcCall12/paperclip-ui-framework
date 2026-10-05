@@ -9722,6 +9722,8 @@ for (const route of [
   ["get", "/api/companies/{companyId}/notes-vault/list", "List a notes vault folder"],
   ["get", "/api/companies/{companyId}/notes-vault/file", "Read a notes vault file"],
   ["post", "/api/companies/{companyId}/notes-vault/file", "Create, append to or replace a notes vault file"],
+  ["get", "/api/companies/{companyId}/skills/learning-candidates", "Complex finished tasks that captured no skill, for the learning sweep"],
+  ["post", "/api/companies/{companyId}/skills/lifecycle/apply", "Archive agent-owned skills idle past the threshold"],
   [
     "get",
     "/api/companies/{companyId}/skills/usage",

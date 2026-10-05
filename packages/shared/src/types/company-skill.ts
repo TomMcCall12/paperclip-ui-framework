@@ -723,6 +723,13 @@ export interface CompanySkillUsageItem {
   recommendedRunsSucceeded: number;
   recommendedRunsFailed: number;
   lastRecommendedAt: string | null;
+  /** Runs, within the window, in which an agent actually loaded this skill. */
+  usedRuns: number;
+  lastUsedAt: string | null;
+  /** Agents may change it (learned, curated or imported from Hermes, and not pinned). */
+  agentManaged: boolean;
+  pinned: boolean;
+  archived: boolean;
   createdAt: string;
   updatedAt: string;
   lifecycle: CompanySkillUsageLifecycle;

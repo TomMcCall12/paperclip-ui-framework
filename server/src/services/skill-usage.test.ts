@@ -83,7 +83,7 @@ suite("skillUsageService.report (real PostgreSQL)", () => {
       temporary = await startEmbeddedPostgresTestDatabase("paperclip-skill-usage-");
       db = createDb(temporary.connectionString);
     }
-  }, 60_000);
+  }, 240_000);
   afterAll(async () => {
     await db?.$client.end();
     await temporary?.cleanup();

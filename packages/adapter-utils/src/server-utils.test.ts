@@ -913,6 +913,27 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("asks every task run to write for the board and to capture lessons as skills", () => {
+    const base = {
+      reason: "issue_assigned",
+      issue: { id: "issue-1", status: "todo" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    };
+    const task = renderPaperclipWakePrompt(base);
+    expect(task).toContain("## Writing for the board");
+    expect(task).toContain("## Learning (do this before you finish)");
+    expect(task).toContain("`Learning: <what you saved or changed>`");
+    expect(task).not.toContain("`/learn`");
+
+    // Chats stay lean: only the /learn command, and no task-writing rules.
+    const chat = renderPaperclipWakePrompt(base, { conversationMode: true });
+    expect(chat).not.toContain("## Learning (do this before you finish)");
+    expect(chat).not.toContain("## Writing for the board");
+    expect(chat).toContain("`/learn`");
+  });
+
   it("renders a gateway run credential as headers to use, and nothing without one", () => {
     const base = {
       reason: "issue_assigned",

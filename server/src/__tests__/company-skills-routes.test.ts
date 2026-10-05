@@ -1533,11 +1533,12 @@ describe("company skill mutation permissions", () => {
       action: "company.skill_updated",
       entityType: "company_skill",
       entityId: "skill-1",
-      details: {
+      details: expect.objectContaining({
         slug: "review",
         categories: ["memory", "review"],
         sharingScope: "company",
-      },
+        sourceIssueId: null,
+      }),
     }));
   });
 
@@ -1699,6 +1700,8 @@ describe("company skill mutation permissions", () => {
   });
 
   it("attributes rename activity to the calling agent API key", async () => {
+    // Agents may only change agent-owned skills.
+    mockCompanySkillService.getById.mockResolvedValue({ id: "skill-1", slug: "review", categories: ["learned"], metadata: null });
     const app = await createApp({
       type: "agent",
       agentId: "55555555-5555-4555-8555-555555555555",
@@ -1720,6 +1723,51 @@ describe("company skill mutation permissions", () => {
       runId: "run-1",
       agentApiKeyId: "agent-key-1",
     }));
+  });
+
+  it("refuses agent changes to protected skills but lets the board make them", async () => {
+    mockCompanySkillService.getById.mockResolvedValue({ id: "skill-1", slug: "review", categories: [], metadata: null });
+    const agentApp = await createApp({
+      type: "agent",
+      agentId: "55555555-5555-4555-8555-555555555555",
+      companyId: "company-1",
+      runId: "run-1",
+      keyId: "agent-key-1",
+      source: "agent_key",
+    });
+    for (const call of [
+      () => request(agentApp).patch("/api/companies/company-1/skills/skill-1/files").send({ path: "SKILL.md", content: "# x" }),
+      () => request(agentApp).post("/api/companies/company-1/skills/skill-1/rename").send({ name: "Ship PR", slug: "ship-pr" }),
+      () => request(agentApp).patch("/api/companies/company-1/skills/skill-1").send({ description: "x" }),
+      () => request(agentApp).delete("/api/companies/company-1/skills/skill-1"),
+    ]) {
+      const res = await call();
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(JSON.stringify(res.body)).toContain("skill_protected");
+    }
+    expect(mockCompanySkillService.updateFile).not.toHaveBeenCalled();
+    expect(mockCompanySkillService.renameSkill).not.toHaveBeenCalled();
+    expect(mockCompanySkillService.deleteSkill).not.toHaveBeenCalled();
+
+    const boardApp = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+    await request(boardApp).patch("/api/companies/company-1/skills/skill-1/files").send({ path: "SKILL.md", content: "# x" }).expect(200);
+  });
+
+  it("stops agents pinning an agent-owned skill or making it protected", async () => {
+    mockCompanySkillService.getById.mockResolvedValue({ id: "skill-1", slug: "review", categories: ["learned"], metadata: null });
+    const agentApp = await createApp({
+      type: "agent",
+      agentId: "55555555-5555-4555-8555-555555555555",
+      companyId: "company-1",
+      runId: "run-1",
+      keyId: "agent-key-1",
+      source: "agent_key",
+    });
+    for (const categories of [["learned", "pinned"], ["review"]]) {
+      const res = await request(agentApp).patch("/api/companies/company-1/skills/skill-1").send({ categories });
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+    }
+    await request(agentApp).patch("/api/companies/company-1/skills/skill-1").send({ categories: ["learned", "plated"] }).expect(200);
   });
 
   it("rejects a rename request with a missing name", async () => {

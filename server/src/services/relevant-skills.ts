@@ -228,15 +228,20 @@ export async function resolveRelevantSkillsForRun(input: {
     ))
     .orderBy(desc(issueComments.createdAt))
     .limit(RECENT_COMMENT_LIMIT);
-  const candidates = await input.db
+  const rows = await input.db
     .select({
       key: companySkills.key,
       name: companySkills.name,
       description: companySkills.description,
       markdown: companySkills.markdown,
+      categories: companySkills.categories,
     })
     .from(companySkills)
     .where(and(eq(companySkills.companyId, input.companyId), inArray(companySkills.key, input.desiredSkillKeys)));
+  // Skills the curator has archived stay in the library but are never recommended.
+  const candidates = rows
+    .filter((row) => !(row.categories ?? []).includes("archived"))
+    .map(({ categories: _categories, ...candidate }) => candidate);
   return rankRelevantSkills({
     taskText: [issue.title, issue.description ?? "", ...comments.map((comment) => comment.body)].join("\n"),
     candidates,

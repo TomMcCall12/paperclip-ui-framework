@@ -16,6 +16,8 @@ import {
   renderRelevantSkillInstructions,
   resolveRelevantSkillsForRun,
 } from "./relevant-skills.js";
+import { createRunToolTracker } from "./skill-learning.js";
+import { chatModelConfigOverrides } from "./chat-model-overrides.js";
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
@@ -21282,6 +21284,8 @@ export function heartbeatService(
       }
       const mergedConfig = {
         ...workspaceManagedConfig,
+        // Chats can run on a lighter model than task work; a per-task override still wins.
+        ...(isConversation(issueContext) ? chatModelConfigOverrides(config) : {}),
         ...(issueAssigneeOverrides?.adapterConfig ?? {}),
       };
       const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
@@ -22971,7 +22975,11 @@ export function heartbeatService(
 
         const currentUserRedactionOptions =
           await getCurrentUserRedactionOptions();
+        // Counts tool calls and records skill loads from the agent's own output,
+        // so the thread shows which skills were actually used (not just suggested).
+        const runToolTracker = createRunToolTracker();
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+          if (stream === "stdout") runToolTracker.observe(chunk);
           const sanitizedChunk = compactRunLogChunk(
             redactCurrentUserText(chunk, currentUserRedactionOptions),
           );
@@ -24959,6 +24967,31 @@ export function heartbeatService(
         } | null = null;
         if (handle) {
           logSummary = await runLogStore.finalize(handle);
+        }
+        try {
+          const toolSummary = runToolTracker.result();
+          await appendRunEvent(run, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message: `Run made ${toolSummary.toolCalls} tool call(s)`,
+            payload: { toolCalls: toolSummary.toolCalls, skillsUsed: toolSummary.skillsUsed },
+          });
+          if (issueId && toolSummary.skillsUsed.length > 0) {
+            await logActivity(db, {
+              companyId: agent.companyId,
+              actorType: "agent",
+              actorId: agent.id,
+              agentId: agent.id,
+              runId: run.id,
+              action: "issue.skills_used",
+              entityType: "issue",
+              entityId: issueId,
+              details: { skills: toolSummary.skillsUsed.map((name) => ({ name })) },
+            });
+          }
+        } catch (error) {
+          logger.warn({ runId: run.id, errorName: error instanceof Error ? error.name : typeof error }, "Run tool summary failed; continuing");
         }
         const finalLogBytes = logSummary?.bytes;
         if (outputProgressState.pending && typeof finalLogBytes === "number") {

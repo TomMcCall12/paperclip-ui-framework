@@ -641,11 +641,12 @@ function createCommentMessage(args: {
 }
 
 /** Plain words for a skill line in the thread, e.g. "used the skill design-critique". */
-export function describeSkillActivity(activity: { kind: "recommended" | "created" | "updated"; skills: string[] }): string {
+export function describeSkillActivity(activity: { kind: "recommended" | "used" | "created" | "updated"; skills: string[] }): string {
   const list = activity.skills.join(", ");
   const noun = activity.skills.length === 1 ? "the skill" : "the skills";
   if (activity.kind === "created") return `created ${noun} ${list}`;
   if (activity.kind === "updated") return `updated ${noun} ${list}`;
+  if (activity.kind === "used") return `used ${noun} ${list}`;
   return `was given ${noun} ${list} for this task`;
 }
 

@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companySkills } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { ARCHIVED_SKILL_CATEGORY, isAgentManagedSkill, isArchivedSkill, PINNED_SKILL_CATEGORY } from "./skill-learning.js";
 import type { CompanySkillUsageItem, CompanySkillUsageLifecycle, CompanySkillUsageReport } from "@paperclipai/shared";
 
 /**
@@ -83,6 +84,7 @@ export function skillUsageService(db: Db) {
         .select({
           id: companySkills.id,
           key: companySkills.key,
+          slug: companySkills.slug,
           name: companySkills.name,
           sourceType: companySkills.sourceType,
           categories: companySkills.categories,
@@ -132,6 +134,38 @@ export function skillUsageService(db: Db) {
         });
       }
 
+      // Actual loads (the agent opened the skill), recorded per run as
+      // issue.skills_used activity with the skill's name as the agent saw it.
+      const usedResult = await db.execute(sql`
+        select lower(used.value->>'name') as name,
+          count(distinct l.run_id) filter (where l.created_at >= ${since.toISOString()}) as runs,
+          max(l.created_at) as last
+        from activity_log l
+        cross join lateral jsonb_array_elements(
+          case when jsonb_typeof(l.details->'skills') = 'array' then l.details->'skills' else '[]'::jsonb end
+        ) as used(value)
+        where l.company_id = ${companyId}
+          and l.action = 'issue.skills_used'
+        group by 1
+      `);
+      const usedByName = new Map<string, { runs: number; last: Date | null }>();
+      for (const row of usedResult as unknown as Array<Record<string, unknown>>) {
+        if (typeof row.name !== "string") continue;
+        usedByName.set(row.name, { runs: Number(row.runs ?? 0), last: toDate(row.last) });
+      }
+      const usedFor = (skill: { key: string; slug: string; name: string }) => {
+        const names = new Set([skill.name, skill.slug, skill.key.split("/").pop() ?? ""].map((value) => value.toLowerCase()).filter(Boolean));
+        let runs = 0;
+        let last: Date | null = null;
+        for (const name of names) {
+          const hit = usedByName.get(name);
+          if (!hit) continue;
+          runs = Math.max(runs, hit.runs);
+          if (hit.last && (!last || hit.last > last)) last = hit.last;
+        }
+        return { runs, last };
+      };
+
       const agentRows = await db
         .select({ adapterConfig: agents.adapterConfig, status: agents.status })
         .from(agents)
@@ -148,6 +182,9 @@ export function skillUsageService(db: Db) {
       const items: CompanySkillUsageItem[] = skills.map((skill) => {
         const usage = recommendations.get(skill.key);
         const lastRecommendedAt = usage?.last ?? null;
+        const used = usedFor(skill);
+        const lastActiveAt = [lastRecommendedAt, used.last].filter((value): value is Date => value !== null)
+          .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
         return {
           skillId: skill.id,
           key: skill.key,
@@ -159,9 +196,14 @@ export function skillUsageService(db: Db) {
           recommendedRunsSucceeded: usage?.succeeded ?? 0,
           recommendedRunsFailed: usage?.failed ?? 0,
           lastRecommendedAt: lastRecommendedAt?.toISOString() ?? null,
+          usedRuns: used.runs,
+          lastUsedAt: used.last?.toISOString() ?? null,
+          agentManaged: isAgentManagedSkill(skill.categories),
+          pinned: skill.categories.includes(PINNED_SKILL_CATEGORY),
+          archived: isArchivedSkill(skill.categories),
           createdAt: skill.createdAt.toISOString(),
           updatedAt: skill.updatedAt.toISOString(),
-          lifecycle: classifySkillLifecycle({ createdAt: skill.createdAt, lastRecommendedAt, trackingStartedAt, now }),
+          lifecycle: classifySkillLifecycle({ createdAt: skill.createdAt, lastRecommendedAt: lastActiveAt, trackingStartedAt, now }),
         };
       });
       items.sort((a, b) => b.recommendedRuns - a.recommendedRuns || a.key.localeCompare(b.key));
@@ -177,4 +219,118 @@ export function skillUsageService(db: Db) {
       };
     },
   };
+}
+
+/** A run counts as complex, worth a learning review, past these (Hermes reviews after 10 tool iterations). */
+export const LEARNING_MIN_TOOL_CALLS = 10;
+export const LEARNING_MIN_DURATION_MINUTES = 10;
+
+export type LearningCandidate = {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  agentId: string;
+  agentName: string;
+  runId: string;
+  toolCalls: number | null;
+  durationMinutes: number;
+  finishedAt: string;
+};
+
+/**
+ * Complex, successful task runs in the window that captured no skill, the
+ * safety net for agents that skipped the end-of-run learning step. Mirrors
+ * Hermes's trigger: enough tool work in a turn, and no skill write during it.
+ */
+export async function findLearningCandidates(db: Db, companyId: string, options: { hours?: number; now?: Date } = {}): Promise<LearningCandidate[]> {
+  const now = options.now ?? new Date();
+  const hours = Math.min(Math.max(Math.floor(options.hours ?? 24), 1), 24 * 14);
+  const since = new Date(now.getTime() - hours * 60 * 60 * 1000);
+  const rows = await db.execute(sql`
+    select r.id as run_id, r.agent_id, a.name as agent_name, i.id as issue_id, i.identifier, i.title,
+      r.finished_at,
+      extract(epoch from (r.finished_at - r.started_at)) / 60.0 as minutes,
+      (select (e.payload->>'toolCalls')::int from heartbeat_run_events e
+        where e.run_id = r.id and e.event_type = 'lifecycle' and e.payload ? 'toolCalls'
+        order by e.id desc limit 1) as tool_calls
+    from heartbeat_runs r
+    join agents a on a.id = r.agent_id
+    join issues i on i.id::text = r.context_snapshot->>'issueId' and i.company_id = r.company_id
+    where r.company_id = ${companyId}
+      and r.status = 'succeeded'
+      and r.finished_at >= ${since.toISOString()}
+      and r.started_at is not null
+      and i.conversation_agent_id is null
+      and not exists (
+        select 1 from activity_log l
+        where l.company_id = r.company_id and l.run_id = r.id
+          and l.action in ('company.skill_created', 'company.skill_updated', 'company.skill_file_updated')
+      )
+    order by r.finished_at desc
+  `);
+  const candidates: LearningCandidate[] = [];
+  const seenIssues = new Set<string>();
+  for (const row of rows as unknown as Array<Record<string, unknown>>) {
+    const toolCalls = row.tool_calls === null || row.tool_calls === undefined ? null : Number(row.tool_calls);
+    const minutes = Number(row.minutes ?? 0);
+    if ((toolCalls ?? 0) < LEARNING_MIN_TOOL_CALLS && minutes < LEARNING_MIN_DURATION_MINUTES) continue;
+    const issueId = String(row.issue_id);
+    if (seenIssues.has(issueId)) continue; // One review per task.
+    seenIssues.add(issueId);
+    candidates.push({
+      issueId,
+      identifier: (row.identifier as string | null) ?? null,
+      title: String(row.title ?? ""),
+      agentId: String(row.agent_id),
+      agentName: String(row.agent_name ?? ""),
+      runId: String(row.run_id),
+      toolCalls,
+      durationMinutes: Math.round(minutes * 10) / 10,
+      finishedAt: (toDate(row.finished_at) ?? now).toISOString(),
+    });
+  }
+  return candidates;
+}
+
+export type LifecycleChange = { skillId: string; key: string; name: string; action: "archived"; unassignedFrom: number };
+
+/**
+ * Hermes's deterministic prune: agent-owned skills idle past the archive
+ * threshold are archived (kept, recoverable, no longer assigned or
+ * recommended). Pinned and protected skills are never touched, and nothing is
+ * judged before tracking could have seen it used.
+ */
+export async function applySkillLifecycle(db: Db, companyId: string, options: { now?: Date; dryRun?: boolean } = {}): Promise<LifecycleChange[]> {
+  const report = await skillUsageService(db).report(companyId, { now: options.now });
+  const due = report.skills.filter((skill) => skill.lifecycle === "archive_candidate" && skill.agentManaged && !skill.pinned && !skill.archived);
+  if (options.dryRun || due.length === 0) {
+    return due.map((skill) => ({ skillId: skill.skillId, key: skill.key, name: skill.name, action: "archived", unassignedFrom: 0 }));
+  }
+  const { companySkillService } = await import("./company-skills.js");
+  const { agentService } = await import("./agents.js");
+  const { writePaperclipSkillSyncPreference } = await import("@paperclipai/adapter-utils/server-utils");
+  const skillsSvc = companySkillService(db);
+  const agentsSvc = agentService(db);
+  const agentRows = await db
+    .select({ id: agents.id, adapterConfig: agents.adapterConfig, status: agents.status })
+    .from(agents)
+    .where(eq(agents.companyId, companyId));
+  const changes: LifecycleChange[] = [];
+  for (const skill of due) {
+    const current = await skillsSvc.getById(companyId, skill.skillId);
+    if (!current) continue;
+    await skillsSvc.updateSkill(companyId, skill.skillId, { categories: [...new Set([...current.categories, ARCHIVED_SKILL_CATEGORY])] });
+    let unassignedFrom = 0;
+    for (const agent of agentRows) {
+      const config = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+      const entries = readPaperclipSkillSyncPreference(config).desiredSkillEntries;
+      if (!entries.some((entry) => entry.key === skill.key)) continue;
+      await agentsSvc.update(agent.id, { adapterConfig: writePaperclipSkillSyncPreference(config, entries.filter((entry) => entry.key !== skill.key)) }, {
+        recordRevision: { createdByAgentId: null, createdByUserId: null, source: "skill-lifecycle" },
+      });
+      unassignedFrom += 1;
+    }
+    changes.push({ skillId: skill.skillId, key: skill.key, name: skill.name, action: "archived", unassignedFrom });
+  }
+  return changes;
 }
