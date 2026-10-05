@@ -44,6 +44,9 @@ export const GIT_CREDENTIAL_TOKEN_ENV_KEY = "PAPERCLIP_GIT_TOKEN";
 const GIT_CREDENTIAL_HELPER =
   `!f() { ok=; proto=; while IFS= read -r l && [ -n "$l" ]; do case "$l" in host=github.com|host=www.github.com) ok=1;; protocol=https) proto=1;; esac; done; if [ "$1" = get ] && [ -n "$ok" ] && [ -n "$proto" ]; then printf 'username=x-access-token\\npassword=%s\\n' "$PAPERCLIP_GIT_TOKEN"; fi; }; f`;
 
+/** Where a GitHub connection made with a personal access token keeps it. */
+export const GITHUB_API_KEY_CONFIG_PATH = "credentials.authorization";
+
 export type GitCredential = {
   token: string;
   source: "managed_connection" | "company_secret" | "server_env";
@@ -231,8 +234,20 @@ export function createGitRemoteAuthProvider(
     // Unit callers historically pass a null DB through the typed test seam. Production
     // always supplies a real DB and therefore always checks managed identities before
     // considering legacy secrets or process environment credentials.
+    // Some callers (workspace checkout before launch) build the context from the
+    // run's wake context, which does not carry the responsible user. The run row
+    // does, and it is the control plane's authoritative choice of whose personal
+    // GitHub identity applies, so fall back to it rather than finding no identity.
+    let managedContext = context ?? {};
+    if (db && !managedContext.responsibleUserId && managedContext.heartbeatRunId) {
+      const [run] = await db
+        .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, managedContext.heartbeatRunId), eq(heartbeatRuns.companyId, companyId)));
+      if (run?.responsibleUserId) managedContext = { ...managedContext, responsibleUserId: run.responsibleUserId };
+    }
     const managed = db
-      ? await resolveManagedGitHubCredential(db, secrets, companyId, context ?? {})
+      ? await resolveManagedGitHubCredential(db, secrets, companyId, managedContext)
       : { configured: false as const };
     if (managed.configured) {
       if (!managed.credential) throw new Error(managed.error ?? "Managed GitHub connection is unavailable");
@@ -505,10 +520,16 @@ export async function resolveManagedGitHubCredential(
         heartbeatRunId: context.heartbeatRunId,
       });
     }
-    const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    // OAuth (GitHub App) grants carry an access token plus provider metadata.
+    // Grants made with a personal access token carry it as the Authorization
+    // header credential instead and have no provider metadata; git can use
+    // that token too, so the same connection serves API calls and git.
+    const oauthRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    const apiKeyRef = oauthRef ? undefined : grant.credentialSecretRefs.find((ref) => ref.configPath === GITHUB_API_KEY_CONFIG_PATH);
+    const accessRef = oauthRef ?? apiKeyRef;
     const github = grant.providerTenant?.github;
-    if (!accessRef || !github) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
-    if (github.installationCount < 1 || github.repositoryCount < 1) {
+    if (!accessRef || (!github && !apiKeyRef)) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
+    if (github && (github.installationCount < 1 || github.repositoryCount < 1)) {
       return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity no longer has repository access" };
     }
     const accessContext = {
@@ -544,13 +565,15 @@ export async function resolveManagedGitHubCredential(
     } else {
       token = await secrets.resolveSecretValue(companyId, accessRef.secretId, accessRef.versionSelector ?? "latest", { accessContext });
     }
+    if (apiKeyRef) token = token.trim().replace(/^(?:bearer|token)\s+/i, "");
+    if (!token) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub credential is empty" };
     return {
       configured: true, identitySource: selection.identitySource,
       credential: {
         token,
         source: "managed_connection" as const,
         secretName: null,
-        githubIdentity: { userId: github.userId, login: github.login },
+        ...(github ? { githubIdentity: { userId: github.userId, login: github.login } } : {}),
         identitySource: grant.kind === "agent" ? "dedicated" as const : "personal" as const,
         connectionId: grant.connectionId,
         grantId: grant.id,
