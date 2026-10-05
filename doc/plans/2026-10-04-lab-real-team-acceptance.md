@@ -94,3 +94,19 @@ A redundant second pre-repair copy, `state.db.pre-fts-repair-20261004T081934Z`, 
   - GitHub connection grant/secret mismatch: a personal grant points at a company secret.
   - Hermes Runtime gateway URL and key.
   - Codex Direct Standby device sign-in.
+
+## 5 Oct: GitHub for git, chat improvements (live `52dafbc`, image `tom49`)
+- **Codex Direct Standby** is signed in with ChatGPT through Paperclip's device-code login (TOM-87).
+- **GitHub:**
+  - The connection was reconnected as a personal account. Paperclip's tool calls work (TOM-89).
+  - `d2e0142` lets personal-access-token connections serve git, so the Plated workspace now clones. Git credentials fall back to the run row's responsible user.
+- **Chat improvements (`52dafbc`):**
+  - Board-writing guidance in every wake prompt.
+  - Folded "Technical details" sections.
+  - Plain-English tool labels in the live status line.
+  - Skill recommendation, create and update lines in task threads.
+- **TOM-77** is handed to the Software Engineer as a child task. Jarvis owns the review, tests, deploy and push.
+- **Open:**
+  - The Hermes Runtime key doesn't match Hermes's live gateway key.
+  - Four unpushed Plated commits need Tom's decision.
+  - Tom needs to send an example of a reply that didn't reopen a task.
