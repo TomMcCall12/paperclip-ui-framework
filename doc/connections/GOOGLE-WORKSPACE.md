@@ -46,6 +46,12 @@ registered internal testers during preview. Other companies must enroll their
 own Workspace testers and Cloud project and use a customer-owned OAuth app until
 Google makes Workspace MCP generally available.
 
+## Using a Claude account's connectors instead
+
+Until Google enrols a company in the Developer Preview, its own OAuth client gets HTTP 403 from the Workspace MCP servers. If the Claude account that a `claude_local` agent signs in with already has Google connectors on claude.ai, the board can turn on **Use my Claude account's connectors** (`useAccountConnectors`) for that agent.
+
+Paperclip still passes its own MCP config but no longer adds `--strict-mcp-config`, so the agent also keeps the account's connectors. The agent then acts as the account owner in Google. Paperclip does not grant, audit or gate those calls, so it is off by default and is a per-agent board setting. A task cannot turn it on.
+
 ## App matrix
 
 | App card | MCP endpoint | Capability choices |
