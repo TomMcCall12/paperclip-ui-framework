@@ -83,6 +83,37 @@ function invalidAgentTokenMessage(token: string) {
   return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
+/**
+ * Records why an agent credential was refused, so a recurring 401 can be
+ * diagnosed from the log instead of guessed at. Logs only the unverified
+ * claims (ids and expiry) and the token's shape, never the token itself.
+ */
+function logAgentCredentialRefused(
+  req: { method?: string; originalUrl?: string; header(name: string): string | undefined },
+  reason: string,
+  token: string,
+  extra: Record<string, unknown> = {},
+) {
+  let claims: Record<string, unknown> = {};
+  try {
+    claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+  } catch {
+    // Not a decodable JWT; the shape below says so.
+  }
+  logger.warn({
+    reason,
+    method: req.method,
+    path: req.originalUrl?.split("?")[0],
+    claimAgentId: typeof claims.sub === "string" ? claims.sub : null,
+    claimRunId: typeof claims.run_id === "string" ? claims.run_id : null,
+    claimRunBound: claims.run_bound === true,
+    claimExpiresAt: typeof claims.exp === "number" ? new Date(claims.exp * 1000).toISOString() : null,
+    runIdHeader: req.header("x-paperclip-run-id") ?? null,
+    tokenShape: `${token.split(".").length} parts, ${token.length} chars`,
+    ...extra,
+  }, "agent credential refused");
+}
+
 /** Run statuses in which a run-bound gateway credential still authenticates. */
 const RUN_BOUND_ACTIVE_RUN_STATUSES: ReadonlySet<string> = new Set(["queued", "running"]);
 
@@ -351,6 +382,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
+        logAgentCredentialRefused(req, invalidAgentTokenMessage(token), token);
         next(unauthorized(invalidAgentTokenMessage(token)));
         return;
       }
@@ -403,6 +435,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       // A run-bound credential (delivered to a remote gateway agent in its wake
       // message) works only while its own run is active, for reads and writes.
       if (claims.run_bound === true && !RUN_BOUND_ACTIVE_RUN_STATUSES.has(identityRun?.status ?? "")) {
+        logAgentCredentialRefused(req, "run-bound credential used after its run ended", token, { runStatus: identityRun?.status ?? null });
         next(unauthorized("This run-bound credential has expired because its run is no longer active"));
         return;
       }
