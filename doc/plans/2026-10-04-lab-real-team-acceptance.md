@@ -176,4 +176,10 @@ Tom asked for skills to work "at the Hermes level": agents learn during tasks, n
   - TOM-112 brings the Hermes history into the vault.
 - **Long gateway runs lost their writes (`1fa10a7`, `tom58`):** the prompt said never to repeat the run token, so after Hermes summarised a long run the agent retyped it wrongly ("Agent token did not verify"; TOM-99 and TOM-113). Agents now save the headers to a private file and use `curl -H @file`.
 - **Self-editing:** the Software Engineer has a full clone of Tom's Lab's code. The host update command, which deploys only commits Tom approved and rolls back automatically, was blocked by the Lab session's safety check, and needs Tom to approve each command. The private GitHub repo is still to do.
+- **Self-update is live (6 Oct evening, approved by Tom command by command):**
+  - The host command `/DATA/AppData/lab-update/lab-update.sh` is reachable only from inside Tom's Lab, with the key at `/paperclip/lab-update/agent_key`.
+  - It offers `report`, `status`, and `deploy <commit> <TASK>`. Deploy runs only when the commit builds on live and Tom accepted a confirmation naming it. It then builds, waits for idle, deploys, health-checks and rolls back automatically.
+  - The protected skill `toms-lab-self-update` is with Jarvis and the Software Engineer.
+  - The weekly host check now runs on the Software Engineer with `report all`, not on Hermes.
+  - TOM-114 sets up the private GitHub repository.
 
