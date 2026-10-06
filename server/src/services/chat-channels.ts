@@ -242,6 +242,7 @@ import {
   type ResolvedChatSdkProviderConfig,
   type SlackFileUploadAcceptedReceipt,
 } from "./chat-sdk-runtime.js";
+import { telegramTargetFromThreadId } from "./chat-telegram-target.js";
 import {
   parseDiscordNativeCommand,
   parseDiscordNativeCommandReceipt,
@@ -38431,7 +38432,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       ))
       .orderBy(desc(chatConversations.lastActivityAt))
       .limit(1);
-    if (!conversation?.chatId) return { sent: false, reason: "nobody has messaged the bot yet" };
+    const target = telegramTargetFromThreadId(conversation?.chatId);
+    if (!target) return { sent: false, reason: "nobody has messaged the bot yet" };
     const credentials = await resolveCredentials(endpoint);
     if (!credentials.botToken) return { sent: false, reason: "bot token unavailable" };
     const response = await fetchImpl(
@@ -38440,7 +38442,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         method: "POST",
         signal: AbortSignal.timeout(PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS),
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: conversation.chatId, text: text.slice(0, 4000), disable_web_page_preview: true }),
+        body: JSON.stringify({
+          chat_id: target.chatId,
+          ...(target.messageThreadId ? { message_thread_id: target.messageThreadId } : {}),
+          text: text.slice(0, 4000),
+          disable_web_page_preview: true,
+        }),
       },
     );
     const result = (await response.json().catch(() => ({}))) as { ok?: boolean; description?: string };
