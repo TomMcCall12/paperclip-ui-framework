@@ -141,5 +141,8 @@ Tom asked for skills to work "at the Hermes level": agents learn during tasks, n
   - **First daily sweep (TOM-106):** reviewed 3 candidates and updated 3 Hermes skills. Every edit kept its `hermes-import` tag.
 - **Rollback:** `docker-compose.yml.pre-tom53-*.bak`, or `pre-tom52`/`pre-tom50`. To drop protection, `DELETE /api/companies/{id}/skill-policy`.
 - **Open for Tom:**
-  - The Software Engineer is a restricted smoke-test worker by Tom's choice (TOM-77), so its 16-turn cap is intended. The daily sweep (TOM-106) proposes a routing note in Jarvis's AGENTS.md so build work never goes to it.
-  - The Weekly Host Crontab Audit (TOM-90) can't see the host crontab from Hermes Runtime's container and needs a decision on a read-only host view.
+  - **The Software Engineer's role:** it has Bash, Read and Skill tools only, a 16-turn cap and a 7-minute timeout. The daily sweep (TOM-106) proposed a routing note for Jarvis, citing a "board" comment on TOM-77. That comment was actually written by the Lab session, not by Tom. Tom will choose between a routing note and upgrading the agent.
+  - **Weekly Host Crontab Audit (TOM-90):** Tom approved read-only host access for Hermes Runtime on 6 Oct.
+    - The report script is installed at `/DATA/AppData/host-readonly-audit/host-readonly-audit.sh` (read-only; sections all, schedule, backups, services).
+    - Authorizing its restricted SSH key was blocked by the Lab session's safety check and needs Tom's explicit permission, so TOM-90 stays blocked.
+  - TOM-50 and TOM-85 were cancelled at Tom's request.
