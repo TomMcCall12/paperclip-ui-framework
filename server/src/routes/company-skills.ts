@@ -4,12 +4,7 @@ import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { persistActivity, publishActivity } from "../services/activity-log.js";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { applySkillLifecycle, clampSkillUsageWindowDays, findLearningCandidates, skillUsageService } from "../services/skill-usage.js";
-import {
-  categoriesForAgentCreatedSkill,
-  distributeNewSkill,
-  isAgentManagedSkill,
-  PINNED_SKILL_CATEGORY,
-} from "../services/skill-learning.js";
+import { categoriesForAgentCreatedSkill, distributeNewSkill } from "../services/skill-learning.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -101,29 +96,6 @@ export function companySkillRoutes(db: Db) {
   const access = accessService(db);
   const svc = companySkillService(db);
   const usage = skillUsageService(db);
-
-  /**
-   * Agents may only change skills that agents own (learned, curated or imported
-   * from Hermes), as Hermes limits its agents to curator-managed skills. Shipped,
-   * hand-written and pinned skills are protected; the board can change anything.
-   */
-  async function assertAgentMayChangeSkill(req: Request, companyId: string, skillId: string, nextCategories?: unknown) {
-    if (req.actor.type !== "agent") return;
-    const skill = await svc.getById(companyId, skillId);
-    if (!skill) return;
-    if (!isAgentManagedSkill(skill.categories)) {
-      throw forbidden(
-        "This skill is protected: agents may only change skills that agents created (learned, curated or imported from Hermes). Suggest the change in your task comment instead.",
-        { code: "skill_protected", skillId },
-      );
-    }
-    if (Array.isArray(nextCategories)) {
-      const next = nextCategories.filter((value): value is string => typeof value === "string");
-      if (next.includes(PINNED_SKILL_CATEGORY) || !isAgentManagedSkill(next)) {
-        throw forbidden("Agents cannot pin a skill or make it protected.", { code: "skill_protected", skillId });
-      }
-    }
-  }
 
   /** The task an agent's current run is working on, so skill edits show in that task's thread. */
   async function sourceIssueIdForAgentRun(req: Request, companyId: string): Promise<string | null> {
@@ -228,6 +200,7 @@ export function companySkillRoutes(db: Db) {
         sourceType: normalizeSkillPolicySourceType(input.sourceType ?? stored?.sourceType),
       } : {}),
       ...(sourceLocator ? { sourceLocator: normalizeSkillPolicySourceLocator(sourceLocator) } : {}),
+      ...(stored ? { categories: stored.categories } : {}),
     };
   }
 
@@ -407,7 +380,14 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     await assertCanMutateCompanySkills(req, companyId, "skills.edit");
     const dryRun = req.body?.dryRun === true;
-    const changes = await applySkillLifecycle(db, companyId, { dryRun });
+    const principal = await skillPolicyPrincipal(req, companyId);
+    // Archiving edits each skill, so each one goes through the company skill policy.
+    const changes = await applySkillLifecycle(db, companyId, {
+      dryRun,
+      allow: async (skillId) => (await skillPolicies.evaluate({
+        companyId, principal, action: "skills.edit", resource: await skillPolicyResource({ companyId, skillId }),
+      })).allowed,
+    });
     if (!dryRun) {
       const actor = getActorInfo(req);
       for (const change of changes) {
@@ -843,7 +823,6 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.create", () => skillPolicyResource({ companyId, skillId }));
-      await assertAgentMayChangeSkill(req, companyId, skillId);
       const result = await svc.createVersion(companyId, skillId, req.body, skillActor(req));
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -955,7 +934,6 @@ export function companySkillRoutes(db: Db) {
         "skills.edit",
         () => skillPolicyResource({ companyId, skillId }),
       );
-      await assertAgentMayChangeSkill(req, companyId, skillId);
       const result = await svc.renameSkill(companyId, skillId, req.body);
       const changed = result.previousName !== result.skill.name
         || result.previousSlug !== result.skill.slug
@@ -1180,7 +1158,6 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.edit", () => skillPolicyResource({ companyId, skillId }));
-      await assertAgentMayChangeSkill(req, companyId, skillId, req.body?.categories);
       const result = await svc.updateSkill(companyId, skillId, req.body);
 
       const actor = getActorInfo(req);
@@ -1214,7 +1191,6 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.edit", () => skillPolicyResource({ companyId, skillId }));
-      await assertAgentMayChangeSkill(req, companyId, skillId);
       const result = await svc.updateFile(
         companyId,
         skillId,
@@ -1253,7 +1229,6 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.edit", () => skillPolicyResource({ companyId, skillId }));
-      await assertAgentMayChangeSkill(req, companyId, skillId);
       const result = await svc.deleteFile(companyId, skillId, req.body, skillActor(req));
 
       const actor = getActorInfo(req);
@@ -1406,7 +1381,6 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
     await assertCanMutateCompanySkills(req, companyId, "skills.remove", () => skillPolicyResource({ companyId, skillId }));
-    await assertAgentMayChangeSkill(req, companyId, skillId);
     const result = await svc.deleteSkill(companyId, skillId);
     if (!result) {
       res.status(404).json({ error: "Skill not found" });
@@ -1476,7 +1450,6 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.update", () => skillPolicyResource({ companyId, skillId }));
-      await assertAgentMayChangeSkill(req, companyId, skillId);
       const before = await svc.getById(companyId, skillId);
       const result = await svc.installUpdate(companyId, skillId, req.body);
       if (!result) {
@@ -1518,7 +1491,6 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.reset", () => skillPolicyResource({ companyId, skillId }));
-      await assertAgentMayChangeSkill(req, companyId, skillId);
       const before = await svc.getById(companyId, skillId);
       const result = await svc.resetSkill(companyId, skillId, req.body);
       if (!result) {

@@ -34,7 +34,7 @@ Agents also learn during their own tasks: before finishing a complex task they s
 ## Rules
 
 1. **Never delete a skill.** The strongest action is archiving, which keeps the skill but stops assigning and recommending it.
-2. **Edit only agent-owned skills.** Agents own a skill when its categories include `learned` (written by an agent during a task), `curated` (written by a curator) or `hermes-import` (brought over from Hermes), and it is not `pinned`. Paperclip refuses any agent change to other skills (catalog, hand-written or pinned) with `403 skill_protected`, so propose those changes in your report instead. Never add or remove `pinned`; that is the board's call.
+2. **Edit only agent-owned skills.** Agents own a skill when its categories include `learned` (written by an agent during a task), `curated` (written by a curator) or `hermes-import` (brought over from Hermes), and it is not `pinned`. Propose changes to every other skill (catalog, hand-written or pinned) in your report instead. A company can enforce this with its skill policy, and Paperclip then refuses with `403 skill_policy_denied`. Never add or remove `pinned`; that is the board's call.
 3. **Learn only from evidence.** A new skill needs at least two completed tasks that used the same procedure, or one documented fix that cost real effort to find. Link those tasks in the skill's "Sources" section.
 4. **Leave secrets out of skills.** Don't write tokens, keys, passwords, personal data or private URLs into skills. Name the secret or binding instead.
 5. **Keep skills small and specific.** One job per skill. Write a description that says when to use it, because recommendations match on the name and description.

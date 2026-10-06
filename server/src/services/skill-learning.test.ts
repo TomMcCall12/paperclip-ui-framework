@@ -25,11 +25,10 @@ describe("skill ownership", () => {
     expect(isAgentManagedSkill(null)).toBe(false);
   });
 
-  it("marks an agent-created skill as learned unless it is already agent-managed, and never pinned", () => {
+  it("marks an agent-created skill as learned unless it is already agent-managed", () => {
     expect(categoriesForAgentCreatedSkill(undefined)).toEqual(["learned"]);
     expect(categoriesForAgentCreatedSkill(["plated"])).toEqual(["plated", "learned"]);
     expect(categoriesForAgentCreatedSkill(["curated"])).toEqual(["curated"]);
-    expect(categoriesForAgentCreatedSkill(["pinned", "archived", "ops"])).toEqual(["ops", "learned"]);
   });
 
   it("recognises archived skills", () => {

@@ -92,6 +92,10 @@ export const skillPolicyResourceSelectorSchema = z.object({
   sourceLocators: z.array(skillPolicySourceLocatorSchema).min(1).max(500)
     .refine((values) => new Set(values).size === values.length, "Source locators must be unique")
     .optional(),
+  /** Matches a skill that has any of these categories (case-insensitive). */
+  categories: z.array(z.string().trim().min(1).max(128).transform((value) => value.toLowerCase())).min(1).max(100)
+    .refine((values) => new Set(values).size === values.length, "Categories must be unique")
+    .optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "At least one resource selector is required");
 
 export const skillPolicyRuleSchema = z.object({
@@ -120,6 +124,7 @@ export const skillPolicyEvaluationResourceSchema = z.object({
   skillKey: z.string().trim().min(1).max(512).optional(),
   sourceType: skillPolicySourceTypeSchema.optional(),
   sourceLocator: skillPolicySourceLocatorSchema.optional(),
+  categories: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
 }).strict();
 
 export const evaluateSkillPolicySchema = z.object({

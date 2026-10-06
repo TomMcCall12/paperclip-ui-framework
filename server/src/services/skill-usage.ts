@@ -301,9 +301,19 @@ export type LifecycleChange = { skillId: string; key: string; name: string; acti
  * recommended). Pinned and protected skills are never touched, and nothing is
  * judged before tracking could have seen it used.
  */
-export async function applySkillLifecycle(db: Db, companyId: string, options: { now?: Date; dryRun?: boolean } = {}): Promise<LifecycleChange[]> {
+export async function applySkillLifecycle(db: Db, companyId: string, options: {
+  now?: Date;
+  dryRun?: boolean;
+  /** Whether the caller may archive this skill (the company skill policy). */
+  allow?: (skillId: string) => Promise<boolean>;
+} = {}): Promise<LifecycleChange[]> {
   const report = await skillUsageService(db).report(companyId, { now: options.now });
-  const due = report.skills.filter((skill) => skill.lifecycle === "archive_candidate" && skill.agentManaged && !skill.pinned && !skill.archived);
+  const due = [];
+  for (const skill of report.skills) {
+    if (skill.lifecycle !== "archive_candidate" || !skill.agentManaged || skill.pinned || skill.archived) continue;
+    if (options.allow && !(await options.allow(skill.skillId))) continue;
+    due.push(skill);
+  }
   if (options.dryRun || due.length === 0) {
     return due.map((skill) => ({ skillId: skill.skillId, key: skill.key, name: skill.name, action: "archived", unassignedFrom: 0 }));
   }

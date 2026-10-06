@@ -103,3 +103,31 @@ describe("normalizeSkillPolicySourceLocator", () => {
     })).toThrow(/unique/i);
   });
 });
+
+describe("skill policy category selectors", () => {
+  const rule = (categories: string[]) => ({
+    schemaVersion: 1,
+    defaultEffect: "allow",
+    rules: [{
+      id: "protect-pinned",
+      priority: 1,
+      effect: "deny",
+      subject: { type: "all_agents" },
+      actions: ["skills.edit"],
+      resources: { categories },
+    }],
+  });
+
+  it("lowercases categories", () => {
+    expect(skillPolicyDocumentSchema.parse(rule(["Pinned"])).rules[0]!.resources!.categories).toEqual(["pinned"]);
+  });
+
+  it("rejects empty and duplicate category lists", () => {
+    expect(() => skillPolicyDocumentSchema.parse(rule([]))).toThrow();
+    expect(() => skillPolicyDocumentSchema.parse(rule(["pinned", "Pinned"]))).toThrow(/unique/i);
+  });
+
+  it("accepts categories on an evaluation resource", () => {
+    expect(skillPolicyEvaluationResourceSchema.parse({ categories: ["learned"] })).toEqual({ categories: ["learned"] });
+  });
+});

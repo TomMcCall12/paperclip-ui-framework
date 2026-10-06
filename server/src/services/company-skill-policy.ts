@@ -67,6 +67,10 @@ function resourceMatches(rule: SkillPolicyRule, resource: SkillPolicyEvaluationR
       return false;
     }
   }
+  if (selector.categories) {
+    const categories = new Set((resource.categories ?? []).map((category) => category.toLowerCase()));
+    if (!selector.categories.some((category) => categories.has(category.toLowerCase()))) return false;
+  }
   return true;
 }
 

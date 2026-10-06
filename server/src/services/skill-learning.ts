@@ -10,15 +10,16 @@ import { agentService } from "./agents.js";
 
 /**
  * Skill learning, modelled on Hermes's skill system: agents capture what they
- * learn as skills, but may only change skills that agents own. Shipped
- * (catalog) and hand-written skills are protected, as Hermes protects bundled,
+ * learn as skills. Categories mark who owns a skill. The curator only archives
+ * agent-owned skills, and a company can protect the rest from agent edits with
+ * its skill policy (see doc/SKILL-LEARNING.md), as Hermes protects bundled,
  * hub-installed, pinned and user-owned skills.
  */
 
 /** Skills agents may create and maintain without a human. */
 export const LEARNED_SKILL_CATEGORY = "learned";
 export const AGENT_MANAGED_SKILL_CATEGORIES: readonly string[] = [LEARNED_SKILL_CATEGORY, "curated", "hermes-import"];
-/** A human-pinned skill: agents may read it but never change it. */
+/** A human-pinned skill: never archived, and protected by the recommended policy. */
 export const PINNED_SKILL_CATEGORY = "pinned";
 /** Retired by the curator: kept for recovery, no longer assigned or recommended. */
 export const ARCHIVED_SKILL_CATEGORY = "archived";
@@ -34,12 +35,12 @@ export function isArchivedSkill(categories: readonly string[] | null | undefined
 }
 
 /**
- * Categories for a skill an agent creates. A skill an agent writes is always
- * agent-managed, so it gets "learned" unless it already names an
- * agent-managed category. An agent can never create a pinned skill.
+ * Categories for a skill an agent creates. A skill an agent writes is
+ * agent-owned, so it gets "learned" unless it already names an agent-managed
+ * category.
  */
 export function categoriesForAgentCreatedSkill(requested: readonly string[] | null | undefined): string[] {
-  const kept = (requested ?? []).filter((category) => category !== PINNED_SKILL_CATEGORY && category !== ARCHIVED_SKILL_CATEGORY);
+  const kept = [...(requested ?? [])];
   return AGENT_MANAGED_SKILL_CATEGORIES.some((category) => kept.includes(category))
     ? kept
     : [...kept, LEARNED_SKILL_CATEGORY];

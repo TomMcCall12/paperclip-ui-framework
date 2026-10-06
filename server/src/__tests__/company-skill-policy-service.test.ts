@@ -224,6 +224,46 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
     })).resolves.toMatchObject({ allowed: true, reason: "policy_default" });
   });
 
+  it("matches category selectors, so a company can protect all but agent-owned skills", async () => {
+    const seeded = await seedAgent();
+    const service = companySkillPolicyService(db);
+    const changes = ["skills.edit", "skills.update", "skills.reset", "skills.remove"] as const;
+    await service.replace({
+      companyId: seeded.companyId,
+      expectedRevision: 0,
+      policy: {
+        schemaVersion: 1,
+        defaultEffect: "allow",
+        rules: [
+          { id: "protect-pinned", priority: 10, effect: "deny", subject: { type: "all_agents" }, actions: [...changes], resources: { categories: ["Pinned"] } },
+          { id: "allow-agent-owned", priority: 20, effect: "allow", subject: { type: "all_agents" }, actions: [...changes], resources: { categories: ["learned", "curated", "hermes-import"] } },
+          { id: "protect-others", priority: 30, effect: "deny", subject: { type: "all_agents" }, actions: [...changes] },
+        ],
+      },
+      activity: { actorType: "agent", actorId: seeded.agentId, agentId: seeded.agentId },
+    });
+
+    const decide = (action: (typeof changes)[number] | "skills.create", categories?: string[]) => service.evaluate({
+      companyId: seeded.companyId,
+      principal: seeded.principal,
+      action,
+      resource: categories ? { skillId: randomUUID(), categories } : { sourceType: "generated" },
+    });
+    await expect(decide("skills.edit", ["hermes-import", "plated"])).resolves.toMatchObject({ allowed: true, matchedRuleId: "allow-agent-owned" });
+    await expect(decide("skills.remove", ["learned", "pinned"])).resolves.toMatchObject({ allowed: false, matchedRuleId: "protect-pinned" });
+    await expect(decide("skills.edit", ["design"])).resolves.toMatchObject({ allowed: false, matchedRuleId: "protect-others" });
+    await expect(decide("skills.reset", [])).resolves.toMatchObject({ allowed: false, matchedRuleId: "protect-others" });
+    // Creating a new skill is untouched.
+    await expect(decide("skills.create")).resolves.toMatchObject({ allowed: true, reason: "policy_default" });
+    // The board is not an agent, so agent rules never bind it.
+    await expect(service.evaluate({
+      companyId: seeded.companyId,
+      principal: { type: "board", id: "user-1", role: "board" },
+      action: "skills.edit",
+      resource: { skillId: randomUUID(), categories: ["design"] },
+    })).resolves.toMatchObject({ allowed: true });
+  });
+
   it("matches deny rules persisted before locator normalization existed", async () => {
     const seeded = await seedAgent();
     const service = companySkillPolicyService(db);

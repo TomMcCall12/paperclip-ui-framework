@@ -160,6 +160,8 @@ suite("skill learning (real PostgreSQL)", () => {
 
     const dry = await applySkillLifecycle(db, companyId, { dryRun: true });
     expect(dry.map((change) => change.name)).toEqual(["idle-learned"]);
+    // A skill the caller's policy won't let it edit is left alone.
+    expect(await applySkillLifecycle(db, companyId, { dryRun: true, allow: async () => false })).toEqual([]);
 
     const changes = await applySkillLifecycle(db, companyId);
     expect(changes).toEqual([expect.objectContaining({ name: "idle-learned", action: "archived", unassignedFrom: 1 })]);
