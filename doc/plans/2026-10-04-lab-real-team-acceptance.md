@@ -188,3 +188,12 @@ Tom asked for skills to work "at the Hermes level": agents learn during tasks, n
   - The new per-agent setting "Use my Claude account's connectors" (default off, not task-overridable) is on for Jarvis only.
   - Deployment and a read-only check are scheduled once agents are idle.
 
+## 6 Oct evening: "tasks shouldn't just fail"
+- **Macro Chef (TOM-129):** Hermes Runtime finished the work (Expo running, EAS iOS dev build done), but its status writes got 401. Disposition repair gave up after two tries and left a jargon board note, so the task looked failed.
+- **Task watchdog switched on:**
+  - A new Watchdog agent (Sonnet 5) carries Tom's rule: fix it yourself, and ask Tom only for what only he can do, in plain English.
+  - Jarvis attaches it to every top-level task.
+  - First live run on TOM-116: it verified the work had been done and found TOM-129 running again.
+- **Hermes Runtime:** run limit is now 2 hours, and the stale "disabled-until-https" metadata label is gone.
+- **401 diagnosis (`216c87d`):** agent credential refusals are now logged with the reason and claims (never the token). It ships with the pending quiet-window update.
+
