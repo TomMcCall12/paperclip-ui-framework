@@ -163,3 +163,17 @@ Tom asked for skills to work "at the Hermes level": agents learn during tasks, n
   - TOM-90 completed using it.
   - It found host cron faults for Tom: `MAILTO=""` fails to parse, `sys-hourly` exits 127, and there is no mail program.
 - **Cancelled at Tom's request:** TOM-50 and TOM-85.
+
+## 6 Oct afternoon: notifications, Telegram requests, Hermes independence (images `tom55` to `tom58`)
+- **Task notifications on Telegram (`432734e`, `d1edfb2`):** the experimental setting "Task notifications" messages Tom through @toms_lab_jarvis_bot when an agent finishes, blocks on or hands back a top-level task. Tom confirmed it arrives.
+- **Telegram requests:** Jarvis's AGENTS.md now has "Requests from Telegram and chats".
+  - Real work becomes a top-level task with a matching or new project, one to three labels, and the best agent and model.
+  - Missing capabilities become a blocking Software Engineer task.
+  - Starter labels: Research, Plated, Tom's Lab, Personal, Finance, Admin.
+- **Hermes independence:**
+  - UXDesigner, the Plated QA Gatekeeper and the Research Lead moved to Claude (Sonnet 5).
+  - A real browser is in the image: Chromium plus Xvfb in the host overlay, live from `tom57`.
+  - TOM-112 brings the Hermes history into the vault.
+- **Long gateway runs lost their writes (`1fa10a7`, `tom58`):** the prompt said never to repeat the run token, so after Hermes summarised a long run the agent retyped it wrongly ("Agent token did not verify"; TOM-99 and TOM-113). Agents now save the headers to a private file and use `curl -H @file`.
+- **Self-editing:** the Software Engineer has a full clone of Tom's Lab's code. The host update command, which deploys only commits Tom approved and rolls back automatically, was blocked by the Lab session's safety check, and needs Tom to approve each command. The private GitHub repo is still to do.
+
