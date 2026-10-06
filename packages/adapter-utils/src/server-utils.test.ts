@@ -924,6 +924,8 @@ describe("renderPaperclipWakePrompt", () => {
     const task = renderPaperclipWakePrompt(base);
     expect(task).toContain("## Writing for the board");
     expect(task).toContain("## Learning (do this before you finish)");
+    expect(task).toContain("## Finding a way (before you mark anything failed)");
+    expect(task.indexOf("## Finding a way")).toBeLessThan(task.indexOf("## Learning"));
     expect(task).toContain("`Learning: <what you saved or changed>`");
     expect(task).not.toContain("`/learn`");
     expect(task).toContain("where your instructions say you keep memory");
@@ -931,6 +933,7 @@ describe("renderPaperclipWakePrompt", () => {
     // Chats stay lean: memory, the /learn command, and no task-writing rules.
     const chat = renderPaperclipWakePrompt(base, { conversationMode: true });
     expect(chat).not.toContain("## Learning (do this before you finish)");
+    expect(chat).not.toContain("## Finding a way");
     expect(chat).not.toContain("## Writing for the board");
     expect(chat).toContain("`/learn`");
     expect(chat).toContain("where your instructions say you keep memory");

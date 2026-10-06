@@ -2241,6 +2241,18 @@ export const PAPERCLIP_BOARD_WRITING_GUIDANCE = [
  * skills, the way Hermes does after a turn with enough tool work. Agents may
  * only change agent-owned skills; Paperclip enforces that.
  */
+/** Every task run: find another route before giving up on any part of the work. */
+export const PAPERCLIP_FIND_A_WAY_GUIDANCE = [
+  "## Finding a way (before you mark anything failed)",
+  "",
+  "Don't stop at the first obstacle. Before you report any part of the task as failed or blocked:",
+  "1. Try at least two other routes. Examples: another official source or API with the same information, another tool (a full browser instead of a plain fetch), an agent better equipped for the step, or smaller steps.",
+  "2. If a website asks you to prove you are human (a CAPTCHA), don't try to defeat it. Get the same information from another source. If there is none, ask the board to do that one step and say exactly what to click.",
+  "3. If nothing works, say what you tried, what each attempt returned and the next best option.",
+  "",
+  "When a route gets you past a blocker, save it in the Learning step: the blocker, how to recognise it and the route that worked. The next run can then go straight to it.",
+].join("\n");
+
 export const PAPERCLIP_SKILL_LEARNING_GUIDANCE = [
   "## Learning (do this before you finish)",
   "",
@@ -2305,6 +2317,7 @@ export function renderPaperclipWakePrompt(
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
     relevantSkills ? `## Relevant skills for this task\n\n${relevantSkills}` : "",
     boardWriting,
+    boardWriting ? PAPERCLIP_FIND_A_WAY_GUIDANCE : "",
     learning,
     renderRunApiCredential(wake.runApiCredential),
   ]);
