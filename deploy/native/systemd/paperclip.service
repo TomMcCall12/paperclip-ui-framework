@@ -1,0 +1,27 @@
+[Unit]
+Description=Paperclip control plane (native)
+Documentation=https://github.com/TomMcCall12/toms-lab
+RequiresMountsFor=/srv/paperclip /srv/hdd
+After=network-online.target
+Wants=network-online.target
+OnFailure=paperclip-alert@%n.service
+
+[Service]
+Type=simple
+User=paperclip
+Group=paperclip
+WorkingDirectory=/srv/paperclip/current
+EnvironmentFile=/srv/paperclip/env/paperclip.env
+ExecStart=/usr/bin/node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/paperclip/data /srv/hdd
+
+[Install]
+WantedBy=multi-user.target

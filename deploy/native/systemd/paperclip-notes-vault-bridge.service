@@ -1,0 +1,23 @@
+[Unit]
+Description=Paperclip notes-vault bridge (native)
+Documentation=https://github.com/TomMcCall12/toms-lab/blob/master/doc/NOTES-VAULT.md
+RequiresMountsFor=/srv/paperclip
+After=network.target
+OnFailure=paperclip-alert@%n.service
+
+[Service]
+Type=simple
+User=paperclip
+Group=paperclip
+WorkingDirectory=/srv/paperclip/current
+EnvironmentFile=/srv/paperclip/env/notes-vault-bridge.env
+ExecStart=/usr/bin/node docker/notes-vault-bridge/server.mjs
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-notes-vault-bridge
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
