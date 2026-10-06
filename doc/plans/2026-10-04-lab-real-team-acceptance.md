@@ -146,3 +146,20 @@ Tom asked for skills to work "at the Hermes level": agents learn during tasks, n
     - The report script is installed at `/DATA/AppData/host-readonly-audit/host-readonly-audit.sh` (read-only; sections all, schedule, backups, services).
     - Authorizing its restricted SSH key was blocked by the Lab session's safety check and needs Tom's explicit permission, so TOM-90 stays blocked.
   - TOM-50 and TOM-85 were cancelled at Tom's request.
+
+## 6 Oct: Tom's follow-ups (image `tom54`)
+- **Google:** nothing to reconnect.
+  - Tom re-authorised Hermes's Google sign-in on 5 Oct, and backups have succeeded since (the 6 Oct 03:17 run completed).
+  - The September failures were Google Drive rate limits.
+- **Software Engineer:** now a full coding agent. Tom approved each command after leaving auto mode.
+  - Sonnet 5 at medium effort, the full Claude toolset, no step cap, a 2-hour timeout, and its own workspace.
+  - An "Engineering" section in its instructions, including the shipping rule.
+- **Jarvis picks the agent and model per task:**
+  - His AGENTS.md has an agent table and model guide, and tells him to override only model and effort.
+  - Verified on TOM-107: the Opus-default advisor ran on Haiku for that task.
+- **Task overrides are locked down (`fd18a0b`):** local Claude, Codex and OpenCode agents now accept only model, effort, run budget and workspace strategy. Before, a task could change tools, permissions or arguments.
+- **"Find a way" rule (`29b7a93`):** every task tries at least two other routes before marking anything failed, never defeats a CAPTCHA, and saves a route that worked. Jarvis's brand-name rule names TMview and WIPO's Global Brand Database for UK marks.
+- **Read-only host access for Hermes Runtime:** a key limited to `/DATA/AppData/host-readonly-audit/host-readonly-audit.sh` and to connections from the ZimaBoard itself.
+  - TOM-90 completed using it.
+  - It found host cron faults for Tom: `MAILTO=""` fails to parse, `sys-hourly` exits 127, and there is no mail program.
+- **Cancelled at Tom's request:** TOM-50 and TOM-85.
