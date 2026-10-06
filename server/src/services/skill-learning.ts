@@ -52,6 +52,7 @@ export function categoriesForAgentCreatedSkill(requested: readonly string[] | nu
 export type RunToolSummary = { toolCalls: number; skillsUsed: string[] };
 
 const SKILL_TOOL_NAMES = new Set(["Skill", "skill", "skill_view"]);
+const HERMES_GATEWAY_EVENT_PREFIX = "[hermes-gateway:event]";
 const CODEX_TOOL_ITEM_TYPES = new Set(["command_execution", "function_call", "mcp_tool_call", "file_change", "web_search"]);
 
 function skillNameFromInput(input: unknown): string | null {
@@ -67,8 +68,9 @@ function skillNameFromInput(input: unknown): string | null {
 /**
  * Watches an agent's streamed output (JSON lines) and counts tool calls and
  * skill loads. Best effort and adapter-aware: Claude stream-json `tool_use`
- * blocks (the `Skill` tool names the skill) and Codex tool items. Lines split
- * across chunks are reassembled; malformed lines are ignored.
+ * blocks (the `Skill` tool names the skill), Codex tool items, and Hermes
+ * gateway `tool.started` events (`skill_view` names the skill in its preview).
+ * Lines split across chunks are reassembled; malformed lines are ignored.
  */
 export function createRunToolTracker() {
   let carry = "";
@@ -95,6 +97,14 @@ export function createRunToolTracker() {
       }
       return;
     }
+    if (record.event === "tool.started" && typeof record.tool === "string") {
+      toolCalls += 1;
+      if (SKILL_TOOL_NAMES.has(record.tool) && typeof record.preview === "string") {
+        const skill = record.preview.trim().replace(/\.\.\.$/, "").split(/\s+/)[0];
+        if (skill) skills.add(skill);
+      }
+      return;
+    }
     if (record.type === "item.started" && record.item && typeof record.item === "object") {
       const item = record.item as Record<string, unknown>;
       if (typeof item.type === "string" && CODEX_TOOL_ITEM_TYPES.has(item.type)) toolCalls += 1;
@@ -105,31 +115,34 @@ export function createRunToolTracker() {
     }
   }
 
+  function parseLine(line: string) {
+    let json = line.trim();
+    // Hermes gateway events: `[hermes-gateway:event] run=… event=… data={…}`.
+    // Streamed reply text has no trailing newline, so an event can start mid-line.
+    const gatewayEvent = json.indexOf(HERMES_GATEWAY_EVENT_PREFIX);
+    if (gatewayEvent >= 0) {
+      const at = json.indexOf(" data=", gatewayEvent);
+      json = at >= 0 ? json.slice(at + " data=".length) : "";
+    }
+    if (!json.startsWith("{")) return;
+    try {
+      visit(JSON.parse(json));
+    } catch {
+      // Not JSON (plain log output) or an incomplete line; ignore.
+    }
+  }
+
   return {
     observe(chunk: string) {
       const text = carry + chunk;
       const lines = text.split("\n");
       carry = lines.pop() ?? "";
       if (carry.length > 1_000_000) carry = ""; // Never buffer an unbounded partial line.
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("{")) continue;
-        try {
-          visit(JSON.parse(trimmed));
-        } catch {
-          // Not JSON (plain log output); ignore.
-        }
-      }
+      for (const line of lines) parseLine(line);
     },
     result(): RunToolSummary {
-      if (carry.trim().startsWith("{")) {
-        try {
-          visit(JSON.parse(carry.trim()));
-        } catch {
-          // Incomplete trailing line.
-        }
-        carry = "";
-      }
+      parseLine(carry);
+      carry = "";
       return { toolCalls, skillsUsed: [...skills].sort() };
     },
   };

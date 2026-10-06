@@ -65,6 +65,20 @@ describe("createRunToolTracker", () => {
     expect(tracker.result().toolCalls).toBe(2);
   });
 
+  it("counts Hermes gateway tool events and skill_view loads", () => {
+    const tracker = createRunToolTracker();
+    const event = (data: Record<string, unknown>) =>
+      `[hermes-gateway:event] run=run_1 event=${String(data.event)} data=${JSON.stringify(data)}\n`;
+    tracker.observe(event({ event: "tool.started", tool: "skill_view", preview: "paperclip-disposition-repair" }));
+    tracker.observe(event({ event: "tool.completed", tool: "skill_view" }));
+    tracker.observe(event({ event: "tool.started", tool: "terminal", preview: "python3 - <<'PY' import json..." }));
+    tracker.observe(event({ event: "message.delta", delta: "hi" }));
+    tracker.observe("hi"); // Reply text is logged without a newline.
+    tracker.observe(event({ event: "tool.started", tool: "web_search", preview: "q" }));
+    tracker.observe("[hermes-gateway] run created: run_1\n");
+    expect(tracker.result()).toEqual({ toolCalls: 3, skillsUsed: ["paperclip-disposition-repair"] });
+  });
+
   it("parses a final line that has no trailing newline", () => {
     const tracker = createRunToolTracker();
     tracker.observe(toolUse("z", "Skill", { skill: "notes-vault" }).trimEnd());
