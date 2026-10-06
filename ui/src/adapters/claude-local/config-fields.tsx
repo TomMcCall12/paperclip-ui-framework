@@ -80,6 +80,7 @@ export function ClaudeLocalAdvancedFields({
   config,
   eff,
   mark,
+  models,
   managedSandboxOnly,
 }: AdapterConfigFieldsProps) {
   const rawEngine = isCreate
@@ -260,6 +261,34 @@ export function ClaudeLocalAdvancedFields({
             : mark("adapterConfig", "dangerouslySkipPermissions", v)
         }
       />
+      {!isCreate && (
+        <>
+          <Field label="Chat model" hint="Model for chats (in Paperclip and on Telegram or other chat apps). Tasks keep the main model.">
+            <select
+              className={inputClass}
+              value={String(eff<unknown>("adapterConfig", "chatModel", config.chatModel) ?? "")}
+              onChange={(e) => mark("adapterConfig", "chatModel", e.target.value || undefined)}
+            >
+              <option value="">Same as tasks</option>
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>{model.label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Chat effort" hint="Thinking effort for chats. Tasks keep the main effort.">
+            <select
+              className={inputClass}
+              value={String(eff<unknown>("adapterConfig", "chatEffort", config.chatEffort) ?? "")}
+              onChange={(e) => mark("adapterConfig", "chatEffort", e.target.value || undefined)}
+            >
+              <option value="">Same as tasks</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </Field>
+        </>
+      )}
       <Field label="Max turns per run" hint={help.maxTurnsPerRun}>
         {isCreate ? (
           <input

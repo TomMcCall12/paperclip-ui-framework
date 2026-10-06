@@ -1,7 +1,8 @@
 /**
  * An agent's chat settings (`chatModel`, `chatEffort` in its adapter config),
- * applied only to Agent Chat conversations so quick back-and-forth can use a
- * cheaper model while task work keeps the agent's main model.
+ * applied only to chats (Agent Chat and external chats such as Telegram) so
+ * quick back-and-forth can use a cheaper model while task work keeps the
+ * agent's main model.
  */
 export function chatModelConfigOverrides(config: Record<string, unknown>): Record<string, unknown> {
   const overrides: Record<string, unknown> = {};
