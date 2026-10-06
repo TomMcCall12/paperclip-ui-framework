@@ -21284,8 +21284,11 @@ export function heartbeatService(
       }
       const mergedConfig = {
         ...workspaceManagedConfig,
-        // Chats can run on a lighter model than task work; a per-task override still wins.
-        ...(isConversation(issueContext) ? chatModelConfigOverrides(config) : {}),
+        // Chats (in-app and external, such as Telegram) can run on a lighter
+        // model than task work; a per-task override still wins.
+        ...(isConversation(issueContext) || paperclipWakePayload?.externalChatProvider
+          ? chatModelConfigOverrides(config)
+          : {}),
         ...(issueAssigneeOverrides?.adapterConfig ?? {}),
       };
       const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
