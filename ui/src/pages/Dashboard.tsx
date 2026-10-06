@@ -38,6 +38,7 @@ import { InlineBanner } from "../components/InlineBanner";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
+import { ClaudeUsageDashboardCard } from "../components/ClaudeUsageDashboardCard";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -450,6 +451,8 @@ export function Dashboard() {
               }
             />
           </div>
+
+          <ClaudeUsageDashboardCard companyId={selectedCompanyId!} />
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 
