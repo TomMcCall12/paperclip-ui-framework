@@ -1,3 +1,4 @@
+import { SKILL_OWNERSHIP_CATEGORIES } from "./skill-ownership.js";
 import { logger } from "../middleware/logger.js";
 import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "./runtime-skill-cache.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -1857,6 +1858,17 @@ function normalizeCategoryList(values: unknown): string[] {
 function normalizeStoreText(value: unknown, maxLength = 500) {
   const text = asString(value);
   return text ? text.slice(0, maxLength) : null;
+}
+
+/**
+ * SKILL.md front matter may set a skill's categories. When it sets none, keep
+ * the stored ones. Either way keep the ownership and lifecycle categories,
+ * which live only in Paperclip, so an edit never changes who owns a skill.
+ */
+export function categoriesAfterSkillFileEdit(existing: readonly string[], fromFrontmatter: readonly string[]): string[] {
+  if (fromFrontmatter.length === 0) return [...existing];
+  const ownership = existing.filter((category) => SKILL_OWNERSHIP_CATEGORIES.includes(categoryLookupKey(category)));
+  return normalizeCategoryList([...fromFrontmatter, ...ownership]);
 }
 
 function readStringList(value: unknown): string[] {
@@ -4641,13 +4653,15 @@ export function companySkillService(db: Db) {
 
       if (normalizedPath === "SKILL.md") {
         const parsed = parseFrontmatterMarkdown(content);
+        const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, skill.metadata);
         await tx
           .update(companySkills)
           .set({
             name: asString(parsed.frontmatter.name) ?? skill.name,
             description: asString(parsed.frontmatter.description) ?? skill.description,
             markdown: content,
-            ...readSkillStoreMetadata(parsed.frontmatter, skill.metadata),
+            ...storeMetadata,
+            categories: categoriesAfterSkillFileEdit(skill.categories, storeMetadata.categories),
             updatedAt: new Date(),
           })
           .where(eq(companySkills.id, skill.id));

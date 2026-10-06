@@ -110,3 +110,26 @@ A redundant second pre-repair copy, `state.db.pre-fts-repair-20261004T081934Z`, 
   - The Hermes Runtime key doesn't match Hermes's live gateway key.
   - Four unpushed Plated commits need Tom's decision.
   - Tom needs to send an example of a reply that didn't reopen a task.
+
+## 5–6 Oct overnight: Hermes-level skill learning (image `tom52`)
+Tom asked for skills to work "at the Hermes level": agents learn during tasks, new skills reach the agents who need them, and the curator maintains imported Hermes skills. See `doc/SKILL-LEARNING.md`.
+- **Learning in the task** (`e8ba912`, `ed87a20`):
+  - Every task's wake prompt ends with a "Learning" step adapted from Hermes's background review. The final comment ends with `Learning: …`.
+  - Lasting board preferences go to the agent's memory.
+  - In chats, `/learn` runs the review on demand.
+- **Tracking** (`e8ba912`, `e9fbf22`, `430538d`):
+  - Each run's tool calls and loaded skills are counted for Claude, Codex and Hermes gateway agents.
+  - Threads show "used the skill X", and the usage report counts real use.
+- **Hand-out:** a new agent-written skill is tagged `learned` and given to its creator and to up to three agents whose recent tasks match it.
+- **Backstop and curation:**
+  - `skills/learning-candidates` lists busy runs that saved nothing.
+  - `skills/lifecycle/apply` archives idle agent-owned skills.
+  - Routines: the "Daily skill learning sweep" (new, 06:30 London) and the "Weekly skill curation" (updated). Both run on the Strategic Advisor.
+- **Ownership:**
+  - The 29 refreshed Hermes skills that lacked `hermes-import` now have it, so all 89 imports are agent-owned.
+  - Protection uses the company skill policy, with a new `categories` selector (`ad99b40`, SPEC 9.10 updated). An earlier built-in guard broke the V1 open default, so it was removed.
+- **Chats:** Jarvis's chats (in Paperclip and on Telegram) use `claude-sonnet-5` at medium effort; tasks stay on Opus 5.5. The settings page shows "Chat model" and "Chat effort".
+- **Fixes found while testing:**
+  - A resumed Claude session that is too long now restarts fresh (`a9cbf13`; this is what stranded TOM-92).
+  - Reassignment now also cancels the previous assignee's queued run (`3640287`). On TOM-102 that run took the task back.
+- **Open for Tom:** the Software Engineer is capped at 16 turns and 7 minutes per run. It hit the cap five times on TOM-102, so it can't finish multi-step work.

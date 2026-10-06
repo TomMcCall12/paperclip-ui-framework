@@ -241,6 +241,19 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId, retried.id))).toHaveLength(1);
   });
 
+  it("keeps who owns a skill when its SKILL.md is edited", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Owned skills", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const skill = await svc.createLocalSkill(companyId, { name: "Imported", slug: "imported", markdown: "# Imported\n" });
+    await svc.updateSkill(companyId, skill.id, { categories: ["devops", "hermes-import"] });
+    // Front matter without categories keeps the stored ones.
+    await svc.updateFile(companyId, skill.id, "SKILL.md", "---\nname: imported\ndescription: Use it\n---\n# Imported v2\n");
+    expect((await svc.getById(companyId, skill.id))?.categories).toEqual(["devops", "hermes-import"]);
+    // Front matter categories replace the rest, but ownership stays.
+    await svc.updateFile(companyId, skill.id, "SKILL.md", "---\nname: imported\ntags:\n  - ops\n---\n# Imported v3\n");
+    expect((await svc.getById(companyId, skill.id))?.categories).toEqual(["ops", "hermes-import"]);
+  });
+
   it("reuses a deleted managed skill name with different instructions", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Recreate skills", issuePrefix: `T${companyId.slice(0, 6)}` });

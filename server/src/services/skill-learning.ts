@@ -7,6 +7,12 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { tokenizeForSkillMatch } from "./relevant-skills.js";
 import { agentService } from "./agents.js";
+import {
+  AGENT_MANAGED_SKILL_CATEGORIES,
+  ARCHIVED_SKILL_CATEGORY,
+  LEARNED_SKILL_CATEGORY,
+  PINNED_SKILL_CATEGORY,
+} from "./skill-ownership.js";
 
 /**
  * Skill learning, modelled on Hermes's skill system: agents capture what they
@@ -16,13 +22,12 @@ import { agentService } from "./agents.js";
  * hub-installed, pinned and user-owned skills.
  */
 
-/** Skills agents may create and maintain without a human. */
-export const LEARNED_SKILL_CATEGORY = "learned";
-export const AGENT_MANAGED_SKILL_CATEGORIES: readonly string[] = [LEARNED_SKILL_CATEGORY, "curated", "hermes-import"];
-/** A human-pinned skill: never archived, and protected by the recommended policy. */
-export const PINNED_SKILL_CATEGORY = "pinned";
-/** Retired by the curator: kept for recovery, no longer assigned or recommended. */
-export const ARCHIVED_SKILL_CATEGORY = "archived";
+export {
+  AGENT_MANAGED_SKILL_CATEGORIES,
+  ARCHIVED_SKILL_CATEGORY,
+  LEARNED_SKILL_CATEGORY,
+  PINNED_SKILL_CATEGORY,
+};
 
 export function isAgentManagedSkill(categories: readonly string[] | null | undefined): boolean {
   const set = new Set(categories ?? []);
