@@ -42,8 +42,71 @@ describe("StatusIcon", () => {
     expect(html).toContain("var(--status-task-icon-in_queue)");
     expect(html).not.toContain("bg-cyan");
     expect(html).not.toContain("border-cyan");
-    // Full blocked reason still rides on the accessible label.
-    expect(html).toContain("Blocked · waiting on active sub-task PAP-9");
+    // Full blocked reason still rides on the accessible label, relabelled from "Blocked".
+    expect(html).toContain("Delegated · waiting on sub-task PAP-9");
+  });
+
+  it('shows "Delegated" as the visible text label for a covered sub-task block', () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon
+        status="blocked"
+        showLabel
+        blockerAttention={{
+          state: "covered",
+          reason: "active_child",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          attentionBlockerCount: 0,
+          stalledBlockerCount: 0,
+          sampleBlockerIdentifier: "PAP-9",
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+    expect(html).toContain(">Delegated<");
+    expect(html).not.toContain(">Blocked<");
+  });
+
+  it('shows "Waiting" as the visible text label for a covered dependency block', () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon
+        status="blocked"
+        showLabel
+        blockerAttention={{
+          state: "covered",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          attentionBlockerCount: 0,
+          stalledBlockerCount: 0,
+          sampleBlockerIdentifier: "PAP-10",
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+    expect(html).toContain(">Waiting<");
+    expect(html).toContain("Waiting · covered by active dependency PAP-10");
+    expect(html).not.toContain(">Blocked<");
+  });
+
+  it('keeps the real "Blocked" label when the blocker still needs attention', () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon
+        status="blocked"
+        showLabel
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "attention_required",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 0,
+          attentionBlockerCount: 1,
+          stalledBlockerCount: 0,
+          sampleBlockerIdentifier: "PAP-11",
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+    expect(html).toContain(">Blocked<");
   });
 
   it("surfaces attention-required blocked copy and keeps the blocked glyph", () => {

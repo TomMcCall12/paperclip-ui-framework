@@ -30,19 +30,19 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
   if (blockerAttention.reason === "active_child") {
     const count = blockerAttention.coveredBlockerCount;
     if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
-      return `Blocked · waiting on active sub-task ${blockerAttention.sampleBlockerIdentifier}`;
+      return `Delegated · waiting on sub-task ${blockerAttention.sampleBlockerIdentifier}`;
     }
-    if (count === 1) return "Blocked · waiting on 1 active sub-task";
-    return `Blocked · waiting on ${count} active sub-tasks`;
+    if (count === 1) return "Delegated · waiting on 1 sub-task";
+    return `Delegated · waiting on ${count} sub-tasks`;
   }
 
   if (blockerAttention.reason === "active_dependency") {
     const count = blockerAttention.coveredBlockerCount;
     if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
-      return `Blocked · covered by active dependency ${blockerAttention.sampleBlockerIdentifier}`;
+      return `Waiting · covered by active dependency ${blockerAttention.sampleBlockerIdentifier}`;
     }
-    if (count === 1) return "Blocked · covered by 1 active dependency";
-    return `Blocked · covered by ${count} active dependencies`;
+    if (count === 1) return "Waiting · covered by 1 active dependency";
+    return `Waiting · covered by ${count} active dependencies`;
   }
 
   if (blockerAttention.reason === "stalled_review") {
@@ -66,6 +66,10 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
   return "Blocked";
 }
 
+function coveredBlockedShortLabel(blockerAttention: IssueBlockerAttention | null | undefined): string {
+  return blockerAttention?.reason === "active_child" ? "Delegated" : "Waiting";
+}
+
 /**
  * Task/issue status indicator — renders the unified, color-blind-safe
  * {@link StatusGlyph} (one distinct shape per status). With `onChange` it also
@@ -84,6 +88,7 @@ export function StatusIcon({ status, externalConversationState, blockerAttention
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
   const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(displayStatus);
   const glyphStatus = isCoveredBlocked ? "in_queue" : displayStatus;
+  const textLabel = isCoveredBlocked ? coveredBlockedShortLabel(blockerAttention) : statusLabel(displayStatus);
 
   const glyphIcon = (
     <StatusGlyph
@@ -103,7 +108,7 @@ export function StatusIcon({ status, externalConversationState, blockerAttention
     return showLabel ? (
       <span className="inline-flex items-center gap-1.5">
         {glyph}
-        <span className="text-sm">{statusLabel(displayStatus)}</span>
+        <span className="text-sm">{textLabel}</span>
       </span>
     ) : (
       glyph

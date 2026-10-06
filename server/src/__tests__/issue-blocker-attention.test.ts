@@ -180,6 +180,78 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("covers a blocked parent whose freshly delegated todo child has no run yet", async () => {
+    const { companyId, agentId } = await createCompany("PDC");
+    const parentId = await insertIssue({ companyId, identifier: "PDC-1", title: "Parent", status: "blocked" });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "PDC-2",
+      title: "Delegated child",
+      status: "todo",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_child",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PDC-2",
+    });
+  });
+
+  it("does not cover a todo dependency blocker with no assignee", async () => {
+    const { companyId } = await createCompany("PDU");
+    const parentId = await insertIssue({ companyId, identifier: "PDU-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PDU-2",
+      title: "Unassigned dependency",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PDU-2",
+    });
+  });
+
+  it("does not cover a todo dependency blocker assigned to a paused agent", async () => {
+    const { companyId, pausedAgentId } = await createCompany("PDP");
+    const parentId = await insertIssue({ companyId, identifier: "PDP-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PDP-2",
+      title: "Paused-agent dependency",
+      status: "todo",
+      assigneeAgentId: pausedAgentId,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PDP-2",
+    });
+  });
+
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {
     const { companyId, agentId } = await createCompany("PBB");
     const parentId = await insertIssue({ companyId, identifier: "PBB-1", title: "Parent", status: "blocked" });
@@ -230,7 +302,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   });
 
   it("keeps mixed blockers attention-required when any path lacks active work", async () => {
-    const { companyId, agentId } = await createCompany("PBM");
+    const { companyId, agentId, pausedAgentId } = await createCompany("PBM");
     const parentId = await insertIssue({ companyId, identifier: "PBM-1", title: "Parent", status: "blocked" });
     const activeChildId = await insertIssue({
       companyId,
@@ -243,9 +315,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     const idleBlockerId = await insertIssue({
       companyId,
       identifier: "PBM-3",
-      title: "Idle blocker",
+      title: "Paused-agent blocker",
       status: "todo",
-      assigneeAgentId: agentId,
+      assigneeAgentId: pausedAgentId,
     });
     await block({ companyId, blockerIssueId: activeChildId, blockedIssueId: parentId });
     await block({ companyId, blockerIssueId: idleBlockerId, blockedIssueId: parentId });
@@ -334,7 +406,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   });
 
   it("does not let another company's active run cover the blocker", async () => {
-    const { companyId, agentId } = await createCompany("PBS");
+    const { companyId } = await createCompany("PBS");
     const other = await createCompany("PBT");
     const parentId = await insertIssue({ companyId, identifier: "PBS-1", title: "Parent", status: "blocked" });
     const blockerId = await insertIssue({
@@ -342,7 +414,6 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       identifier: "PBS-2",
       title: "Same-company blocker",
       status: "todo",
-      assigneeAgentId: agentId,
     });
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
     await activeRun({ companyId: other.companyId, agentId: other.agentId, issueId: blockerId });
