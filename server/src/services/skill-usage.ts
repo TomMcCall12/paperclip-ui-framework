@@ -135,9 +135,10 @@ export function skillUsageService(db: Db) {
       }
 
       // Actual loads (the agent opened the skill), recorded per run as
-      // issue.skills_used activity with the skill's name as the agent saw it.
+      // issue.skills_used activity with the skill's name as the agent saw it
+      // (older rows may carry the runtime name, `<slug>--<10 hex>`).
       const usedResult = await db.execute(sql`
-        select lower(used.value->>'name') as name,
+        select regexp_replace(lower(used.value->>'name'), '--[0-9a-f]{10}$', '') as name,
           count(distinct l.run_id) filter (where l.created_at >= ${since.toISOString()}) as runs,
           max(l.created_at) as last
         from activity_log l

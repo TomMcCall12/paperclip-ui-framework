@@ -433,13 +433,13 @@ describe("skill activity in the task thread", () => {
       event("issue.skills_recommended", { skills: [{ key: "a/design-critique", name: "design-critique" }, { key: "a/qa" }] }),
       event("company.skill_created", { name: "paperclip-api-local-fallback", slug: "paperclip-api-local-fallback" }, 1),
       event("company.skill_file_updated", { name: "vault-maintenance", path: "SKILL.md" }, 2),
-      event("issue.skills_used", { skills: [{ name: "notes-vault" }] }, 3),
+      event("issue.skills_used", { skills: [{ name: "notes-vault" }, { name: "simplified-english--9876d8956d" }] }, 3),
     ] as never);
     expect(events.map((item) => item.skillActivity)).toEqual([
       { kind: "recommended", skills: ["design-critique", "a/qa"] },
       { kind: "created", skills: ["paperclip-api-local-fallback"] },
       { kind: "updated", skills: ["vault-maintenance"] },
-      { kind: "used", skills: ["notes-vault"] },
+      { kind: "used", skills: ["notes-vault", "simplified-english"] },
     ]);
   });
 

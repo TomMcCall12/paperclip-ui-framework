@@ -55,6 +55,14 @@ const SKILL_TOOL_NAMES = new Set(["Skill", "skill", "skill_view"]);
 const HERMES_GATEWAY_EVENT_PREFIX = "[hermes-gateway:event]";
 const CODEX_TOOL_ITEM_TYPES = new Set(["command_execution", "function_call", "mcp_tool_call", "file_change", "web_search"]);
 
+/**
+ * Skills are installed for an agent under a runtime name, `<slug>--<10 hex>`
+ * (see buildSkillRuntimeName). Strip the suffix to get back the skill's name.
+ */
+export function skillNameFromRuntimeName(value: string): string {
+  return value.replace(/--[0-9a-f]{10}$/, "");
+}
+
 function skillNameFromInput(input: unknown): string | null {
   if (!input || typeof input !== "object") return null;
   const record = input as Record<string, unknown>;
@@ -92,7 +100,7 @@ export function createRunToolTracker() {
         toolCalls += 1;
         if (SKILL_TOOL_NAMES.has(record.name)) {
           const skill = skillNameFromInput(record.input);
-          if (skill) skills.add(skill);
+            if (skill) skills.add(skillNameFromRuntimeName(skill));
         }
       }
       return;
@@ -101,7 +109,7 @@ export function createRunToolTracker() {
       toolCalls += 1;
       if (SKILL_TOOL_NAMES.has(record.tool) && typeof record.preview === "string") {
         const skill = record.preview.trim().replace(/\.\.\.$/, "").split(/\s+/)[0];
-        if (skill) skills.add(skill);
+        if (skill) skills.add(skillNameFromRuntimeName(skill));
       }
       return;
     }

@@ -15,7 +15,7 @@ import {
 } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { distributeNewSkill } from "./skill-learning.js";
-import { applySkillLifecycle, findLearningCandidates } from "./skill-usage.js";
+import { applySkillLifecycle, findLearningCandidates, skillUsageService } from "./skill-usage.js";
 
 const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -120,6 +120,23 @@ suite("skill learning (real PostgreSQL)", () => {
 
     const found = await findLearningCandidates(db, companyId, { hours: 24, now });
     expect(found.map((candidate) => candidate.title).sort()).toEqual(["Investigate the failing deploy", "Reconcile the vault"]);
+  });
+
+  it("counts a skill as used when the agent loaded it under its runtime name", async () => {
+    const companyId = await company();
+    const holder = await agent(companyId, "Holder");
+    await db.insert(companySkills).values({
+      companyId, key: `company/${companyId}/vault-maintenance`, slug: "vault-maintenance", name: "vault-maintenance", markdown: "# v",
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: holder, status: "succeeded" });
+    await db.insert(activityLog).values({
+      companyId, actorType: "system", actorId: "heartbeat", agentId: holder, runId,
+      action: "issue.skills_used", entityType: "issue", entityId: randomUUID(),
+      details: { skills: [{ name: "vault-maintenance--0123456789" }] },
+    });
+    const report = await skillUsageService(db).report(companyId);
+    expect(report.skills.find((skill) => skill.key === `company/${companyId}/vault-maintenance`)).toMatchObject({ usedRuns: 1 });
   });
 
   it("archives only idle agent-owned skills and unassigns them", async () => {

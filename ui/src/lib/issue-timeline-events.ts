@@ -171,7 +171,8 @@ function skillActivityFromEvent(
       ? details.skills.flatMap((skill) => {
         const record = asRecord(skill);
         const name = nullableString(record?.name) ?? nullableString(record?.key);
-        return name ? [name] : [];
+        // Strip a runtime install suffix (`<slug>--<10 hex>`) from older rows.
+        return name ? [name.replace(/--[0-9a-f]{10}$/, "")] : [];
       })
       : [];
     if (skills.length === 0) return null;

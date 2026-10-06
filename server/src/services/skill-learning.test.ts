@@ -45,7 +45,11 @@ describe("createRunToolTracker", () => {
     tracker.observe(toolUse("t2", "Skill", { skill: "design-critique" }));
     tracker.observe(toolUse("t2", "Skill", { skill: "design-critique" })); // replayed block
     tracker.observe(toolUse("t3", "Skill", { command: "/plated-release-operations" }));
-    expect(tracker.result()).toEqual({ toolCalls: 3, skillsUsed: ["design-critique", "plated-release-operations"] });
+    tracker.observe(toolUse("t4", "Skill", { skill: "paperclip-api-local-fallback--23708b94e4" })); // runtime name
+    expect(tracker.result()).toEqual({
+      toolCalls: 4,
+      skillsUsed: ["design-critique", "paperclip-api-local-fallback", "plated-release-operations"],
+    });
   });
 
   it("reassembles lines split across chunks and ignores non-JSON output", () => {
