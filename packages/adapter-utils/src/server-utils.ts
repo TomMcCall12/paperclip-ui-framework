@@ -2206,13 +2206,18 @@ function renderRunApiCredential(value: unknown): string {
   const token = asString(credential.token, "").trim();
   const runId = asString(credential.runId, "").trim();
   if (!token || !runId) return "";
+  const headersFile = `/tmp/paperclip-run-${runId}.headers`;
   return [
     "## Paperclip API access for this run",
     "",
-    "Use this credential for every Paperclip API call in this run (reads and writes such as comments, status and hand-offs). It acts as you, for this run only, and stops working when the run ends. Prefer it over any shared or bridge key. Never print or repeat it.",
+    "Use this credential for every Paperclip API call in this run (reads and writes such as comments, status and hand-offs). It acts as you, for this run only, and stops working when the run ends. Prefer it over any shared or bridge key.",
     "",
     `- Header \`Authorization: Bearer ${token}\``,
     `- Header \`X-Paperclip-Run-Id: ${runId}\``,
+    "",
+    // Long runs can have their context summarised, and a token retyped from
+    // memory no longer verifies; a file keeps the exact value.
+    `Before anything else, save both headers, exactly as written, to a private file (for example \`${headersFile}\`, then \`chmod 600\`). For every call, read them from that file, for example \`curl -H @${headersFile} …\`. Never retype the token from memory. Don't print it anywhere else.`,
   ].join("\n");
 }
 

@@ -955,6 +955,9 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("`Authorization: Bearer header.payload.signature`");
     expect(prompt).toContain("`X-Paperclip-Run-Id: run-123`");
     expect(prompt).toContain("stops working when the run ends");
+    // Long runs can lose a token to context summarising; the agent keeps it in a file.
+    expect(prompt).toContain("/tmp/paperclip-run-run-123.headers");
+    expect(prompt).toContain("Never retype the token from memory");
     expect(renderPaperclipWakePrompt({ ...base, runApiCredential: null })).not.toContain("Paperclip API access");
   });
 
