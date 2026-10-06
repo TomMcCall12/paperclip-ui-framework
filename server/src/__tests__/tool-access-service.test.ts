@@ -87,7 +87,7 @@ import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import * as sentry from "../sentry.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
-import { invalidatePaperclipCloudConnectorCapabilities, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
+import { invalidatePaperclipCloudConnectorCapabilities, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -7017,6 +7017,31 @@ describeEmbeddedPostgres("tool access service", () => {
       });
       expect(completed.connection).toMatchObject({ status: "active", credentialPolicy: "per_user" });
       expect(JSON.stringify(getConnectableAppDefinition(slug))).toBe(definitionBefore);
+  });
+
+  it("explains a refused hosted sign-in instead of failing with a server error", async () => {
+    const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS[0]!;
+    const slug = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].appSlug;
+    const methodKey = getConnectableAppDefinition(slug)!.methods.find((method) => method.connectorProfile === profile)!.key;
+    const company = await createCompany(db);
+    const userId = "board-user";
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+    vi.mocked(connector.startAuthorization).mockRejectedValue(new PaperclipCloudConnectorError(
+      "Paperclip Cloud connector rejected the request (operation=session, status=404, reason=PROFILE_NOT_AVAILABLE)",
+      "CONNECTOR_REQUEST_FAILED",
+      404,
+    ));
+    const app = createRouteApp(db, undefined, undefined, {
+      deploymentMode: "local_trusted", deploymentExposure: "private", paperclipCloudConnector: connector,
+    });
+    // "Continue to sign in" connects and starts the hosted sign-in in one request.
+    const connected = await request(app).post(`/api/companies/${company.id}/tools/apps/connect`).send({
+      galleryKey: slug, connectionMethodKey: methodKey, grantKind: "user", name: `Personal ${slug}`,
+    });
+    expect(connected.status, JSON.stringify(connected.body)).toBe(422);
+    expect(connected.body.error).toContain("Use your own Google OAuth app");
+    expect(connected.body.details).toMatchObject({ code: "managed_sign_in_unavailable", status: 404 });
   });
 
   it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS)("connects advertised Workspace %s with a Cloud-delivered environment identity", async (profile) => {

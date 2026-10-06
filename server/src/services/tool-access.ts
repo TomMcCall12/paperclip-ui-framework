@@ -14370,6 +14370,16 @@ export function toolAccessService(
         profile: managedProfile.id,
         returnUri: returnUri.toString(),
         returnState: state,
+      }).catch((error: unknown) => {
+        // The hosted sign-in is Paperclip Cloud's service. When it refuses or
+        // can't be reached, say so instead of a bare 500, and name the way out.
+        if (!(error instanceof PaperclipCloudConnectorError)) throw error;
+        throw unprocessable(
+          error.code === "CONNECTOR_UNAVAILABLE"
+            ? `Paperclip's hosted sign-in for ${providerName} can't be reached right now. Try again later, or choose "Use your own Google OAuth app".`
+            : `Paperclip's hosted sign-in isn't available for ${providerName} on this instance. Choose "Use your own Google OAuth app" to connect with your own Google client instead.`,
+          { code: "managed_sign_in_unavailable", status: error.status ?? null },
+        );
       });
       const remoteExpiry = new Date(session.expiresAt);
       const expiresAt = Number.isFinite(remoteExpiry.getTime())
