@@ -72,6 +72,16 @@ describe("Claude chat model settings", () => {
     expect(selectFor(container, "Chat effort")?.value).toBe("");
   });
 
+  it("offers the account-connectors switch on existing agents, off by default", () => {
+    const { container, root, props } = render();
+    roots.push(root);
+    expect(container.textContent).toContain("Use my Claude account's connectors");
+    const toggle = container.querySelector("[data-testid='use-account-connectors-toggle']");
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    act(() => { (toggle as HTMLElement).click(); });
+    expect(props.mark).toHaveBeenCalledWith("adapterConfig", "useAccountConnectors", true);
+  });
+
   it("is not offered when creating an agent", () => {
     const { container, root } = render({ isCreate: true, mode: "create", values: {} as never, set: vi.fn() });
     roots.push(root);

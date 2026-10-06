@@ -65,6 +65,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local and remote targets receive --dangerously-skip-permissions for all built-in and connected tools. Managed sandbox targets also identify themselves to Claude so root container launches support bypass. Non-sandbox root processes must run Claude as a non-root user; Paperclip does not silently downgrade the requested mode.
+- useAccountConnectors (boolean, optional, default false): also give the agent the connectors of the Claude account it signs in with (for example Google Drive, Gmail or Calendar on claude.ai). Off by default, so runs use only Paperclip's governed connections. Paperclip does not grant, audit or gate account connectors, and a task cannot turn this on.
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

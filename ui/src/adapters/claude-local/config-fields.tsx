@@ -262,6 +262,15 @@ export function ClaudeLocalAdvancedFields({
         }
       />
       {!isCreate && (
+        <ToggleField
+          label="Use my Claude account's connectors"
+          hint="Also give this agent the connectors on the Claude account it signs in with, such as Google Drive, Sheets or Gmail. It acts as you there, and Paperclip doesn't control or record what it does with them."
+          checked={eff("adapterConfig", "useAccountConnectors", config.useAccountConnectors === true) === true}
+          onChange={(v) => mark("adapterConfig", "useAccountConnectors", v || undefined)}
+          toggleTestId="use-account-connectors-toggle"
+        />
+      )}
+      {!isCreate && (
         <>
           <Field label="Chat model" hint="Model for chats (in Paperclip and on Telegram or other chat apps). Tasks keep the main model.">
             <select

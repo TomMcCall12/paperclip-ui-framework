@@ -50,6 +50,7 @@ describe("issueAssigneeOverrideRejectionReason", () => {
       { cwd: "/" },
       { command: "/bin/sh" },
       { env: { ANTHROPIC_API_KEY: "k" } },
+      { useAccountConnectors: true },
       { model: "" },
       { chrome: "yes" },
     ]) {

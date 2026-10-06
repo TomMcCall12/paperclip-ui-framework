@@ -419,7 +419,7 @@ describe("claude execute", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-mcp-config-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     try {
-      const run = async (runId: string, agentId: string, servers: AdapterRuntimeMcpServer[]) => {
+      const run = async (runId: string, agentId: string, servers: AdapterRuntimeMcpServer[], extra: Record<string, unknown> = {}) => {
         await execute({
           runId,
           agent: { id: agentId, companyId: "co-1", name: agentId, adapterType: "claude_local", adapterConfig: { engine: "cli" } },
@@ -430,6 +430,7 @@ describe("claude execute", () => {
             cwd: workspace,
             env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
             promptTemplate: "Do work.",
+            ...extra,
           },
           runtimeMcp: { getServers: () => servers },
           context: {},
@@ -446,6 +447,12 @@ describe("claude execute", () => {
         connectionId: "connection-alpha",
       }]);
       const zero = await run("run-zero", "agent-zero", []);
+      const withAccount = await run("run-account", "agent-account", [{
+        name: "alpha",
+        url: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
+        token: "alpha-token",
+        connectionId: "connection-alpha",
+      }], { useAccountConnectors: true });
 
       expect(alpha.argv).toEqual(expect.arrayContaining(["--strict-mcp-config", "--mcp-config"]));
       expect(JSON.parse(alpha.mcpConfigContents)).toEqual({
@@ -462,6 +469,9 @@ describe("claude execute", () => {
       expect(zero.mcpConfigPath).toBeNull();
       expect(zero.mcpConfigContents).toBeNull();
       expect(alpha.mcpConfigPath).toContain("/agents/agent-alpha/");
+      // Opted in by the board: Paperclip's servers plus the Claude account's own connectors.
+      expect(withAccount.argv).toContain("--mcp-config");
+      expect(withAccount.argv).not.toContain("--strict-mcp-config");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

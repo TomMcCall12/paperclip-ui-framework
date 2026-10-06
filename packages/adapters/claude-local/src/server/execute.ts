@@ -433,6 +433,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  const useAccountConnectors = asBoolean(config.useAccountConnectors, false);
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -902,7 +903,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     if (runtimeMcpServers.length > 0) {
-      args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
+      args.push("--mcp-config", effectiveMcpConfigPath);
+      // Strict by default: only Paperclip's governed connections. An agent the
+      // board opts in (`useAccountConnectors`) also keeps the connectors of the
+      // Claude account it signs in with (for example Google Drive or Gmail),
+      // which Paperclip does not grant, audit or gate.
+      if (!useAccountConnectors) args.push("--strict-mcp-config");
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
