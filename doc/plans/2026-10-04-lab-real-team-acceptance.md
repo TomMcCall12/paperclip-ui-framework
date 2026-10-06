@@ -111,7 +111,7 @@ A redundant second pre-repair copy, `state.db.pre-fts-repair-20261004T081934Z`, 
   - Four unpushed Plated commits need Tom's decision.
   - Tom needs to send an example of a reply that didn't reopen a task.
 
-## 5–6 Oct overnight: Hermes-level skill learning (image `tom52`)
+## 5–6 Oct overnight: Hermes-level skill learning (live `4af9d3a`, image `tom53`)
 Tom asked for skills to work "at the Hermes level": agents learn during tasks, new skills reach the agents who need them, and the curator maintains imported Hermes skills. See `doc/SKILL-LEARNING.md`.
 - **Learning in the task** (`e8ba912`, `ed87a20`):
   - Every task's wake prompt ends with a "Learning" step adapted from Hermes's background review. The final comment ends with `Learning: …`.
@@ -132,4 +132,13 @@ Tom asked for skills to work "at the Hermes level": agents learn during tasks, n
 - **Fixes found while testing:**
   - A resumed Claude session that is too long now restarts fresh (`a9cbf13`; this is what stranded TOM-92).
   - Reassignment now also cancels the previous assignee's queued run (`3640287`). On TOM-102 that run took the task back.
-- **Open for Tom:** the Software Engineer is capped at 16 turns and 7 minutes per run. It hit the cap five times on TOM-102, so it can't finish multi-step work.
+  - Editing SKILL.md kept wiping `hermes-import` (live on Jarvis's and Hermes Runtime's edits). Ownership categories now survive file edits (`4af9d3a`). The affected skills were re-tagged.
+- **Live checks:**
+  - **Jarvis on TOM-102:** reviewed the week's failed runs, added a support file to an existing skill, and ended with `Learning: …`.
+  - **Hermes Runtime on TOM-90:** 22 tool calls and its `skill_view` loads were tracked, it updated a skill, and its run credential worked.
+  - **Chat:** Jarvis's chat turn ran on `claude-sonnet-5`.
+  - **Skill policy:** a simulation allows agents to edit agent-owned skills, refuses edits to catalog and pinned ones, and allows creating new skills.
+- **Rollback:** `docker-compose.yml.pre-tom53-*.bak`, or `pre-tom52`/`pre-tom50`. To drop protection, `DELETE /api/companies/{id}/skill-policy`.
+- **Open for Tom:**
+  - The Software Engineer is capped at 16 turns and 7 minutes per run. It hit the cap five times on TOM-102, so it can't finish multi-step work.
+  - The Weekly Host Crontab Audit (TOM-90) can't see the host crontab from Hermes Runtime's container and needs a decision on a read-only host view.
