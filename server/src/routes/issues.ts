@@ -13609,6 +13609,24 @@ export function issueRoutes(
           }
           interruptedRunId = cancelled.id;
         }
+        // A run queued (or waiting to retry) for the previous assignee can hold
+        // the task's execution lock. Left alone, it starts after the handover and
+        // acts on work that is no longer theirs.
+        const waitingRun = !runToStopForReassignment && existing.executionRunId
+          ? await heartbeat.getRun(existing.executionRunId)
+          : null;
+        if (
+          waitingRun &&
+          waitingRun.agentId === existing.assigneeAgentId &&
+          (waitingRun.status === "queued" || waitingRun.status === "scheduled_retry")
+        ) {
+          await heartbeat.cancelRun(waitingRun.id, "Cancelled before issue reassignment", {
+            errorCode: "issue_reassigned",
+            resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
+            eventMessage: "waiting run cancelled before issue reassignment",
+            eventPayload: { issueId: existing.id },
+          });
+        }
       }
 
       const terminalizingIssue =

@@ -378,6 +378,43 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it.each([
+    { owner: "previous assignee", agentId: PREVIOUS_AGENT_ID, cancelled: true },
+    { owner: "another agent", agentId: "other-agent", cancelled: false },
+  ])("on reassignment, cancels a queued run holding the task lock only when it belongs to the $owner", async ({ agentId, cancelled }) => {
+    const existing = makeIssue({
+      assigneeAgentId: PREVIOUS_AGENT_ID,
+      assigneeUserId: null,
+      executionRunId: "run-queued",
+      status: "todo",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "todo" }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-queued",
+      companyId: existing.companyId,
+      agentId,
+      status: "queued",
+      contextSnapshot: { issueId: existing.id },
+    });
+    mockHeartbeatService.cancelRun.mockResolvedValue({ id: "run-queued", status: "cancelled" });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    if (cancelled) {
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+        "run-queued",
+        "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }),
+      );
+    } else {
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    }
+  });
+
   it("interrupts the active run and wakes the newly assigned agent with handoff context", async () => {
     const existing = makeIssue({
       assigneeAgentId: PREVIOUS_AGENT_ID,
