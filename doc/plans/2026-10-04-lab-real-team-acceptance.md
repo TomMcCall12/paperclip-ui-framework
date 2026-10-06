@@ -182,4 +182,9 @@ Tom asked for skills to work "at the Hermes level": agents learn during tasks, n
   - The protected skill `toms-lab-self-update` is with Jarvis and the Software Engineer.
   - The weekly host check now runs on the Software Engineer with `report all`, not on Hermes.
   - TOM-114 sets up the private GitHub repository.
+- **Google through Tom's Claude account (`2238764`, image `tom59`):**
+  - Google's Workspace MCP servers return 403 to Tom's own OAuth client (Developer Preview enrolment).
+  - The Claude account Tom's Lab signs in with already has Google Sheets, Drive, Gmail and Calendar.
+  - The new per-agent setting "Use my Claude account's connectors" (default off, not task-overridable) is on for Jarvis only.
+  - Deployment and a read-only check are scheduled once agents are idle.
 
