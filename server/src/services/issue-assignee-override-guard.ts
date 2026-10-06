@@ -2,17 +2,48 @@
  * Issue `assigneeAdapterOverrides.adapterConfig` is merged over the assignee's
  * saved adapter config right before runtime secrets are resolved, and anyone
  * who can write the issue can set it. For adapters that send a saved credential
- * to a configured destination, only explicitly safe task-level keys may be
- * overridden. Every other key is rejected, so a credential or transport key the
+ * to a configured destination, or whose config controls what the agent may do
+ * (tools, permissions, CLI arguments, working folder), only explicitly safe
+ * task-level keys may be overridden. Every other key is rejected, so a key the
  * adapter adds later is not overridable by default.
  */
+const nonEmptyString = (value: unknown) => typeof value === "string" && value.trim().length > 0;
+const isBoolean = (value: unknown) => typeof value === "boolean";
+const positiveInteger = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value > 0;
+// Workspace strategy overrides carry commands; issue routes authorize them
+// separately (collectIssueWorkspaceCommandPaths).
+const isObject = (value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value);
+
 const SAFE_ISSUE_OVERRIDE_ADAPTER_CONFIG: Readonly<
   Record<string, Readonly<Record<string, (value: unknown) => boolean>>>
 > = {
   // Hermes gateway sends its saved apiKey/token to apiBaseUrl/url; a task may
   // only pick the model.
   hermes_gateway: {
-    model: (value) => typeof value === "string" && value.trim().length > 0,
+    model: nonEmptyString,
+  },
+  // Local coding agents: a task may pick the model, thinking effort and run
+  // budget, never tools, permissions, CLI args, folder or environment, so a
+  // task cannot widen what its assignee is allowed to do.
+  claude_local: {
+    model: nonEmptyString,
+    effort: nonEmptyString,
+    chrome: isBoolean,
+    timeoutSec: positiveInteger,
+    maxTurnsPerRun: positiveInteger,
+    workspaceStrategy: isObject,
+  },
+  codex_local: {
+    model: nonEmptyString,
+    modelReasoningEffort: nonEmptyString,
+    reasoningEffort: nonEmptyString,
+    timeoutSec: positiveInteger,
+    workspaceStrategy: isObject,
+  },
+  opencode_local: {
+    model: nonEmptyString,
+    variant: nonEmptyString,
+    workspaceStrategy: isObject,
   },
 };
 

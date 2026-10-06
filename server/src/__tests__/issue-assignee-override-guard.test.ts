@@ -33,8 +33,32 @@ describe("issueAssigneeOverrideRejectionReason", () => {
     expect(reason).not.toContain("attacker.example");
   });
 
+  it("lets local coding agents' tasks pick only the model, effort and the keys the model picker writes", () => {
+    expect(issueAssigneeOverrideRejectionReason("claude_local", { adapterConfig: { model: "claude-haiku-4-5", effort: "high", chrome: true } })).toBeNull();
+    expect(issueAssigneeOverrideRejectionReason("codex_local", { adapterConfig: { model: "gpt-5.4", modelReasoningEffort: "high" } })).toBeNull();
+    expect(issueAssigneeOverrideRejectionReason("opencode_local", { adapterConfig: { model: "m", variant: "high" } })).toBeNull();
+    expect(issueAssigneeOverrideRejectionReason("claude_local", { adapterConfig: { workspaceStrategy: { type: "git_worktree" } } })).toBeNull();
+    // Run budget is a per-task choice too.
+    expect(issueAssigneeOverrideRejectionReason("claude_local", { adapterConfig: { timeoutSec: 3600, maxTurnsPerRun: 200 } })).toBeNull();
+  });
+
+  it("stops a task widening what a local coding agent may do", () => {
+    for (const adapterConfig of [
+      { extraArgs: ["--dangerously-skip-permissions"] },
+      { dangerouslySkipPermissions: true },
+      { maxTurnsPerRun: -1 },
+      { cwd: "/" },
+      { command: "/bin/sh" },
+      { env: { ANTHROPIC_API_KEY: "k" } },
+      { model: "" },
+      { chrome: "yes" },
+    ]) {
+      expect(issueAssigneeOverrideRejectionReason("claude_local", { adapterConfig })).toMatch(/may only set/);
+    }
+    expect(issueAssigneeOverrideRejectionReason("codex_local", { adapterConfig: { dangerouslyBypassApprovalsAndSandbox: true } })).toMatch(/may only set/);
+  });
+
   it("does not restrict other adapters", () => {
-    expect(issueAssigneeOverrideRejectionReason("claude_local", { adapterConfig: { chrome: true, effort: "high" } })).toBeNull();
     expect(issueAssigneeOverrideRejectionReason("hermes_local", { adapterConfig: { model: "m", provider: "p" } })).toBeNull();
     expect(issueAssigneeOverrideRejectionReason(null, { adapterConfig: { apiBaseUrl: "x" } })).toBeNull();
   });
