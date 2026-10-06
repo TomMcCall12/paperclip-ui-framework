@@ -190,11 +190,18 @@ vi.mock("./InlineEntitySelector", async () => {
         placeholder?: string;
         className?: string;
         triggerDataSlot?: string;
+        onChange?: (value: string) => void;
         renderTriggerValue?: (option: { id: string; label: string } | null) => ReactNode;
       }
-    >(function InlineEntitySelectorMock({ value, placeholder, className, triggerDataSlot, renderTriggerValue }, ref) {
+    >(function InlineEntitySelectorMock({ value, placeholder, className, triggerDataSlot, onChange, renderTriggerValue }, ref) {
       return (
-        <button ref={ref} type="button" className={className} data-slot={triggerDataSlot}>
+        <button
+          ref={ref}
+          type="button"
+          className={className}
+          data-slot={triggerDataSlot}
+          onClick={() => onChange?.("")}
+        >
           {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
         </button>
       );
@@ -475,6 +482,7 @@ describe("NewIssueDialog", () => {
       parentIdentifier: "PAP-1",
       parentTitle: "Parent issue",
       title: "Child issue",
+      description: "Child issue description",
       projectId: "project-1",
       executionWorkspaceId: "workspace-1",
       goalId: "goal-1",
@@ -628,6 +636,7 @@ describe("NewIssueDialog", () => {
 
     dialogState.newIssueDefaults = {
       title: "Select a model",
+      description: "Pick a model for this task",
       assigneeAgentId: "agent-1",
     };
     mockAgentsApi.list.mockResolvedValue([
@@ -690,7 +699,7 @@ describe("NewIssueDialog", () => {
   });
 
   it("shows an editable model control for a Hermes gateway agent and submits its override", async () => {
-    dialogState.newIssueDefaults = { title: "Hermes model", assigneeAgentId: "agent-hermes" };
+    dialogState.newIssueDefaults = { title: "Hermes model", description: "Choose a model for Jarvis", assigneeAgentId: "agent-hermes" };
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-hermes", name: "Jarvis", status: "active", adapterType: "hermes_gateway", adapterConfig: {}, runtimeConfig: {}, permissions: {} }]);
     mockAgentsApi.adapterModels.mockResolvedValue([
       { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
@@ -722,7 +731,7 @@ describe("NewIssueDialog", () => {
   });
 
   async function chooseHermesTaskModel(container: HTMLDivElement, model: string) {
-    dialogState.newIssueDefaults = { title: "Hermes model", assigneeAgentId: "agent-hermes" };
+    dialogState.newIssueDefaults = { title: "Hermes model", description: "Choose a model for Jarvis", assigneeAgentId: "agent-hermes" };
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-hermes", name: "Jarvis", status: "active", adapterType: "hermes_gateway", adapterConfig: { model: "gpt-5.6-luna" }, runtimeConfig: {}, permissions: {} }]);
     mockAgentsApi.adapterModels.mockResolvedValue([
       { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
@@ -850,9 +859,111 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  describe("defaults the assignee to the company's CEO agent", () => {
+    function assigneeTriggerButton() {
+      return Array.from(container.querySelectorAll<HTMLElement>('[data-slot="new-issue-compact-control"]'))
+        .find((element) => element.textContent?.startsWith("agent:"));
+    }
+
+    it("preselects the CEO agent when no assignee is supplied", async () => {
+      mockAgentsApi.list.mockResolvedValue([
+        { id: "agent-ceo", name: "Jarvis", status: "active", role: "ceo", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+        { id: "agent-other", name: "CodexCoder", status: "active", role: "engineer", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      ]);
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(assigneeTriggerButton()?.textContent).toBe("agent:agent-ceo");
+      });
+
+      const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement;
+      await typeTextareaValue(descriptionInput, "Look into the new onboarding flow");
+      await submitTask(container);
+
+      expect(mockIssuesApi.create).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ assigneeAgentId: "agent-ceo" }),
+      );
+
+      act(() => root.unmount());
+    });
+
+    it("keeps No assignee when there is no CEO agent", async () => {
+      mockAgentsApi.list.mockResolvedValue([
+        { id: "agent-other", name: "CodexCoder", status: "active", role: "engineer", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      ]);
+
+      const { root } = renderDialog(container);
+      await flush();
+      expect(assigneeTriggerButton()).toBeUndefined();
+
+      const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement;
+      await typeTextareaValue(descriptionInput, "Look into the new onboarding flow");
+      await submitTask(container);
+
+      expect(mockIssuesApi.create).toHaveBeenCalledWith(
+        "company-1",
+        expect.not.objectContaining({ assigneeAgentId: expect.anything() }),
+      );
+
+      act(() => root.unmount());
+    });
+
+    it("does not override an explicit default assignee with the CEO fallback", async () => {
+      dialogState.newIssueDefaults = {
+        title: "Already assigned",
+        description: "Already assigned description",
+        assigneeAgentId: "agent-other",
+      };
+      mockAgentsApi.list.mockResolvedValue([
+        { id: "agent-ceo", name: "Jarvis", status: "active", role: "ceo", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+        { id: "agent-other", name: "CodexCoder", status: "active", role: "engineer", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      ]);
+
+      const { root } = renderDialog(container);
+      await submitTask(container);
+
+      expect(mockIssuesApi.create).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ assigneeAgentId: "agent-other" }),
+      );
+
+      act(() => root.unmount());
+    });
+
+    it("lets Tom clear the defaulted CEO assignee", async () => {
+      mockAgentsApi.list.mockResolvedValue([
+        { id: "agent-ceo", name: "Jarvis", status: "active", role: "ceo", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      ]);
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(assigneeTriggerButton()?.textContent).toBe("agent:agent-ceo");
+      });
+
+      await act(async () => {
+        assigneeTriggerButton()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+      expect(assigneeTriggerButton()).toBeUndefined();
+
+      const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement;
+      await typeTextareaValue(descriptionInput, "Look into the new onboarding flow");
+      await submitTask(container);
+
+      expect(mockIssuesApi.create).toHaveBeenCalledWith(
+        "company-1",
+        expect.not.objectContaining({ assigneeAgentId: expect.anything() }),
+      );
+
+      act(() => root.unmount());
+    });
+  });
+
   it("restores the planning mode from dialog defaults", async () => {
     dialogState.newIssueDefaults = {
       title: "Planned from defaults",
+      description: "Plan this out before starting",
       workMode: "planning",
     };
 
@@ -888,6 +999,7 @@ describe("NewIssueDialog", () => {
   it("restores ask mode from dialog defaults", async () => {
     dialogState.newIssueDefaults = {
       title: "Question from defaults",
+      description: "What should we do about this",
       workMode: "ask",
     };
 
@@ -927,7 +1039,7 @@ describe("NewIssueDialog", () => {
       executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
     }]);
     localStorage.setItem("paperclip:issue-draft", JSON.stringify({
-      title: "Draft task", description: "", status: "todo", priority: "medium", assigneeValue: "",
+      title: "Draft task", description: "Managed task description", status: "todo", priority: "medium", assigneeValue: "",
       reviewerValue: "", approverValue: "", projectId: "project-1",
       selectedExecutionWorkspaceId: "stale-workspace", executionWorkspaceMode: "reuse_existing",
       assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false, workMode: "standard",
@@ -936,8 +1048,8 @@ describe("NewIssueDialog", () => {
     await flush();
     expect(container.textContent).not.toContain("Execution workspace");
     expect(container.querySelector('option[value="isolated_workspace"]')).toBeNull();
-    await typeTextareaValue(container.querySelector('textarea[placeholder="Task title"]')!, "Managed task");
     const create = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create Task"));
+    await waitForAssertion(() => expect(create?.hasAttribute("disabled")).toBe(false));
     act(() => create!.click());
     await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
     const payload = mockIssuesApi.create.mock.calls[0][1];
@@ -951,13 +1063,14 @@ describe("NewIssueDialog", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     dialogState.newIssueDefaults = {
       projectId: "project-1", executionWorkspaceId: "workspace-context",
+      description: "Context task description",
       ...(subtask ? { parentId: "parent-task", parentIdentifier: "TEST-1" } : {}),
     };
     const { root } = renderDialog(container, ["workspaces.isolation"]);
     await flush();
     expect(container.querySelector('option[value="isolated_workspace"]')).toBeNull();
-    await typeTextareaValue(container.querySelector('textarea[placeholder="Task title"]')!, "Context task");
     const create = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes(subtask ? "Create Sub-Task" : "Create Task"));
+    await waitForAssertion(() => expect(create?.hasAttribute("disabled")).toBe(false));
     act(() => create!.click());
     await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
     expect(mockIssuesApi.create.mock.calls[0][1]).toMatchObject({
@@ -1007,6 +1120,7 @@ describe("NewIssueDialog", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     dialogState.newIssueDefaults = {
       title: "Follow-up issue",
+      description: "Follow-up issue description",
       projectId: "project-1",
       projectWorkspaceId: "project-workspace-2",
       executionWorkspaceId: "workspace-1",
@@ -1098,7 +1212,7 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("submits the latest locally typed title and description", async () => {
+  it("submits the latest locally typed description with an auto-generated title", async () => {
     let resolveProjects: (projects: Array<{
       id: string;
       name: string;
@@ -1113,12 +1227,9 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
-    expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
 
-    await typeTextareaValue(titleInput!, "Typed issue");
     await typeTextareaValue(descriptionInput!, "Typed description");
 
     await act(async () => {
@@ -1150,7 +1261,7 @@ describe("NewIssueDialog", () => {
     expect(mockIssuesApi.create).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({
-        title: "Typed issue",
+        title: "Typed description",
         description: "Typed description",
         workMode: "standard",
       }),
@@ -1161,7 +1272,7 @@ describe("NewIssueDialog", () => {
 
   it("shows the create-task loading state only in the submit button", async () => {
     mockIssuesApi.create.mockReturnValue(new Promise(() => undefined));
-    dialogState.newIssueDefaults = { title: "Pending task" };
+    dialogState.newIssueDefaults = { title: "Pending task", description: "Pending task description" };
 
     const { root } = renderDialog(container);
     await flush();
@@ -1183,7 +1294,7 @@ describe("NewIssueDialog", () => {
   });
 
   it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
-    const title = "验证中文任务";
+    const title = "请用中文回复。";
     const description = [
       "请用中文回复。",
       "日本語: 次の手順を書いてください。",
@@ -1193,12 +1304,9 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
-    expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
 
-    await typeTextareaValue(titleInput!, title);
     await typeTextareaValue(descriptionInput!, description);
 
     const submitButton = Array.from(container.querySelectorAll("button"))
@@ -1229,9 +1337,9 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
-    expect(titleInput).not.toBeNull();
-    await typeTextareaValue(titleInput!, "Plan this first");
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(descriptionInput).not.toBeNull();
+    await typeTextareaValue(descriptionInput!, "Plan this first");
 
     const planningButton = container.querySelector('[data-issue-work-mode="planning"]');
     expect(planningButton).not.toBeNull();
@@ -1256,6 +1364,7 @@ describe("NewIssueDialog", () => {
       "company-1",
       expect.objectContaining({
         title: "Plan this first",
+        description: "Plan this first",
         workMode: "planning",
       }),
     );
@@ -1267,9 +1376,9 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
-    expect(titleInput).not.toBeNull();
-    await typeTextareaValue(titleInput!, "Answer this first");
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(descriptionInput).not.toBeNull();
+    await typeTextareaValue(descriptionInput!, "Answer this first");
 
     const askButton = container.querySelector('[data-issue-work-mode="ask"]');
     expect(askButton).not.toBeNull();
@@ -1294,6 +1403,7 @@ describe("NewIssueDialog", () => {
       "company-1",
       expect.objectContaining({
         title: "Answer this first",
+        description: "Answer this first",
         workMode: "ask",
       }),
     );
@@ -1420,6 +1530,7 @@ describe("NewIssueDialog", () => {
       parentIdentifier: "PAP-1",
       parentTitle: "Parent issue",
       title: "Child issue",
+      description: "Child issue description",
       projectId: "project-1",
       goalId: "goal-1",
       assigneeAgentId: "agent-1",
@@ -1461,14 +1572,12 @@ describe("NewIssueDialog", () => {
     expect(dialogContent?.className).toContain("h-(--new-issue-dialog-height)");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
-    const titleInput = container.querySelector('textarea[placeholder="Task title"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
     const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
       typeof element.className === "string" && element.className.includes("overscroll-contain"),
     );
     expect(bodyScrollRegion?.className).toContain("flex-1");
     expect(bodyScrollRegion?.className).toContain("overflow-y-auto");
-    expect(bodyScrollRegion?.contains(titleInput ?? null)).toBe(true);
     expect(bodyScrollRegion?.contains(descriptionInput ?? null)).toBe(true);
 
     act(() => root.unmount());
@@ -1600,6 +1709,7 @@ describe("NewIssueDialog", () => {
   it("still submits the default priority when the priority UI is hidden (PAP-411)", async () => {
     dialogState.newIssueDefaults = {
       title: "Priority default persists",
+      description: "Priority default persists description",
     };
 
     const { root } = renderDialog(container);
@@ -1754,7 +1864,7 @@ describe("NewIssueDialog", () => {
       "paperclip:issue-draft",
       JSON.stringify({
         title: "Watched task",
-        description: "",
+        description: "Keep the watchdog nudging this along",
         status: "todo",
         priority: "medium",
         assigneeValue: "",

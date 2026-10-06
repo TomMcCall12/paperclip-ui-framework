@@ -84,6 +84,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
+import { deriveIssueTitle } from "../lib/issue-title";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -372,73 +373,6 @@ function isWorkModeEscapeShortcut(e: Pick<KeyboardEvent, "key" | "metaKey">) {
   return e.metaKey && e.key === "Escape";
 }
 
-const IssueTitleTextarea = memo(function IssueTitleTextarea({
-  value,
-  pending,
-  assigneeValue,
-  projectId,
-  descriptionEditorRef,
-  assigneeSelectorRef,
-  projectSelectorRef,
-  onChange,
-}: {
-  value: string;
-  pending: boolean;
-  assigneeValue: string;
-  projectId: string;
-  descriptionEditorRef: RefObject<MarkdownEditorRef | null>;
-  assigneeSelectorRef: RefObject<HTMLButtonElement | null>;
-  projectSelectorRef: RefObject<HTMLButtonElement | null>;
-  onChange: (value: string) => void;
-}) {
-  const [draftValue, setDraftValue] = useState(value);
-
-  useEffect(() => {
-    setDraftValue(value);
-  }, [value]);
-
-  return (
-    <textarea
-      className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-      placeholder="Task title"
-      rows={1}
-      value={draftValue}
-      onChange={(e) => {
-        const nextValue = e.target.value;
-        setDraftValue(nextValue);
-        onChange(nextValue);
-        e.target.style.height = "auto";
-        e.target.style.height = `${e.target.scrollHeight}px`;
-      }}
-      readOnly={pending}
-      onKeyDown={(e) => {
-        if (
-          e.key === "Enter" &&
-          !e.metaKey &&
-          !e.ctrlKey &&
-          !e.nativeEvent.isComposing
-        ) {
-          e.preventDefault();
-          descriptionEditorRef.current?.focus();
-        }
-        if (e.key === "Tab" && !e.shiftKey) {
-          e.preventDefault();
-          if (assigneeValue) {
-            if (projectId) {
-              descriptionEditorRef.current?.focus();
-            } else {
-              projectSelectorRef.current?.focus();
-            }
-          } else {
-            assigneeSelectorRef.current?.focus();
-          }
-        }
-      }}
-      autoFocus
-    />
-  );
-});
-
 const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   value,
   expanded,
@@ -522,11 +456,10 @@ export function NewIssueDialog() {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
-  const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const titleRef = useRef("");
   const descriptionRef = useRef("");
-  const [titleHasText, setTitleHasText] = useState(false);
+  const [descriptionHasText, setDescriptionHasText] = useState(false);
   const [draftHasText, setDraftHasText] = useState(false);
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
@@ -558,6 +491,11 @@ export function NewIssueDialog() {
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
   const initializationKeyRef = useRef<string | null>(null);
+  // Tracks whether this dialog session already has an explicit assignee
+  // source (a passed-in default or a saved draft), so the CEO fallback below
+  // only fires when Tom hasn't chosen or cleared an assignee himself.
+  const hasExplicitAssigneeSourceRef = useRef(false);
+  const assigneeTouchedRef = useRef(false);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -810,7 +748,7 @@ export function NewIssueDialog() {
     (draft: IssueDraft) => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
       draftTimer.current = setTimeout(() => {
-        if (draft.title.trim()) saveDraft(draft);
+        if (draft.description.trim()) saveDraft(draft);
       }, DEBOUNCE_MS);
     },
     [],
@@ -819,9 +757,8 @@ export function NewIssueDialog() {
   const setIssueText = useCallback((nextTitle: string, nextDescription: string) => {
     titleRef.current = nextTitle;
     descriptionRef.current = nextDescription;
-    setTitle(nextTitle);
     setDescription(nextDescription);
-    setTitleHasText(nextTitle.trim().length > 0);
+    setDescriptionHasText(nextDescription.trim().length > 0);
     setDraftHasText(nextTitle.trim().length > 0 || nextDescription.trim().length > 0);
   }, []);
 
@@ -869,18 +806,11 @@ export function NewIssueDialog() {
     workMode,
   ]);
 
-  const handleTitleChange = useCallback((nextTitle: string) => {
-    titleRef.current = nextTitle;
-    const nextTitleHasText = nextTitle.trim().length > 0;
-    const nextDraftHasText = nextTitleHasText || descriptionRef.current.trim().length > 0;
-    setTitleHasText((current) => current === nextTitleHasText ? current : nextTitleHasText);
-    setDraftHasText((current) => current === nextDraftHasText ? current : nextDraftHasText);
-    queueDraftSave({ title: nextTitle });
-  }, [queueDraftSave]);
-
   const handleDescriptionChange = useCallback((nextDescription: string) => {
     descriptionRef.current = nextDescription;
-    const nextDraftHasText = titleRef.current.trim().length > 0 || nextDescription.trim().length > 0;
+    const nextDescriptionHasText = nextDescription.trim().length > 0;
+    const nextDraftHasText = titleRef.current.trim().length > 0 || nextDescriptionHasText;
+    setDescriptionHasText((current) => current === nextDescriptionHasText ? current : nextDescriptionHasText);
     setDraftHasText((current) => current === nextDraftHasText ? current : nextDraftHasText);
     queueDraftSave({ description: nextDescription });
   }, [queueDraftSave]);
@@ -921,6 +851,8 @@ export function NewIssueDialog() {
     initializationKeyRef.current = initializationKey;
     setDialogCompanyId(selectedCompanyId);
     executionWorkspaceDefaultProjectId.current = null;
+    hasExplicitAssigneeSourceRef.current = false;
+    assigneeTouchedRef.current = false;
 
     const draft = loadDraft();
     if (newIssueDefaults.parentId) {
@@ -936,7 +868,9 @@ export function NewIssueDialog() {
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceId);
-      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      const parentAssigneeValue = assigneeValueFromSelection(newIssueDefaults);
+      if (parentAssigneeValue) hasExplicitAssigneeSourceRef.current = true;
+      setAssigneeValue(parentAssigneeValue);
       setAssigneeModelLane("primary");
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
@@ -947,9 +881,9 @@ export function NewIssueDialog() {
       executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || defaultProject
         ? defaultProjectId || null
         : null;
-    } else if (newIssueDefaults.title) {
+    } else if (newIssueDefaults.title || newIssueDefaults.description) {
       const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
-      setIssueText(newIssueDefaults.title, newIssueDefaults.description ?? "");
+      setIssueText(newIssueDefaults.title ?? "", newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -957,7 +891,9 @@ export function NewIssueDialog() {
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
-      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      const titledAssigneeValue = assigneeValueFromSelection(newIssueDefaults);
+      if (titledAssigneeValue) hasExplicitAssigneeSourceRef.current = true;
+      setAssigneeValue(titledAssigneeValue);
       setReviewerValue("");
       setApproverValue("");
       setShowReviewerRow(false);
@@ -974,7 +910,7 @@ export function NewIssueDialog() {
       executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
         ? defaultProjectId || null
         : null;
-    } else if (draft && draft.title.trim()) {
+    } else if (draft && draft.description.trim()) {
       const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
@@ -984,10 +920,15 @@ export function NewIssueDialog() {
       setIssueText(draft.title, draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
+      const hasExplicitDraftDefaultsAssignee = Boolean(
+        newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId,
+      );
+      const draftAssigneeValue = draft.assigneeValue ?? draft.assigneeId ?? "";
+      if (hasExplicitDraftDefaultsAssignee || draftAssigneeValue) hasExplicitAssigneeSourceRef.current = true;
       setAssigneeValue(
-        newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
+        hasExplicitDraftDefaultsAssignee
           ? assigneeValueFromSelection(newIssueDefaults)
-          : (draft.assigneeValue ?? draft.assigneeId ?? ""),
+          : draftAssigneeValue,
       );
       setReviewerValue(draft.reviewerValue ?? "");
       setApproverValue(draft.approverValue ?? "");
@@ -1033,7 +974,9 @@ export function NewIssueDialog() {
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
-      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      const freshAssigneeValue = assigneeValueFromSelection(newIssueDefaults);
+      if (freshAssigneeValue) hasExplicitAssigneeSourceRef.current = true;
+      setAssigneeValue(freshAssigneeValue);
       setReviewerValue("");
       setApproverValue("");
       setShowReviewerRow(false);
@@ -1051,6 +994,26 @@ export function NewIssueDialog() {
         : null;
     }
   }, [newIssueOpen, newIssueDefaults, orderedProjects, selectedCompanyId, setIssueText]);
+
+  // Default the assignee to the company's CEO agent once the agent list has
+  // loaded, unless this dialog session already has an explicit assignee from
+  // defaults/draft, or Tom has already picked or cleared one himself.
+  useEffect(() => {
+    if (!newIssueOpen) return;
+    if (hasExplicitAssigneeSourceRef.current) return;
+    if (assigneeTouchedRef.current) return;
+    if (assigneeValue) return;
+    if (!agents) return;
+    const ceoAgent = agents.find((agent) => agent.role === "ceo");
+    if (!ceoAgent) return;
+    setAssigneeValue(assigneeValueFromSelection({ assigneeAgentId: ceoAgent.id }));
+  }, [newIssueOpen, agents, assigneeValue]);
+
+  // The title field is gone; focus the description editor when the dialog opens.
+  useEffect(() => {
+    if (!newIssueOpen) return;
+    descriptionEditorRef.current?.focus();
+  }, [newIssueOpen]);
 
   useEffect(() => {
     if (!supportsAssigneeOverrides) {
@@ -1119,6 +1082,8 @@ export function NewIssueDialog() {
     if (isSubIssueMode) return;
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
+    hasExplicitAssigneeSourceRef.current = false;
+    assigneeTouchedRef.current = false;
     setAssigneeValue("");
     setReviewerValue("");
     setApproverValue("");
@@ -1145,9 +1110,9 @@ export function NewIssueDialog() {
   }
 
   function handleSubmit() {
-    const currentTitle = titleRef.current.trim();
     const currentDescription = descriptionRef.current.trim();
-    if (!effectiveCompanyId || !currentTitle || createIssue.isPending) return;
+    if (!effectiveCompanyId || !currentDescription || createIssue.isPending) return;
+    const currentTitle = titleRef.current.trim() || deriveIssueTitle(currentDescription);
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       lane: assigneeModelLane,
@@ -1387,7 +1352,7 @@ export function NewIssueDialog() {
     [orderedProjects],
   );
   const savedDraft = useMemo(() => newIssueOpen ? loadDraft() : null, [newIssueOpen]);
-  const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
+  const hasSavedDraft = Boolean(savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
     createIssue.error instanceof Error ? createIssue.error.message : "Failed to create task. Try again.";
@@ -1598,20 +1563,6 @@ export function NewIssueDialog() {
         </div>
 
         <div ref={dialogBodyRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          {/* Title */}
-          <div className="px-4 pt-4 pb-2">
-            <IssueTitleTextarea
-              value={title}
-              pending={createIssue.isPending}
-              assigneeValue={assigneeValue}
-              projectId={projectId}
-              descriptionEditorRef={descriptionEditorRef}
-              assigneeSelectorRef={assigneeSelectorRef}
-              projectSelectorRef={projectSelectorRef}
-              onChange={handleTitleChange}
-            />
-          </div>
-
           {effectiveCompanyId ? (
             <div className="px-4 pb-2">
               {neededUserSecretKeys.length > 0 ? (
@@ -1641,6 +1592,7 @@ export function NewIssueDialog() {
                 searchPlaceholder="Search assignees..."
                 emptyMessage="No assignees found."
                 onChange={(value) => {
+                  assigneeTouchedRef.current = true;
                   const nextAssignee = parseAssigneeValue(value);
                   if (nextAssignee.assigneeAgentId) {
                     trackRecentAssignee(nextAssignee.assigneeAgentId);
@@ -2526,7 +2478,7 @@ export function NewIssueDialog() {
             <Button
               size="sm"
               className="min-w-(--sz-8_5rem) disabled:opacity-100"
-              disabled={!titleHasText || createIssue.isPending}
+              disabled={!descriptionHasText || createIssue.isPending}
               onClick={handleSubmit}
               aria-busy={createIssue.isPending}
             >
