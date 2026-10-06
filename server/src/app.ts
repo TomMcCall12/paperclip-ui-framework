@@ -152,6 +152,7 @@ import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
+import { startTaskNotifications } from "./services/task-notifications.js";
 import { createCommandDispatcher } from "./services/command-dispatcher.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { enqueueChatRunMilestones } from "./services/chat-run-publications.js";
@@ -1189,6 +1190,10 @@ export async function createApp(
       logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
     },
   });
+  const stopTaskNotifications = startTaskNotifications(db, {
+    isEnabled: async () => (await instanceSettingsService(db).getExperimental()).enableTaskNotifications === true,
+    send: (companyId, text) => chatChannels.sendBoardTelegramNotice(companyId, text),
+  });
   const unsubscribeChatPublicationSignals = subscribeAllCompanyLiveEvents(
     (event) => {
       if (isChatPublicationCommitSignal(event))
@@ -1324,6 +1329,7 @@ export async function createApp(
       jobCoordinator.stop();
       disableFeedbackExportFlushes();
       unsubscribeChatPublicationSignals();
+      stopTaskNotifications();
       chatReconciliation.stop();
       if (chatPublicationTimer) {
         clearInterval(chatPublicationTimer);

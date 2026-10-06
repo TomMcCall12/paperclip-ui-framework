@@ -152,6 +152,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableTaskNotifications: {
+    title: "Task notifications",
+    description: "Message the board on the company's Telegram bot when an agent finishes, blocks on or hands back one of its tasks.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableConferenceRoomChat: {
     title: "Conference Room Chat",
     description:

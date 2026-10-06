@@ -518,6 +518,18 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle summaries experimental setting"
         />
 
+        <ExperimentalToggleCard
+          title="Task notifications"
+          description="Message you on the company's Telegram bot when an agent finishes, blocks on or hands back one of your tasks."
+          footnote="Only top-level tasks are announced, and only to someone who has messaged the bot."
+          checked={experimentalQuery.data?.enableTaskNotifications ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableTaskNotifications: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableTaskNotifications"
+          managed={managedKeys.enableTaskNotifications}
+          ariaLabel="Toggle task notifications experimental setting"
+        />
+
         {enableIsolatedWorkspaces && (
           <ExperimentalToggleCard
             title="Use Isolated Workspaces By Default"

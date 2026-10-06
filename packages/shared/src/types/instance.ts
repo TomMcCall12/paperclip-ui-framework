@@ -79,6 +79,8 @@ export interface InstanceExperimentalSettings {
   enablePipelines: boolean;
   enableCases: boolean;
   enableAgentChat: boolean;
+  /** Message the board on the company's Telegram bot when an agent finishes, blocks on or hands back one of its tasks. */
+  enableTaskNotifications: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;

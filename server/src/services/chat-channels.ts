@@ -38403,7 +38403,52 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     };
   });
 
+  /**
+   * Send a short notice to the board through the company's active Telegram
+   * bot, in the board's most recent direct chat with it. Used for task
+   * notifications; the bot can only reach someone who has messaged it.
+   */
+  async function sendBoardTelegramNotice(companyId: string, text: string): Promise<{ sent: boolean; reason?: string }> {
+    const [endpoint] = await db
+      .select()
+      .from(chatEndpoints)
+      .where(and(
+        eq(chatEndpoints.companyId, companyId),
+        eq(chatEndpoints.provider, "telegram"),
+        eq(chatEndpoints.status, "active"),
+        isNull(chatEndpoints.archivedAt),
+      ))
+      .orderBy(desc(chatEndpoints.lastEventAt))
+      .limit(1);
+    if (!endpoint) return { sent: false, reason: "no active Telegram bot" };
+    const [conversation] = await db
+      .select({ chatId: chatConversations.externalConversationId })
+      .from(chatConversations)
+      .where(and(
+        eq(chatConversations.companyId, companyId),
+        eq(chatConversations.endpointId, endpoint.id),
+        eq(chatConversations.isDirectMessage, true),
+      ))
+      .orderBy(desc(chatConversations.lastActivityAt))
+      .limit(1);
+    if (!conversation?.chatId) return { sent: false, reason: "nobody has messaged the bot yet" };
+    const credentials = await resolveCredentials(endpoint);
+    if (!credentials.botToken) return { sent: false, reason: "bot token unavailable" };
+    const response = await fetchImpl(
+      `https://api.telegram.org/bot${encodeURIComponent(credentials.botToken)}/sendMessage`,
+      {
+        method: "POST",
+        signal: AbortSignal.timeout(PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: conversation.chatId, text: text.slice(0, 4000), disable_web_page_preview: true }),
+      },
+    );
+    const result = (await response.json().catch(() => ({}))) as { ok?: boolean; description?: string };
+    return response.ok && result.ok ? { sent: true } : { sent: false, reason: result.description ?? `HTTP ${response.status}` };
+  }
+
   return {
+    sendBoardTelegramNotice,
     saveGitHubSetupProgress: async (endpointId: string, stage: NonNullable<ChatEndpointSetupState["github"]>["stage"]) => {
       const record = await endpointRecord(endpointId);
       if (!record || record.endpoint.provider !== "github") throw notFound("GitHub bot not found");
