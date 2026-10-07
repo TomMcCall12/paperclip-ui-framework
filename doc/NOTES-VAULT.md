@@ -31,6 +31,8 @@ All routes are company-scoped. If the caller has no vault access, the status rou
 | `GET /api/companies/{companyId}/notes-vault/list?path=<folder>` | List a folder. Hidden entries are left out. |
 | `GET /api/companies/{companyId}/notes-vault/file?path=<file>` | Read a file. Returns `content`, `sha256` and `bytes`. |
 | `POST /api/companies/{companyId}/notes-vault/file` | Write a file. Body: `{ path, mode: "create" \| "append" \| "replace", content, baseSha256?, summary }`. |
+| `GET /api/companies/{companyId}/notes-vault/sync` | Readers: status of the two-way sync with the vault's cloud copy: `enabled`, `running`, `lastSuccessAt`, `lastOk`, `lastError`, `lastConflicts`, `nextRunAt`. |
+| `POST /api/companies/{companyId}/notes-vault/sync` | Writers: sync now instead of at the next scheduled time. Returns 202 with the status, or 409 when no cloud copy is set up. Logged as `notes_vault.sync_requested`. |
 
 ## Setup
 
@@ -48,3 +50,25 @@ All routes are company-scoped. If the caller has no vault access, the status rou
    | `PAPERCLIP_NOTES_VAULT_CHANGELOG_PATH` | Optional. Defaults to `vault-changelog.md`. |
 
 3. Give the writing agents the `notes-vault` skill so they know the API and the rules.
+
+## Two-way sync with a cloud copy (optional)
+
+People often open the vault on their own devices from a cloud folder, for example a Google Drive folder that Obsidian opens on a computer. The bridge can keep that copy and the vault in step, both ways, with [`rclone bisync`](https://rclone.org/bisync/):
+
+- **Schedule.** It syncs every 5 minutes, and 30 seconds after any write through the bridge.
+- **Both sides keep their changes.** A file changed on only one side is copied to the other. If the same file changed on both sides, the newer version wins and the other is kept beside it as `name.sync-conflict1.md`.
+- **Deletes are copied too.** rclone stops any run that would delete more than half the files on one side (for example when a mount is empty) and reports the error in the sync status. Nothing is deleted then. An operator runs that sync by hand with `--force` once they have checked it.
+- **First sync.** The first run, and any recovery after a failed run, merges both sides. Nothing is deleted then, and where both copies of a file differ, the newer one wins.
+- **Ownership.** Files the sync creates are given to `VAULT_OWNER_UID`/`VAULT_OWNER_GID`, like files written through the API.
+
+To turn it on, give the bridge an rclone remote for the cloud folder:
+
+| Bridge variable | Value |
+|---|---|
+| `VAULT_SYNC_REMOTE` | rclone remote and folder, for example `gdrive:My Vault`. Sync is off when unset. |
+| `VAULT_SYNC_CONFIG` | rclone config file with that remote. It must be writable, because rclone saves refreshed tokens. |
+| `VAULT_SYNC_STATE_DIR` | Writable folder for bisync's listings, cache and lock. Keep it across restarts. |
+| `VAULT_SYNC_RCLONE` | Optional. The rclone binary (default `rclone`); a static rclone binary can be mounted read-only. |
+| `VAULT_SYNC_INTERVAL_SEC` / `VAULT_SYNC_AFTER_WRITE_SEC` | Optional. Default 300 and 30. |
+
+Only the bridge holds the rclone config, so agents never see the cloud account's token.

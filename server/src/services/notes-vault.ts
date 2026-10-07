@@ -4,6 +4,7 @@ import type {
   NotesVaultListing,
   NotesVaultStatus,
   NotesVaultWrite,
+  NotesVaultSyncStatus,
   NotesVaultWriteResult,
 } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
@@ -122,7 +123,7 @@ export function assertNotesVaultWriteAllowed(
 type BridgeErrorBody = { error?: string; code?: string };
 
 export function notesVaultBridgeClient(config: NotesVaultConfig, fetchImpl: typeof fetch = fetch) {
-  async function call<T>(route: "/list" | "/read" | "/write", body: Record<string, unknown>): Promise<T> {
+  async function call<T>(route: "/list" | "/read" | "/write" | "/sync/status" | "/sync/run", body: Record<string, unknown>): Promise<T> {
     let response: Response;
     try {
       response = await fetchImpl(`${config.bridgeUrl}${route}`, {
@@ -156,6 +157,26 @@ export function notesVaultBridgeClient(config: NotesVaultConfig, fetchImpl: type
         summary: input.summary,
         actor: actorLabel,
       }),
+    syncStatus: async () => pickSyncStatus(await call<Record<string, unknown>>("/sync/status", {})),
+    syncNow: async () => pickSyncStatus(await call<Record<string, unknown>>("/sync/run", {})),
+  };
+}
+
+/** Only the fields Paperclip documents; the bridge's remote name and paths stay with the operator. */
+function pickSyncStatus(raw: Record<string, unknown>): NotesVaultSyncStatus {
+  if (raw.enabled !== true) return { enabled: false };
+  const text = (value: unknown) => (typeof value === "string" ? value : null);
+  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  return {
+    enabled: true,
+    running: raw.running === true,
+    lastSuccessAt: text(raw.lastSuccessAt),
+    lastFinishedAt: text(raw.lastFinishedAt),
+    lastOk: typeof raw.lastOk === "boolean" ? raw.lastOk : null,
+    lastError: text(raw.lastError),
+    lastConflicts: count(raw.lastConflicts),
+    consecutiveFailures: count(raw.consecutiveFailures),
+    nextRunAt: text(raw.nextRunAt),
   };
 }
 

@@ -51,6 +51,19 @@ POST /api/companies/{companyId}/notes-vault/file
 - **replace** rewrites a whole file. It needs `baseSha256` from your latest read and fails with 409 if the file changed since. If that happens, read the file again, merge your change, and retry.
 - `summary` is one line that goes into the vault changelog with your name, so make it say what changed. Don't write the changelog yourself.
 
+## Sync with the board's devices
+
+The vault may also have a cloud copy, for example the Google Drive folder the board opens in Obsidian. Paperclip keeps the two in step both ways: your writes reach the cloud copy within about a minute, and the board's edits reach the vault within 5 minutes.
+
+```
+GET  /api/companies/{companyId}/notes-vault/sync   # status: lastSuccessAt, lastOk, lastError, nextRunAt
+POST /api/companies/{companyId}/notes-vault/sync   # writers: sync now, for example before reading a note the board just edited
+```
+
+- `enabled: false` means the vault has no cloud copy.
+- A file named `name.sync-conflict1.md` means the board and an agent changed the same note at the same time. The other version is in the file without the suffix. Tell the board; don't merge or delete either one yourself.
+- If `lastOk` is false, mention `lastError` in your task comment. Fixing the sync is the board's or an operator's job.
+
 ## Rules
 
 1. **Read before you write.** Follow the vault's own conventions (folders, headings, links), which its root notes describe.

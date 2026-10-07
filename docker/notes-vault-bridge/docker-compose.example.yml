@@ -16,9 +16,18 @@ services:
       VAULT_CHANGELOG_PATH: vault-changelog.md
       VAULT_OWNER_UID: "1000"
       VAULT_OWNER_GID: "1000"
+      # Optional two-way sync with a cloud copy of the vault (doc/NOTES-VAULT.md).
+      # VAULT_SYNC_REMOTE: "gdrive:My Vault"
+      # VAULT_SYNC_CONFIG: /sync/rclone.conf
+      # VAULT_SYNC_STATE_DIR: /sync
     volumes:
       - "/path/to/your/vault:/vault"
       - "./notes-vault-bridge:/bridge:ro"
+      # For sync: a static rclone binary and a writable folder holding rclone.conf.
+      # - "/usr/bin/rclone:/usr/local/bin/rclone:ro"
+      # - "/path/to/vault-sync:/sync"
+    tmpfs:
+      - /tmp
     read_only: true
     cap_drop: [ALL]
     cap_add: [DAC_OVERRIDE, CHOWN, FOWNER]

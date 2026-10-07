@@ -106,6 +106,46 @@ describe("notes vault routes with a real bridge", () => {
       .toEqual({ enabled: false, access: "none", aiFilePrefix: null, changelogPath: null });
   });
 
+  it("shows sync status to readers and lets only writers ask for a sync", async () => {
+    // This bridge has no cloud copy set up.
+    const status = await request(app(agent(READER))).get(`/api/companies/${COMPANY}/notes-vault/sync`);
+    expect(status.status).toBe(200);
+    expect(status.body).toEqual({ enabled: false });
+    expect((await request(app(agent(STRANGER))).get(`/api/companies/${COMPANY}/notes-vault/sync`)).status).toBe(404);
+    expect((await request(app(agent(READER))).post(`/api/companies/${COMPANY}/notes-vault/sync`)).status).toBe(403);
+    const run = await request(app(agent(WRITER))).post(`/api/companies/${COMPANY}/notes-vault/sync`);
+    expect(run.status).toBe(409);
+    expect(run.body.code).toBe("vault_sync_disabled");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("passes on documented sync fields only and logs a sync request", async () => {
+    const fetchImpl = (async (url: string) => {
+      const body = url.endsWith("/sync/run")
+        ? { enabled: true, running: false, lastOk: true, lastSuccessAt: "2026-10-07T11:00:00.000Z", nextRunAt: "2026-10-07T11:00:01.000Z", remote: "gdrive:Secret Folder" }
+        : { enabled: true, running: false, lastOk: false, lastError: "ERROR : Safety abort", consecutiveFailures: 2, remote: "gdrive:Secret Folder" };
+      return new Response(JSON.stringify(body), { status: url.endsWith("/sync/run") ? 202 : 200 });
+    }) as typeof fetch;
+    const withFakeBridge = express();
+    withFakeBridge.use(express.json());
+    withFakeBridge.use((req, _res, next) => {
+      (req as any).actor = agent(WRITER);
+      next();
+    });
+    withFakeBridge.use("/api", notesVaultRoutes(fakeDb, { config: config(), fetchImpl }));
+    withFakeBridge.use(errorHandler);
+
+    const status = await request(withFakeBridge).get(`/api/companies/${COMPANY}/notes-vault/sync`);
+    expect(status.body).toMatchObject({ enabled: true, lastOk: false, lastError: "ERROR : Safety abort", consecutiveFailures: 2 });
+    expect(status.body).not.toHaveProperty("remote");
+
+    const run = await request(withFakeBridge).post(`/api/companies/${COMPANY}/notes-vault/sync`);
+    expect(run.status).toBe(202);
+    expect(run.body).toMatchObject({ enabled: true, lastOk: true, nextRunAt: "2026-10-07T11:00:01.000Z" });
+    expect(run.body).not.toHaveProperty("remote");
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "notes_vault.sync_requested", agentId: WRITER }));
+  });
+
   it("hides the vault from agents without access and from other companies", async () => {
     expect((await request(app(agent(STRANGER))).get(`/api/companies/${COMPANY}/notes-vault/file`).query({ path: "03 Projects/Plan.md" })).status).toBe(404);
     expect((await request(app(agent(WRITER, OTHER_COMPANY))).get(`/api/companies/${COMPANY}/notes-vault/list`)).status).toBe(403);

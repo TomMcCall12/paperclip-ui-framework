@@ -50,6 +50,33 @@ export function notesVaultRoutes(
     res.json(await bridge!.read(queryPath(req.query.path)));
   });
 
+  router.get("/companies/:companyId/notes-vault/sync", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertNotesVaultAccess(accessFor(req, companyId), "read");
+    res.json(await bridge!.syncStatus());
+  });
+
+  /** Syncs the vault with its cloud copy now instead of at the next scheduled sync. */
+  router.post("/companies/:companyId/notes-vault/sync", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertNotesVaultAccess(accessFor(req, companyId), "write");
+    const status = await bridge!.syncNow();
+    const actorInfo = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actorInfo.actorType,
+      actorId: actorInfo.actorId,
+      agentId: actorInfo.agentId,
+      runId: actorInfo.runId,
+      agentApiKeyId: actorInfo.agentApiKeyId,
+      action: "notes_vault.sync_requested",
+      entityType: "notes_vault",
+      entityId: companyId,
+      details: {},
+    });
+    res.status(202).json(status);
+  });
+
   router.post("/companies/:companyId/notes-vault/file", validate(notesVaultWriteSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const access = accessFor(req, companyId);

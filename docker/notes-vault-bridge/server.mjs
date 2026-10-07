@@ -13,7 +13,17 @@
 //   VAULT_MAX_FILE_BYTES    largest file read or written (default 524288)
 //   VAULT_UMASK             octal umask for new files and folders (default 002, group-writable)
 //   VAULT_OWNER_UID/GID     owner given to new files and folders (optional; needs CAP_CHOWN)
+//
+// Optional two-way sync with a cloud copy of the vault (for example the Google
+// Drive folder Obsidian opens on a computer), with `rclone bisync`:
+//   VAULT_SYNC_REMOTE           rclone remote path, e.g. "gdrive:My Vault"; no sync when unset
+//   VAULT_SYNC_RCLONE           rclone binary (default "rclone")
+//   VAULT_SYNC_CONFIG           rclone config file; rclone rewrites it when its token refreshes
+//   VAULT_SYNC_STATE_DIR        writable folder for bisync listings, cache and lock
+//   VAULT_SYNC_INTERVAL_SEC     seconds between syncs (default 300)
+//   VAULT_SYNC_AFTER_WRITE_SEC  sync this soon after a write through the bridge (default 30)
 
+import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
@@ -242,6 +252,204 @@ export function createVaultBridge(options) {
   return { root, list, read, write };
 }
 
+const SYNC_EXCLUDES = [".DS_Store", "desktop.ini", "Thumbs.db", ".~lock.*", "~$*"];
+const SYNC_OUTPUT_LIMIT = 64 * 1024;
+const SYNC_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Arguments for one `rclone bisync` run. Both sides keep their changes: when
+ * the same file changed on both, the newer one wins and the other is kept
+ * beside it as "name.sync-conflict1.md". rclone's own --max-delete guard stops
+ * a run that would delete half the vault (for example an empty mount).
+ */
+export function bisyncArgs({ root, remote, config, stateDir, resync = false }) {
+  const args = [
+    "bisync", root, remote,
+    "--workdir", path.join(stateDir, "bisync"),
+    "--cache-dir", path.join(stateDir, "cache"),
+    "--create-empty-src-dirs",
+    "--compare", "size,modtime",
+    "--resilient", "--recover",
+    "--max-lock", "5m",
+    "--conflict-resolve", "newer",
+    "--conflict-loser", "num",
+    "--conflict-suffix", "sync-conflict",
+    "--suffix-keep-extension",
+    "--drive-skip-gdocs",
+    "--log-level", "NOTICE",
+  ];
+  if (config) args.push("--config", config);
+  for (const pattern of SYNC_EXCLUDES) args.push("--exclude", pattern);
+  // The first run, or a recovery, merges both sides; nothing is deleted.
+  if (resync) args.push("--resync", "--resync-mode", "newer");
+  return args;
+}
+
+function runProcess(command, args, env) {
+  return new Promise((resolve) => {
+    let output = "";
+    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    const collect = (chunk) => {
+      output = (output + chunk.toString("utf8")).slice(-SYNC_OUTPUT_LIMIT);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    const timer = setTimeout(() => child.kill("SIGTERM"), SYNC_TIMEOUT_MS);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ code: null, output: `${output}\n${error.message}` });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, output });
+    });
+  });
+}
+
+/** Gives files rclone created (owned by root here) to the vault owner, so people can still edit them. */
+async function adoptRootOwned(dir, owner) {
+  if (!owner) return;
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const absolute = path.join(dir, entry.name);
+    const stat = await fs.lstat(absolute);
+    if (stat.isSymbolicLink()) continue;
+    if (stat.uid === 0) await fs.chown(absolute, owner.uid, owner.gid);
+    if (stat.isDirectory()) await adoptRootOwned(absolute, owner);
+  }
+}
+
+export function createVaultSync(options) {
+  const root = path.resolve(options.root);
+  const remote = options.remote;
+  const stateDir = path.resolve(options.stateDir);
+  const intervalMs = options.intervalMs ?? 300_000;
+  const afterWriteMs = options.afterWriteMs ?? 30_000;
+  const run = options.run ?? runProcess;
+  const now = options.now ?? (() => new Date());
+  const owner = Number.isInteger(options.ownerUid) && Number.isInteger(options.ownerGid)
+    ? { uid: options.ownerUid, gid: options.ownerGid }
+    : null;
+  const state = {
+    enabled: true,
+    remote,
+    running: false,
+    lastStartedAt: null,
+    lastFinishedAt: null,
+    lastSuccessAt: null,
+    lastOk: null,
+    lastError: null,
+    lastConflicts: 0,
+    consecutiveFailures: 0,
+    nextRunAt: null,
+  };
+  let timer = null;
+  let rerun = false;
+  let stopped = false;
+
+  async function hasListings() {
+    try {
+      const names = await fs.readdir(path.join(stateDir, "bisync"));
+      return names.some((name) => name.endsWith(".path1.lst"));
+    } catch {
+      return false;
+    }
+  }
+
+  function schedule(delayMs) {
+    if (stopped) return;
+    const at = Date.now() + Math.max(0, delayMs);
+    if (timer && state.nextRunAt && Date.parse(state.nextRunAt) <= at) return;
+    if (timer) clearTimeout(timer);
+    state.nextRunAt = new Date(at).toISOString();
+    timer = setTimeout(() => {
+      timer = null;
+      state.nextRunAt = null;
+      void runOnce();
+    }, Math.max(0, delayMs));
+    timer.unref?.();
+  }
+
+  async function runOnce() {
+    if (state.running) {
+      rerun = true;
+      return status();
+    }
+    state.running = true;
+    state.lastStartedAt = now().toISOString();
+    try {
+      await fs.mkdir(path.join(stateDir, "bisync"), { recursive: true });
+      await fs.mkdir(path.join(stateDir, "cache"), { recursive: true });
+      const env = {
+        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+        HOME: stateDir,
+        XDG_CACHE_HOME: path.join(stateDir, "cache"),
+      };
+      const bisync = (resync) => run(options.rclone ?? "rclone", bisyncArgs({ root, remote, config: options.config, stateDir, resync }), env);
+      const firstRun = !(await hasListings());
+      let result = await bisync(firstRun);
+      // bisync asks for a resync after a critical failure; merging both sides loses nothing.
+      if (result.code !== 0 && !firstRun && /must run --resync/i.test(result.output)) {
+        result = await bisync(true);
+      }
+      state.lastConflicts = (result.output.match(/sync-conflict\d/g) ?? []).length;
+      if (result.code === 0) {
+        await adoptRootOwned(root, owner);
+        state.lastOk = true;
+        state.lastError = null;
+        state.lastSuccessAt = now().toISOString();
+        state.consecutiveFailures = 0;
+      } else {
+        const lines = result.output.split("\n").map((line) => line.trim()).filter((line) => /ERROR|abort|critical/i.test(line));
+        state.lastOk = false;
+        state.lastError = (lines.slice(-3).join(" | ") || `rclone exited with ${result.code}`).slice(0, 600);
+        state.consecutiveFailures += 1;
+        console.error("vault sync failed", state.lastError);
+      }
+    } catch (error) {
+      state.lastOk = false;
+      state.lastError = String(error?.message ?? error).slice(0, 600);
+      state.consecutiveFailures += 1;
+      console.error("vault sync error", state.lastError);
+    } finally {
+      state.running = false;
+      state.lastFinishedAt = now().toISOString();
+    }
+    if (rerun) {
+      rerun = false;
+      schedule(0);
+    } else {
+      schedule(intervalMs);
+    }
+    return status();
+  }
+
+  function status() {
+    return { ...state };
+  }
+
+  return {
+    start(initialDelayMs = 10_000) {
+      schedule(initialDelayMs);
+    },
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+    /** Asks for a sync soon, for example after a write; repeated requests share one run. */
+    requestSoon(delayMs = afterWriteMs) {
+      if (state.running) {
+        rerun = true;
+        return;
+      }
+      schedule(delayMs);
+    },
+    runOnce,
+    status,
+  };
+}
+
 function tokenMatches(expected, header) {
   if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
   const given = Buffer.from(header.slice("Bearer ".length));
@@ -268,6 +476,7 @@ async function readJsonBody(req, limit) {
 export function createVaultBridgeServer(options) {
   if (!options.token || options.token.length < 24) throw new Error("VAULT_BRIDGE_TOKEN must be at least 24 characters");
   const bridge = createVaultBridge(options);
+  const sync = options.sync ?? null;
   const bodyLimit = (options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES) * 2 + 16 * 1024;
   return createServer(async (req, res) => {
     const send = (status, body) => {
@@ -281,7 +490,17 @@ export function createVaultBridgeServer(options) {
       const body = await readJsonBody(req, bodyLimit);
       if (req.url === "/list") return send(200, await bridge.list(body.path ?? ""));
       if (req.url === "/read") return send(200, await bridge.read(body.path));
-      if (req.url === "/write") return send(200, await bridge.write(body));
+      if (req.url === "/write") {
+        const written = await bridge.write(body);
+        sync?.requestSoon();
+        return send(200, written);
+      }
+      if (req.url === "/sync/status") return send(200, sync ? sync.status() : { enabled: false });
+      if (req.url === "/sync/run") {
+        if (!sync) return send(409, { error: "Sync is not set up for this vault.", code: "vault_sync_disabled" });
+        sync.requestSoon(0);
+        return send(202, sync.status());
+      }
       return send(404, { error: "Not found" });
     } catch (error) {
       if (error instanceof VaultBridgeError) return send(error.status, { error: error.message, code: error.code });
@@ -299,13 +518,33 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (!root) throw new Error("VAULT_ROOT is required");
   process.umask(Number.parseInt(process.env.VAULT_UMASK ?? "002", 8));
   const port = Number.parseInt(process.env.VAULT_BRIDGE_PORT ?? "8787", 10);
+  const ownerUid = process.env.VAULT_OWNER_UID ? Number.parseInt(process.env.VAULT_OWNER_UID, 10) : undefined;
+  const ownerGid = process.env.VAULT_OWNER_GID ? Number.parseInt(process.env.VAULT_OWNER_GID, 10) : undefined;
+  const syncRemote = process.env.VAULT_SYNC_REMOTE?.trim();
+  let sync = null;
+  if (syncRemote) {
+    if (!process.env.VAULT_SYNC_STATE_DIR) throw new Error("VAULT_SYNC_STATE_DIR is required when VAULT_SYNC_REMOTE is set");
+    sync = createVaultSync({
+      root,
+      remote: syncRemote,
+      rclone: process.env.VAULT_SYNC_RCLONE || "rclone",
+      config: process.env.VAULT_SYNC_CONFIG || undefined,
+      stateDir: process.env.VAULT_SYNC_STATE_DIR,
+      intervalMs: Number.parseInt(process.env.VAULT_SYNC_INTERVAL_SEC ?? "300", 10) * 1000,
+      afterWriteMs: Number.parseInt(process.env.VAULT_SYNC_AFTER_WRITE_SEC ?? "30", 10) * 1000,
+      ownerUid,
+      ownerGid,
+    });
+    sync.start();
+  }
   const server = createVaultBridgeServer({
     root,
     token: process.env.VAULT_BRIDGE_TOKEN ?? "",
     changelogPath: process.env.VAULT_CHANGELOG_PATH || "vault-changelog.md",
-    ownerUid: process.env.VAULT_OWNER_UID ? Number.parseInt(process.env.VAULT_OWNER_UID, 10) : undefined,
-    ownerGid: process.env.VAULT_OWNER_GID ? Number.parseInt(process.env.VAULT_OWNER_GID, 10) : undefined,
+    ownerUid,
+    ownerGid,
     maxFileBytes: process.env.VAULT_MAX_FILE_BYTES ? Number.parseInt(process.env.VAULT_MAX_FILE_BYTES, 10) : undefined,
+    sync,
   });
-  server.listen(port, "0.0.0.0", () => console.log(`vault bridge listening on ${port}`));
+  server.listen(port, "0.0.0.0", () => console.log(`vault bridge listening on ${port}${sync ? `, syncing with ${syncRemote}` : ""}`));
 }

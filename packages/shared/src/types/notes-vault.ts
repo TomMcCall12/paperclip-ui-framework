@@ -39,3 +39,19 @@ export interface NotesVaultWriteResult {
   previousSha256: string | null;
   bytes: number;
 }
+
+/** Two-way sync between the vault and its cloud copy (for example the Google Drive folder Obsidian opens). */
+export interface NotesVaultSyncStatus {
+  /** False when the vault has no cloud copy set up. */
+  enabled: boolean;
+  running?: boolean;
+  lastSuccessAt?: string | null;
+  lastFinishedAt?: string | null;
+  lastOk?: boolean | null;
+  /** The last failure, in rclone's words, when the last sync failed. */
+  lastError?: string | null;
+  /** Files kept as "name.sync-conflict1.md" because both sides changed them. */
+  lastConflicts?: number;
+  consecutiveFailures?: number;
+  nextRunAt?: string | null;
+}
