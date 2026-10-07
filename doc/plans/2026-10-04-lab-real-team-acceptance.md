@@ -239,3 +239,14 @@ Tom keeps Hermes running, but wants Tom's Lab to do these itself.
   - Tested: the edit on a copy (replace, add, block scalar, quotes) and every refusal path through the agent key. Not yet tested: a full approved change.
   - The `toms-lab-self-update` skill and Jarvis's routing explain it.
 - **TOM-127:** the Hormozi agent already has vault write access (live since 6 Oct). Its book notes are among the Drive-only files the sync will bring in.
+
+## 7 Oct: Claude and OpenAI models, and one rebuild queue
+- **Models (`032f46b`, doc/MODEL-PROVIDERS.md):** agents on Claude Code or Codex pick from one model list with Claude and OpenAI headings, on the agent and on each task.
+  - **Agent switch:** a model under the other heading moves the agent there. It keeps its instructions, skills, secrets, folder and limits, maps its effort, and switches its AI connection: the responsible person's OpenAI account, or back to the machine's Claude login via `aiConnection: null`.
+  - **Task switch:** `assigneeAdapterOverrides.adapterType` runs one task on the other provider. The run log names the provider, and run views parse the output with the adapter that ran.
+- **One rebuild for everything:** Tom asked for a single rebuild after the Tom's Lab SSD move.
+  - The separate tom60 build was cancelled; both attempts had already been stopped by the memory guard.
+  - The pending Tom's Lab branches were merged into `feat/terra-simple-autonomy`: TOM-142 and TOM-118 (both dashboard cards kept), TOM-120, TOM-125 and TOM-133.
+  - Combined checks: UI and server typecheck, and the tests for every merged change.
+  - The queue task holds the list and Tom's one approval.
+- **After the rebuild:** Jarvis's model guidance gains OpenAI per-task models (text in the queue task). Until then the live server rejects `adapterType` in task overrides.
