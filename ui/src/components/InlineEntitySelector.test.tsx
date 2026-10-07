@@ -89,6 +89,49 @@ describe("InlineEntitySelector", () => {
     });
   });
 
+  it("shows a heading above each group and keeps grouped options in order", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value="codex_local|gpt-6-sol"
+          options={[
+            { id: "claude_local|claude-sonnet-5", label: "Claude Sonnet 5", group: "Claude" },
+            { id: "claude_local|claude-opus-5-5", label: "Claude Opus 5.5", group: "Claude" },
+            { id: "codex_local|gpt-6-sol", label: "gpt-6-sol", group: "OpenAI" },
+          ]}
+          placeholder="Model"
+          noneLabel="Default model"
+          searchPlaceholder="Search models..."
+          emptyMessage="No models found."
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement | null;
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const list = document.querySelector("[data-mobile-entity-picker-list]");
+    const rows = Array.from(list?.children ?? []).map((row) => row.textContent?.trim());
+    // The selected option stays under its heading instead of moving to the top.
+    expect(rows).toEqual(["Default model", "Claude", "Claude Sonnet 5", "Claude Opus 5.5", "OpenAI", "gpt-6-sol"]);
+
+    const openai = Array.from(list?.querySelectorAll("button") ?? []).find((button) => button.textContent?.trim() === "gpt-6-sol");
+    await act(async () => {
+      openai?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith("codex_local|gpt-6-sol");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("focuses the search input when opened on coarse pointers", async () => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: query === "(pointer: coarse)" || query === "(max-width: 40rem)",

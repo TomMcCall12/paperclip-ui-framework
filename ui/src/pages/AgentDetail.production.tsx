@@ -3232,6 +3232,12 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
+/** A task can run on the other model provider; read the run's output with the adapter that produced it. */
+function runAdapterType(run: HeartbeatRun, agentAdapterType: string): string {
+  const executed = run.contextSnapshot?.executedAdapterType;
+  return typeof executed === "string" && executed.length > 0 ? executed : agentAdapterType;
+}
+
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -3708,7 +3714,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       })()}
 
       {/* Log viewer */}
-      <LogViewer run={run} adapterType={adapterType} />
+      <LogViewer run={run} adapterType={runAdapterType(run, adapterType)} />
       <ScrollToBottom />
     </div>
   );

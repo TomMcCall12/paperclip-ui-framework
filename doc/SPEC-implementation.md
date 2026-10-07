@@ -258,6 +258,8 @@ See `doc/project-repositories.md` for the API and UI contract.
 - Work mode is explicit persisted state. Titles, descriptions, and requested deliverables never select or change it. A `standard` task may deliver a requested plan, including a canonical `plan` document, and complete without entering `planning` mode. Existing explicit approval requirements still apply.
 - `billing_code` text null
 - `assignee_adapter_overrides` jsonb null
+  - task-level settings merged over the assignee's adapter config for this task only; local coding agents accept only model, effort and run-budget keys
+  - `adapterType` (`claude_local` or `codex_local`) runs a Claude Code or Codex assignee on the other model provider for this task; `adapterConfig` is then checked against that provider (see `doc/MODEL-PROVIDERS.md`)
 - `execution_policy` jsonb null
 - `execution_state` jsonb null
 - execution workspace fields: `execution_workspace_id`, `execution_workspace_preference`, `execution_workspace_settings`

@@ -2222,10 +2222,14 @@ describe("IssueProperties", () => {
         icon: null,
       },
     ]);
-    mockAgentsApi.adapterModels.mockResolvedValue([
-      { id: "gpt-6-astra", label: "gpt-6-astra" },
-      { id: "gpt-5.4", label: "GPT-5.4" },
-    ]);
+    // The picker lists both providers; each catalog has its own models.
+    mockAgentsApi.adapterModels.mockImplementation(async (_companyId: string, adapterType: string) =>
+      adapterType === "codex_local"
+        ? [
+            { id: "gpt-6-astra", label: "gpt-6-astra" },
+            { id: "gpt-5.4", label: "GPT-5.4" },
+          ]
+        : [{ id: "claude-sonnet-5", label: "Claude Sonnet 5" }]);
 
     const root = renderProperties(container, {
       issue: createIssue({
@@ -2264,6 +2268,58 @@ describe("IssueProperties", () => {
           model: "gpt-6-astra",
           modelReasoningEffort: "high",
         },
+      },
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("runs one task of a Claude agent on an OpenAI model, under its own heading", async () => {
+    const onUpdate = vi.fn();
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Software Engineer",
+        role: "engineer",
+        title: null,
+        status: "active",
+        adapterType: "claude_local",
+        icon: null,
+      },
+    ]);
+    mockAgentsApi.adapterModels.mockImplementation(async (_companyId: string, adapterType: string) =>
+      adapterType === "codex_local"
+        ? [{ id: "gpt-6-sol", label: "gpt-6-sol" }]
+        : [{ id: "claude-sonnet-5", label: "Claude Sonnet 5" }]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeAgentId: "agent-1",
+        assigneeAdapterOverrides: { adapterConfig: { model: "claude-sonnet-5", effort: "high", chrome: true } },
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+    await flush();
+
+    let openaiButton: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      openaiButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("gpt-6-sol"));
+      expect(openaiButton).not.toBeUndefined();
+    });
+    expect(container.textContent).toContain("Claude");
+    expect(container.textContent).toContain("OpenAI");
+
+    await act(async () => {
+      openaiButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      assigneeAdapterOverrides: {
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-6-sol", modelReasoningEffort: "high" },
       },
     });
 

@@ -62,7 +62,8 @@ export const createAgentInstructionsBundleSchema = z.object({
 });
 
 export const agentRuntimeConfigSchema = z.object({
-  aiConnection: aiConnectionBindingSchema.optional(),
+  // null on an update removes the agent's AI connection.
+  aiConnection: aiConnectionBindingSchema.nullable().optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),

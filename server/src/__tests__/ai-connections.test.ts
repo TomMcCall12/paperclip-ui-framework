@@ -722,6 +722,56 @@ describe("managed AI connections", () => {
     }
   });
 
+  it("removes an agent's AI connection only when an update sends null, as when it moves back to Claude", async () => {
+    const { agentRoutes } = await import("../routes/agents.js");
+    const id = randomUUID();
+    const openai = { provider: "openai", method: "subscription", mode: "responsible_user" } as const;
+    await db.insert(agents).values({
+      id,
+      companyId,
+      name: "Provider switch",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-6-sol", cwd: "/work" },
+      runtimeConfig: { aiConnection: openai, heartbeat: { enabled: false } },
+    });
+    const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Provider switch account", apiKey: "fixture-switch-key", agentIds: [id], allAgents: false }, "fixture-switch-key");
+    await service.setDefault(companyId, "alice", account.grantId);
+    const providerRequest = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 200 }));
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const probe = vi.spyOn(requireServerAdapter("codex_local"), "testEnvironment").mockResolvedValue({ adapterType: "codex_local", status: "pass", testedAt: new Date().toISOString(), checks: [] });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+
+    // Leaving the key out keeps the binding.
+    const kept = await request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { heartbeat: { enabled: false } } });
+    expect(kept.status, JSON.stringify(kept.body)).toBe(200);
+    expect(kept.body.runtimeConfig.aiConnection).toEqual(openai);
+
+    // Claude with an OpenAI binding is refused; with null it uses the machine's Claude login.
+    const incompatible = await request(app).patch(`/api/agents/${id}`).send({
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-opus-5-5" },
+      replaceAdapterConfig: true,
+    });
+    expect(incompatible.status).toBe(422);
+    const moved = await request(app).patch(`/api/agents/${id}`).send({
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-opus-5-5" },
+      replaceAdapterConfig: true,
+      runtimeConfig: { aiConnection: null, heartbeat: { enabled: false } },
+    });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    expect(moved.body.adapterType).toBe("claude_local");
+    expect(moved.body.adapterConfig).toMatchObject({ model: "claude-opus-5-5", cwd: "/work" });
+    const [row] = await db.select().from(agents).where(eq(agents.id, id));
+    expect(row.runtimeConfig).not.toHaveProperty("aiConnection");
+    probe.mockRestore();
+    providerRequest.mockRestore();
+  });
+
   it("creates and hires agents with an authorized restricted shared connection", async () => {
     const { agentRoutes } = await import("../routes/agents.js");
     await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));

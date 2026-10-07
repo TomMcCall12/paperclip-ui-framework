@@ -11,6 +11,12 @@ import { Link } from "@/lib/router";
 import {
   deriveOriginatingActor,
   isArtifactReviewDocumentKey,
+  isModelProviderAdapterType,
+  MODEL_PROVIDER_ADAPTER_TYPES,
+  MODEL_PROVIDER_EFFORT_KEY,
+  MODEL_PROVIDER_LABELS,
+  translateThinkingEffort,
+  type ModelProviderAdapterType,
   type ExecutionWorkspace,
   type Issue,
   type IssueLabel,
@@ -82,6 +88,7 @@ import { IssuePropertiesPlansTab } from "./IssuePropertiesPlansTab";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
 import { User, ArrowUpRight, Plus, X, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore, ChevronLeft } from "lucide-react";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
+import { decodeProviderModel, encodeProviderModel } from "../ProviderModelField";
 import {
   AssigneeRunningBanner,
   InterruptAssignConfirm,
@@ -732,17 +739,26 @@ export function IssueProperties({
   const showAssigneeAdapterOptions = supportsAssigneeOverrides;
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
+  // Claude and OpenAI (Codex) assignees can run this task on either provider.
+  const providerChoice = isModelProviderAdapterType(assigneeAdapterType);
+  const assigneeOverrideAdapterType: ModelProviderAdapterType | null =
+    providerChoice
+    && isModelProviderAdapterType(assigneeAdapterOverrides?.adapterType)
+    && assigneeAdapterOverrides?.adapterType !== assigneeAdapterType
+      ? (assigneeAdapterOverrides!.adapterType as ModelProviderAdapterType)
+      : null;
+  const taskAdapterType = assigneeOverrideAdapterType ?? assigneeAdapterType;
   const assigneeOverrideModel =
     typeof assigneeOverrideAdapterConfig.model === "string" ? assigneeOverrideAdapterConfig.model : "";
   const assigneePrimaryAdapterConfig = asRecord(assignee?.adapterConfig);
   const assigneePrimaryModel =
     typeof assigneePrimaryAdapterConfig.model === "string" ? assigneePrimaryAdapterConfig.model : "";
-  const effectiveAssigneeModel = assigneeOverrideModel || assigneePrimaryModel;
+  const effectiveAssigneeModel = assigneeOverrideModel || (assigneeOverrideAdapterType ? "" : assigneePrimaryModel);
   const assigneeOverrideThinkingEffort = thinkingEffortValueFor(
-    assigneeAdapterType,
+    taskAdapterType,
     assigneeOverrideAdapterConfig,
   );
-  const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
+  const assigneeOverrideChrome = taskAdapterType === "claude_local"
     && assigneeOverrideAdapterConfig.chrome === true;
   const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig).provider ?? "codex") : undefined;
   const { data: assigneeAdapterModels } = useQuery({
@@ -751,9 +767,47 @@ export function IssueProperties({
         ? queryKeys.agents.adapterModels(companyId, assigneeAdapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
     queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, { provider: catalogProvider }),
-    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides && !providerChoice,
+  });
+  const { data: claudeTaskModels } = useQuery({
+    queryKey: companyId
+      ? queryKeys.agents.adapterModels(companyId, "claude_local", null, undefined)
+      : ["agents", "none", "adapter-models", "claude_local"],
+    queryFn: () => agentsApi.adapterModels(companyId!, "claude_local"),
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && providerChoice,
+  });
+  const { data: openaiTaskModels } = useQuery({
+    queryKey: companyId
+      ? queryKeys.agents.adapterModels(companyId, "codex_local", null, undefined)
+      : ["agents", "none", "adapter-models", "codex_local"],
+    queryFn: () => agentsApi.adapterModels(companyId!, "codex_local"),
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && providerChoice,
   });
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
+    if (providerChoice) {
+      const lists: Record<ModelProviderAdapterType, typeof claudeTaskModels> = {
+        claude_local: claudeTaskModels,
+        codex_local: openaiTaskModels,
+      };
+      const grouped = MODEL_PROVIDER_ADAPTER_TYPES.flatMap((type) =>
+        sortAdapterModels(lists[type] ?? []).map((model) => ({
+          id: encodeProviderModel(type, model.id),
+          label: model.label,
+          group: MODEL_PROVIDER_LABELS[type],
+          searchText: `${model.id} ${MODEL_PROVIDER_LABELS[type]}`,
+        })),
+      );
+      const selected = assigneeOverrideModel && taskAdapterType ? encodeProviderModel(taskAdapterType, assigneeOverrideModel) : "";
+      if (selected && !grouped.some((option) => option.id === selected)) {
+        grouped.unshift({
+          id: selected,
+          label: assigneeOverrideModel,
+          group: MODEL_PROVIDER_LABELS[taskAdapterType as ModelProviderAdapterType],
+          searchText: assigneeOverrideModel,
+        });
+      }
+      return grouped;
+    }
     const models = sortAdapterModels(assigneeAdapterModels ?? []);
     const options = models.map((model) => ({
       id: model.id,
@@ -768,14 +822,26 @@ export function IssueProperties({
       });
     }
     return options;
-  }, [assigneeAdapterModels, assigneeOverrideModel]);
+  }, [
+    assigneeAdapterModels,
+    assigneeOverrideModel,
+    claudeTaskModels,
+    openaiTaskModels,
+    providerChoice,
+    taskAdapterType,
+  ]);
   const updateAssigneeAdapterOverrides = (next: Issue["assigneeAdapterOverrides"]) => {
     onUpdate({ assigneeAdapterOverrides: next });
   };
-  const buildAssigneeOverrideWithConfig = (adapterConfig: Record<string, unknown>) => {
+  const buildAssigneeOverrideWithConfig = (
+    adapterConfig: Record<string, unknown>,
+    adapterType: ModelProviderAdapterType | null = assigneeOverrideAdapterType,
+  ) => {
     const nextConfig = compactRecord(adapterConfig);
     const next = compactRecord({
       useProjectWorkspace: assigneeAdapterOverrides?.useProjectWorkspace,
+      // Only when the task runs on the other provider than the assignee's own.
+      ...(adapterType && adapterType !== assigneeAdapterType ? { adapterType } : {}),
       ...(Object.keys(nextConfig).length > 0 ? { adapterConfig: nextConfig } : {}),
     });
     return Object.keys(next).length > 0 ? next : null;
@@ -795,9 +861,34 @@ export function IssueProperties({
     delete nextConfig.effort;
     delete nextConfig.variant;
     if (nextValue) {
-      nextConfig[thinkingEffortKeyFor(assigneeAdapterType)] = nextValue;
+      nextConfig[thinkingEffortKeyFor(taskAdapterType)] = nextValue;
     }
     updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(nextConfig));
+  };
+  /** A model under the other provider's heading runs this task on that provider. */
+  const updateAssigneeOverrideProviderModel = (value: string) => {
+    const choice = value ? decodeProviderModel(value) : null;
+    if (!choice || !isModelProviderAdapterType(taskAdapterType)) {
+      const nextConfig: Record<string, unknown> = { ...assigneeOverrideAdapterConfig, model: undefined };
+      updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(nextConfig));
+      return;
+    }
+    if (choice.adapterType === taskAdapterType) {
+      updateAssigneeOverrideModel(choice.model);
+      return;
+    }
+    const effort = translateThinkingEffort(taskAdapterType, choice.adapterType, assigneeOverrideThinkingEffort);
+    const nextConfig: Record<string, unknown> = { ...assigneeOverrideAdapterConfig, model: choice.model || undefined };
+    delete nextConfig.effort;
+    delete nextConfig.modelReasoningEffort;
+    delete nextConfig.reasoningEffort;
+    // Chrome and the turn limit are Claude-only settings.
+    if (choice.adapterType !== "claude_local") {
+      delete nextConfig.chrome;
+      delete nextConfig.maxTurnsPerRun;
+    }
+    if (effort) nextConfig[MODEL_PROVIDER_EFFORT_KEY[choice.adapterType]] = effort;
+    updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(nextConfig, choice.adapterType));
   };
   const updateAssigneeOverrideModel = (nextModel: string) => {
     const nextConfig: Record<string, unknown> = {
@@ -805,9 +896,9 @@ export function IssueProperties({
       model: nextModel || undefined,
     };
     if (
-      assigneeAdapterType === "codex_local"
+      taskAdapterType === "codex_local"
       && assigneeOverrideThinkingEffort
-      && !thinkingEffortOptionsFor(assigneeAdapterType, nextModel || assigneePrimaryModel).some(
+      && !thinkingEffortOptionsFor(taskAdapterType, nextModel || effectiveAssigneeModel).some(
         (option) => option.value === assigneeOverrideThinkingEffort,
       )
     ) {
@@ -827,6 +918,7 @@ export function IssueProperties({
   const assigneeOptionsTrigger = (() => {
     if (assigneeOverrideLane === "custom") {
       const details = [
+        assigneeOverrideAdapterType ? MODEL_PROVIDER_LABELS[assigneeOverrideAdapterType] : "",
         assigneeOverrideModel,
         assigneeOverrideThinkingEffort,
         assigneeOverrideChrome ? "Chrome" : "",
@@ -875,20 +967,24 @@ export function IssueProperties({
           <div className="space-y-1.5">
             <div className="text-xs text-muted-foreground">Model</div>
             <InlineEntitySelector
-              value={assigneeOverrideModel}
+              value={
+                providerChoice && assigneeOverrideModel && taskAdapterType
+                  ? encodeProviderModel(taskAdapterType, assigneeOverrideModel)
+                  : assigneeOverrideModel
+              }
               options={modelOverrideOptions}
               placeholder="Default model"
               disablePortal
               noneLabel="Default model"
               searchPlaceholder="Search models..."
               emptyMessage="No models found."
-              onChange={updateAssigneeOverrideModel}
+              onChange={providerChoice ? updateAssigneeOverrideProviderModel : updateAssigneeOverrideModel}
             />
           </div>
           <div className="space-y-1.5">
             <div className="text-xs text-muted-foreground">Thinking effort</div>
             <div className="flex items-center gap-1.5 flex-wrap">
-              {thinkingEffortOptionsFor(assigneeAdapterType, effectiveAssigneeModel).map((option) => (
+              {thinkingEffortOptionsFor(taskAdapterType, effectiveAssigneeModel).map((option) => (
                 <button
                   key={option.value || "default"}
                   className={cn(
@@ -902,7 +998,7 @@ export function IssueProperties({
               ))}
             </div>
           </div>
-          {assigneeAdapterType === "claude_local" ? (
+          {taskAdapterType === "claude_local" ? (
             <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
               <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
               <ToggleSwitch

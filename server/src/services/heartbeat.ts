@@ -33,6 +33,7 @@ import { connectionIntentService } from "./connection-intents.js";
 import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
+import { agentForTaskProvider, taskProviderRunNote } from "./task-model-provider.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
@@ -3542,6 +3543,10 @@ const heartbeatRunIssueSummaryColumns = {
   issueId: sql<
     string | null
   >`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+  // Set when the run's task picked the other model provider.
+  executedAdapterType: sql<
+    string | null
+  >`${heartbeatRuns.contextSnapshot} ->> 'executedAdapterType'`.as("executedAdapterType"),
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {
@@ -20216,8 +20221,8 @@ export function heartbeatService(
     let providerTraceFinalized = false;
 
     try {
-      const agent = await getAgent(run.agentId);
-      if (!agent) {
+      const savedAgent = await getAgent(run.agentId);
+      if (!savedAgent) {
         await setRunStatus(runId, "failed", {
           error: "Agent not found",
           errorCode: "agent_not_found",
@@ -20235,11 +20240,46 @@ export function heartbeatService(
       // The claimed adapter identity is immutable recovery evidence. Do not
       // execute a newly selected adapter under a previous adapter's claim.
       const selectedAdapter = claimedAdapterType(run);
-      if (selectedAdapter && selectedAdapter !== agent.adapterType) {
+      if (selectedAdapter && selectedAdapter !== savedAgent.adapterType) {
         throw new Error("Agent adapter changed during startup; start a new turn with the updated agent.");
       }
 
       const dispatchIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      // A task may run its assignee on the other model provider (Claude Code or
+      // Codex) for that task only. Chats always use the agent's own provider.
+      const taskProviderIssue = dispatchIssueId
+        ? await getIssueExecutionContext(run.companyId, dispatchIssueId)
+        : null;
+      const taskProviderAgent =
+        taskProviderIssue
+        && !isConversation(taskProviderIssue)
+        && taskProviderIssue.assigneeAgentId === savedAgent.id
+          ? agentForTaskProvider(savedAgent, taskProviderIssue.assigneeAdapterOverrides)
+          : null;
+      const agent = taskProviderAgent ?? savedAgent;
+      if (taskProviderAgent) {
+        const switched = {
+          executedAdapterType: taskProviderAgent.adapterType,
+          // The other provider cannot resume this provider's session.
+          resumeSessionParams: null,
+          resumeSessionDisplayId: null,
+        };
+        run = { ...run, contextSnapshot: { ...parseObject(run.contextSnapshot), ...switched } };
+        await db
+          .update(heartbeatRuns)
+          .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify(switched)}::jsonb` })
+          .where(eq(heartbeatRuns.id, run.id));
+        await appendRunEvent(run, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: taskProviderRunNote(
+            savedAgent.adapterType,
+            taskProviderAgent.adapterType,
+            parseObject(parseObject(taskProviderIssue?.assigneeAdapterOverrides).adapterConfig).model,
+          ),
+        });
+      }
       const resumingAdmittedConversationTurn = !!runOptions.nativeLeaseOwner
         && typeof run.contextSnapshot?.conversationSessionGeneration === "number";
       if (dispatchIssueId && isConversation(await getIssueExecutionContext(run.companyId, dispatchIssueId))

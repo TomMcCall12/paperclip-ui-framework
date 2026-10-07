@@ -1,3 +1,5 @@
+import { canSwitchModelProvider } from "@paperclipai/shared";
+
 /**
  * Issue `assigneeAdapterOverrides.adapterConfig` is merged over the assignee's
  * saved adapter config right before runtime secrets are resolved, and anyone
@@ -55,14 +57,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * The adapter a task runs its assignee on: the agent's own, or the other
+ * local coding CLI when the task picks the other model provider.
+ */
+export function taskAdapterTypeFor(
+  agentAdapterType: string | null | undefined,
+  overrides: unknown,
+): string | null | undefined {
+  const requested = isRecord(overrides) ? overrides.adapterType : undefined;
+  return typeof requested === "string" && canSwitchModelProvider(agentAdapterType, requested)
+    ? requested
+    : agentAdapterType;
+}
+
+/**
  * Returns why these issue overrides may not run on an assignee with this
  * adapter type, or null when they may. Names only the offending keys, never
- * values or the assignee's saved config.
+ * values or the assignee's saved config. When the task picks the other model
+ * provider, its settings are checked against that provider's CLI.
  */
 export function issueAssigneeOverrideRejectionReason(
-  adapterType: string | null | undefined,
+  agentAdapterType: string | null | undefined,
   overrides: unknown,
 ): string | null {
+  if (isRecord(overrides) && overrides.adapterType !== undefined && overrides.adapterType !== agentAdapterType) {
+    if (!canSwitchModelProvider(agentAdapterType, overrides.adapterType)) {
+      return "Only Claude and OpenAI (Codex) agents can run a task on another model provider. " +
+        "Remove adapterType from the task overrides, or assign the task to one of those agents.";
+    }
+  }
+  const adapterType = taskAdapterTypeFor(agentAdapterType, overrides);
   const safeKeys = adapterType
     ? SAFE_ISSUE_OVERRIDE_ADAPTER_CONFIG[adapterType]
     : undefined;

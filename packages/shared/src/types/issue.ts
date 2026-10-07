@@ -89,6 +89,8 @@ export interface IssueLabel {
 }
 
 export interface IssueAssigneeAdapterOverrides {
+  /** Run a local coding assignee on the other model provider for this task only. */
+  adapterType?: "claude_local" | "codex_local";
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
 }

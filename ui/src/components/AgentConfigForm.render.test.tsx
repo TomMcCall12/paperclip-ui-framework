@@ -822,7 +822,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     expect(result.container.textContent).not.toContain("Environment override");
-    expect(result.container.querySelector("select")).toBeNull();
+    expect(result.container.querySelector('select:not([data-testid="provider-model-select"])')).toBeNull();
   });
 
   it("renders GPT-6 Astra and its model-specific reasoning efforts", async () => {
@@ -873,20 +873,13 @@ describe("AgentConfigForm environment selector", () => {
       },
     );
     roots.push(result.root);
-
-    const modelButton = Array.from(result.container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "gpt-5.6-sol");
-    expect(modelButton).not.toBeUndefined();
-    await act(async () => {
-      modelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
     await flushReact();
 
-    const astraOption = Array.from(document.body.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "gpt-6-astra");
-    expect(astraOption).not.toBeUndefined();
+    const control = result.container.querySelector<HTMLSelectElement>('[data-testid="provider-model-select"]');
+    expect(control!.value).toBe("codex_local|gpt-5.6-sol");
     await act(async () => {
-      astraOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      control!.value = "codex_local|gpt-6-astra";
+      control!.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flushReact();
 
@@ -938,19 +931,6 @@ describe("AgentConfigForm environment selector", () => {
       saved: "gpt-6.1-sol",
       next: "gpt-5.6-terra",
     },
-    {
-      adapterType: "claude_local",
-      adapterConfig: { model: "claude-sonnet-5" },
-      options: {
-        ...DEFAULT_MODEL_OPTIONS,
-        models: [
-          { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
-          { id: "claude-opus-5", label: "Claude Opus 5" },
-        ],
-      },
-      saved: "claude-sonnet-5",
-      next: "claude-opus-5",
-    },
   ])("saves and reloads a supported $adapterType default model from the agent page", async ({ adapterType, adapterConfig, options, saved, next }) => {
     mockAgentsApi.modelOptions.mockImplementation(async () => options as typeof DEFAULT_MODEL_OPTIONS);
     try {
@@ -987,6 +967,89 @@ describe("AgentConfigForm environment selector", () => {
     } finally {
       mockAgentsApi.modelOptions.mockImplementation(async () => DEFAULT_MODEL_OPTIONS);
     }
+  });
+
+  it("saves and reloads a supported Claude model from the one provider list on the agent page", async () => {
+    mockAgentsApi.modelOptions.mockImplementation(async () => ({
+      ...DEFAULT_MODEL_OPTIONS,
+      models: [
+        { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+        { id: "claude-opus-5", label: "Claude Opus 5" },
+      ],
+    }));
+    try {
+      const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+      const result = await renderForm(environments, { adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } });
+      roots.push(result.root);
+      await flushReact();
+
+      const control = result.container.querySelector<HTMLSelectElement>('[data-testid="provider-model-select"]');
+      expect(control!.value).toBe("claude_local|claude-sonnet-5");
+      expect(mockAgentsApi.modelOptions).toHaveBeenCalledWith("agent-1", "company-1");
+      expect(Array.from(control!.querySelectorAll("optgroup")).map((group) => group.label)).toEqual(["Claude", "OpenAI"]);
+
+      await act(async () => {
+        control!.value = "claude_local|claude-opus-5";
+        control!.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await flushReact();
+      const saveButton = Array.from(result.container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Save");
+      await act(async () => {
+        saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
+        adapterConfig: expect.objectContaining({ model: "claude-opus-5" }),
+      }));
+      expect(result.onSave.mock.calls[0]?.[0]).not.toHaveProperty("adapterType");
+
+      const reloaded = await renderForm(environments, { adapterType: "claude_local", adapterConfig: { model: "claude-opus-5" } });
+      roots.push(reloaded.root);
+      await flushReact();
+      expect(reloaded.container.querySelector<HTMLSelectElement>('[data-testid="provider-model-select"]')!.value)
+        .toBe("claude_local|claude-opus-5");
+    } finally {
+      mockAgentsApi.modelOptions.mockImplementation(async () => DEFAULT_MODEL_OPTIONS);
+    }
+  });
+
+  it("moves a Claude agent to OpenAI when an OpenAI model is picked, keeping its shared settings", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gpt-6-sol", label: "gpt-6-sol" }]);
+    const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+    const result = await renderForm(environments, {
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-5", effort: "high", cwd: "/work", timeoutSec: 7200, chrome: true },
+    });
+    roots.push(result.root);
+    await flushReact();
+
+    const control = result.container.querySelector<HTMLSelectElement>('[data-testid="provider-model-select"]');
+    await act(async () => {
+      control!.value = "codex_local|gpt-6-sol";
+      control!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+    expect(result.container.textContent).toContain("Claude-only settings");
+
+    const saveButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Save");
+    await act(async () => {
+      saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const patch = result.onSave.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(patch.adapterType).toBe("codex_local");
+    expect(patch.adapterConfig).toEqual({
+      model: "gpt-6-sol",
+      modelReasoningEffort: "high",
+      dangerouslyBypassApprovalsAndSandbox: true,
+      cwd: "/work",
+      timeoutSec: 7200,
+    });
+    expect((patch.runtimeConfig as Record<string, unknown>).aiConnection).toEqual({
+      mode: "responsible_user",
+      method: "subscription",
+      provider: "openai",
+    });
   });
 
   it("keeps secret access out of the main Configuration content", async () => {
@@ -1149,24 +1212,13 @@ describe("AgentConfigForm environment selector", () => {
       showAdapterTestEnvironmentButton: true,
     });
     roots.push(result.root);
-
-    const modelButton = Array.from(result.container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "gpt-5.4",
-    );
-    expect(modelButton).toBeTruthy();
-
-    await act(async () => {
-      modelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
     await flushReact();
 
-    const defaultButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Default",
-    );
-    expect(defaultButton).toBeTruthy();
-
+    const control = result.container.querySelector<HTMLSelectElement>('[data-testid="provider-model-select"]');
+    expect(control!.value).toBe("codex_local|gpt-5.4");
     await act(async () => {
-      defaultButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      control!.value = "codex_local|";
+      control!.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flushReact();
 

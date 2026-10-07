@@ -1,5 +1,12 @@
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import {
+  aiConnectionBindingSchema,
+  aiConnectionForProvider,
+  isModelProviderAdapterType,
+  translateAdapterConfigForProvider,
+  type ModelProviderAdapterType,
+} from "@paperclipai/shared";
+import { ProviderModelField } from "./ProviderModelField";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { setupEfforts } from "../lib/agent-setup-fields";
 import { RuntimeTestCard } from "./RuntimeTestCard";
@@ -1249,6 +1256,57 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     : eff("adapterConfig", "model", String(config.model ?? ""));
   const currentModelId = typeof currentModelValue === "string" ? currentModelValue : "";
 
+  // Existing Claude and OpenAI (Codex) agents pick from one list with both
+  // providers' models; a model under the other heading moves the agent there.
+  const savedAdapterType = !isCreate ? props.agent.adapterType : null;
+  const savedAgentId = !isCreate ? props.agent.id : null;
+  const providerSwitchable = isModelProviderAdapterType(savedAdapterType) && isModelProviderAdapterType(adapterType);
+
+  function handleProviderModelChange(to: ModelProviderAdapterType, model: string) {
+    if (to === adapterType) {
+      handleModelChange(model);
+      return;
+    }
+    if (isCreate || !isModelProviderAdapterType(savedAdapterType) || !isModelProviderAdapterType(adapterType)) return;
+    const from = adapterType;
+    if (to === savedAdapterType) {
+      // Back to the saved provider: drop the switch and keep the agent's own settings.
+      setOverlay((prev) => {
+        const {
+          model: _model,
+          effort: _effort,
+          modelReasoningEffort: _reasoning,
+          reasoningEffort: _reasoningAlias,
+          dangerouslySkipPermissions: _skip,
+          dangerouslyBypassApprovalsAndSandbox: _bypass,
+          ...rest
+        } = prev.adapterConfig;
+        const { runtimeConfig: _runtimeConfig, ...runtime } = prev.runtime;
+        return {
+          ...prev,
+          adapterType: undefined,
+          adapterConfig: model !== String(config.model ?? "") ? { ...rest, model: model || undefined } : rest,
+          runtime,
+        };
+      });
+      return;
+    }
+    const currentRuntimeConfig = {
+      ...runtimeConfig,
+      ...((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? {}),
+    };
+    const binding = aiConnectionForProvider(
+      to,
+      aiConnectionBindingSchema.safeParse(currentRuntimeConfig.aiConnection).data ?? null,
+    );
+    setOverlay((prev) => ({
+      ...prev,
+      adapterType: to,
+      adapterConfig: translateAdapterConfigForProvider(from, to, { ...config, ...prev.adapterConfig }, model),
+      runtime: { ...prev.runtime, runtimeConfig: { ...currentRuntimeConfig, aiConnection: binding } },
+    }));
+  }
+
   // Existing Hermes gateway and Claude local agents pick their default model
   // from server-validated options; other adapters keep the catalog dropdown.
   const validatedDefaultModelAgentId = !isCreate
@@ -1752,7 +1810,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             />
           )}
           {isLocal && (<>
-              {validatedDefaultModelAgentId ? (
+              {providerSwitchable && savedAgentId && isModelProviderAdapterType(adapterType) && isModelProviderAdapterType(savedAdapterType) ? (
+                <ProviderModelField
+                  agentId={savedAgentId}
+                  companyId={selectedCompanyId ?? undefined}
+                  adapterType={adapterType}
+                  savedAdapterType={savedAdapterType}
+                  value={currentModelId}
+                  onChange={handleProviderModelChange}
+                />
+              ) : validatedDefaultModelAgentId ? (
                 <AgentDefaultModelField
                   agentId={validatedDefaultModelAgentId}
                   companyId={selectedCompanyId ?? undefined}

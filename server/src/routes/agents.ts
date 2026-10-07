@@ -5460,8 +5460,15 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
-    const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
+    // An explicit `aiConnection: null` removes the binding, for example when a
+    // Claude agent that ran on OpenAI goes back to the machine's Claude login.
+    // Leaving the key out keeps the existing binding.
+    const clearsAiConnection = requestedRuntimeConfig?.aiConnection === null;
+    if (clearsAiConnection) delete requestedRuntimeConfig!.aiConnection;
+    else if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
+    const nextAiBinding = clearsAiConnection
+      ? undefined
+      : aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
       await assertCanUpdateAgent(req, existing);
       const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
@@ -6832,7 +6839,8 @@ export function agentRoutes(
       agentId: heartbeatRuns.agentId,
       agentName: agentsTable.name,
         agentAppearance: agentsTable.appearance,
-      adapterType: agentsTable.adapterType,
+      // A task can run on the other model provider; show the run as it ran.
+      adapterType: sql<string>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'executedAdapterType', ${agentsTable.adapterType})`.as("adapterType"),
       logBytes: heartbeatRuns.logBytes,
       livenessState: heartbeatRuns.livenessState,
       livenessReason: heartbeatRuns.livenessReason,
@@ -7475,7 +7483,7 @@ export function agentRoutes(
         agentId: heartbeatRuns.agentId,
         agentName: agentsTable.name,
         agentAppearance: agentsTable.appearance,
-        adapterType: agentsTable.adapterType,
+        adapterType: sql<string>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'executedAdapterType', ${agentsTable.adapterType})`.as("adapterType"),
         logBytes: heartbeatRuns.logBytes,
         livenessState: heartbeatRuns.livenessState,
         livenessReason: heartbeatRuns.livenessReason,
@@ -7568,7 +7576,7 @@ export function agentRoutes(
       agentName: agent.name,
       agentAppearance: agent.appearance,
       avatarUrl: agent.avatarUrl,
-      adapterType: agent.adapterType,
+      adapterType: run.executedAdapterType ?? agent.adapterType,
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     });
   });

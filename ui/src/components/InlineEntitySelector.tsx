@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { forwardRef, Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
@@ -9,6 +9,8 @@ export interface InlineEntityOption {
   id: string;
   label: string;
   searchText?: string;
+  /** Heading shown above the first option of each group, for example a model provider. */
+  group?: string;
 }
 
 interface InlineEntitySelectorProps {
@@ -98,6 +100,8 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     const allOptions = useMemo<InlineEntityOption[]>(() => {
       const baseOptions = [{ id: "", label: noneLabel, searchText: noneLabel }, ...options];
+      // Grouped lists keep their order, so each heading stays above its options.
+      if (options.some((option) => option.group)) return baseOptions;
       return orderItemsBySelectedAndRecent(baseOptions, value, recentOptionIds);
     }, [noneLabel, options, recentOptionIds, value]);
 
@@ -254,20 +258,27 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
               filteredOptions.map((option, index) => {
                 const isSelected = option.id === value;
                 const isHighlighted = index === highlightedIndex;
+                const heading = option.group && option.group !== filteredOptions[index - 1]?.group ? option.group : null;
                 return (
-                  <button
-                    key={option.id || "__none__"}
-                    type="button"
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm touch-manipulation",
-                      isHighlighted && "bg-accent",
-                    )}
-                    onMouseEnter={() => setHighlightedIndexValue(index)}
-                    onClick={() => commitSelection(index, true)}
-                  >
-                    {renderOption ? renderOption(option, isSelected) : <span className="truncate">{option.label}</span>}
-                    <Check className={cn("ml-auto h-3.5 w-3.5 text-muted-foreground", isSelected ? "opacity-100" : "opacity-0")} />
-                  </button>
+                  <Fragment key={option.id || "__none__"}>
+                    {heading ? (
+                      <div role="presentation" className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">
+                        {heading}
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm touch-manipulation",
+                        isHighlighted && "bg-accent",
+                      )}
+                      onMouseEnter={() => setHighlightedIndexValue(index)}
+                      onClick={() => commitSelection(index, true)}
+                    >
+                      {renderOption ? renderOption(option, isSelected) : <span className="truncate">{option.label}</span>}
+                      <Check className={cn("ml-auto h-3.5 w-3.5 text-muted-foreground", isSelected ? "opacity-100" : "opacity-0")} />
+                    </button>
+                  </Fragment>
                 );
               })
             )}

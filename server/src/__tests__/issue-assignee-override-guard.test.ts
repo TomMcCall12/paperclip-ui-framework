@@ -3,6 +3,7 @@ import {
   issueAssigneeOverrideRejectionReason,
   issueTaskModelToVerify,
   issueTaskModelUnsupportedReason,
+  taskAdapterTypeFor,
 } from "../services/issue-assignee-override-guard.js";
 
 describe("issueAssigneeOverrideRejectionReason", () => {
@@ -57,6 +58,32 @@ describe("issueAssigneeOverrideRejectionReason", () => {
       expect(issueAssigneeOverrideRejectionReason("claude_local", { adapterConfig })).toMatch(/may only set/);
     }
     expect(issueAssigneeOverrideRejectionReason("codex_local", { adapterConfig: { dangerouslyBypassApprovalsAndSandbox: true } })).toMatch(/may only set/);
+  });
+
+  it("lets a Claude or OpenAI agent run one task on the other provider, checked against that provider", () => {
+    expect(issueAssigneeOverrideRejectionReason("claude_local", {
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-6-sol", modelReasoningEffort: "high" },
+    })).toBeNull();
+    expect(issueAssigneeOverrideRejectionReason("codex_local", {
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-opus-5-5", effort: "high", chrome: true },
+    })).toBeNull();
+    // Claude-only keys are not settable once the task runs on Codex.
+    expect(issueAssigneeOverrideRejectionReason("claude_local", {
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-6-sol", chrome: true },
+    })).toContain("not allowed: chrome");
+    expect(taskAdapterTypeFor("claude_local", { adapterType: "codex_local" })).toBe("codex_local");
+    expect(taskAdapterTypeFor("claude_local", { adapterConfig: { model: "claude-sonnet-5" } })).toBe("claude_local");
+  });
+
+  it("refuses another provider for agents that aren't Claude or OpenAI CLIs", () => {
+    expect(issueAssigneeOverrideRejectionReason("hermes_gateway", {
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-6-sol" },
+    })).toContain("Only Claude and OpenAI");
+    expect(taskAdapterTypeFor("hermes_gateway", { adapterType: "codex_local" })).toBe("hermes_gateway");
   });
 
   it("does not restrict other adapters", () => {

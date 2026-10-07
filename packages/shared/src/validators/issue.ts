@@ -36,6 +36,7 @@ import {
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { MODEL_PROVIDER_ADAPTER_TYPES } from "../model-providers.js";
 import {
   lowTrustReviewPresetPolicySchema,
   trustAuthorizationPolicySchema,
@@ -295,6 +296,12 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
+    /**
+     * Runs a local coding assignee on the other model provider's CLI for this
+     * task only (Claude Code or Codex). `adapterConfig` then names that
+     * provider's model and effort.
+     */
+    adapterType: z.enum(MODEL_PROVIDER_ADAPTER_TYPES).optional(),
     adapterConfig: z.record(z.string(), z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
