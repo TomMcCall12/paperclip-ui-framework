@@ -224,9 +224,13 @@ Tom keeps Hermes running, but wants Tom's Lab to do these itself.
   - rclone stops runs that would delete half the vault.
   - Agents can see the status and ask for a sync through `GET/POST /notes-vault/sync` (ships with the next image).
 - **What it fixes:** Hermes's sync was a one-way copy from the ZimaBoard to Drive. 31 Drive-only files never reached Tom's Lab: notes Claudian wrote in Obsidian on Tom's computer (the Hormozi book source material, Clip Notes), two canvases and plugin files. Drive-side edits to shared notes would also be overwritten within 15 minutes.
-- **Waiting on Tom:**
-  - The safety check stopped the step that gives the bridge its own copy of the Google Drive sign-in, so Tom's approval is needed.
-  - Everything else is staged: the script, a vault backup step, the compose change and pausing Hermes's copy job (`1b44d3d05a16`).
+- **Enabled 12:01 UTC after Tom's go:**
+  - The vault was backed up to `/DATA/AppData/notes-vault-sync/backups/vault-20261007T120120Z.tgz`.
+  - The bridge has its own rclone config in `/DATA/AppData/notes-vault-sync` (root only), the static `/usr/bin/rclone` mounted read-only, and `tmpfs /tmp`. The compose backup is `.pre-vault-sync-20261007T120120Z.bak`.
+  - Hermes's copy job `1b44d3d05a16` is paused (`hermes cron resume 1b44d3d05a16` as uid 999 undoes it).
+  - The first sync merged both sides in 2 minutes: 272 files on each, the Drive-only notes now on the ZimaBoard owned by 999:1000, and nothing deleted.
+  - Live test: a hidden file created on each side reached the other, and deleting each removed it from both.
+- **tom60** (sync API plus agents' `PATH`): building since 12:07 UTC. It deploys after 22:55 UTC, when Tom's Expo session has ended and agents are idle. Log: host `/tmp/finish-tom60.log`.
 - **Server settings (host `lab-update.sh`, backup `.pre-settings-*`):** new commands `settings` and `set <TASK-ID> <NAME> <VALUE>` for the vault writer and reader lists and the adapter model catalog.
   - A change needs Tom's accepted confirmation containing `setting NAME=<sha256[:12] of the value>`.
   - The value is checked: agent ids must be Tom's Lab agents, and the models setting must be valid JSON.
