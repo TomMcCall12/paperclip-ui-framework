@@ -26,3 +26,30 @@ export interface ProviderQuotaResult {
   error?: string;
   windows: QuotaWindow[];
 }
+
+/** one window in the compact, agent-readable quota summary — no tokens or account identifiers */
+export interface QuotaWindowSummary {
+  /** human label, e.g. "5h", "7d", "Sonnet 7d", "Credits" */
+  label: string;
+  /** percent of the window already consumed (0-100), null when not reported */
+  usedPercent: number | null;
+  /** percent of the window remaining (0-100), null when not reported */
+  percentLeft: number | null;
+  /** iso timestamp when this window resets, null when not reported */
+  resetsAt: string | null;
+}
+
+/**
+ * Compact, agent-readable per-provider quota summary. Deliberately excludes
+ * tokens, account emails, and other provider-account identifiers so it is
+ * safe to expose to agent API keys — see `/costs/quota-summary`.
+ */
+export interface ProviderQuotaSummary {
+  /** provider slug, e.g. "anthropic", "openai" */
+  provider: string;
+  /** true when the fetch succeeded and windows is populated */
+  ok: boolean;
+  /** error message when ok is false */
+  error?: string;
+  windows: QuotaWindowSummary[];
+}

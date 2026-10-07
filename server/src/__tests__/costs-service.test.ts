@@ -123,9 +123,15 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
   }));
 
-  vi.doMock("../services/quota-windows.js", () => ({
-    fetchAllQuotaWindows: mockFetchAllQuotaWindows,
-  }));
+  vi.doMock("../services/quota-windows.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/quota-windows.js")>(
+      "../services/quota-windows.js",
+    );
+    return {
+      ...actual,
+      fetchAllQuotaWindows: mockFetchAllQuotaWindows,
+    };
+  });
 }
 
 describe("cost routes", () => {
@@ -178,6 +184,12 @@ describe("cost routes", () => {
       explanation: "Allowed by test mock.",
     });
     mockCompanyService.update.mockResolvedValue({
+      id: "company-1",
+      name: "Paperclip",
+      budgetMonthlyCents: 100,
+      spentMonthlyCents: 0,
+    });
+    mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
       name: "Paperclip",
       budgetMonthlyCents: 100,
@@ -397,6 +409,108 @@ describe("cost routes", () => {
         details: { budgetMonthlyCents: 2500 },
       }),
     );
+  });
+
+  describe("GET /costs/quota-summary", () => {
+    beforeEach(() => {
+      mockFetchAllQuotaWindows.mockResolvedValue([
+        {
+          provider: "anthropic",
+          ok: true,
+          source: "claude-code",
+          windows: [
+            { label: "Current session", usedPercent: 42, resetsAt: "2026-07-10T05:00:00Z", valueLabel: null },
+          ],
+        },
+        {
+          provider: "openai",
+          ok: false,
+          errorFamily: "auth_expired",
+          error: "no local codex auth token",
+          windows: [],
+        },
+      ]);
+    });
+
+    it("allows an agent key to read the compact summary for its own company", async () => {
+      const app = createAppWithActor({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        runId: "run-1",
+      });
+
+      const res = await request(app).get("/api/companies/company-1/costs/quota-summary");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([
+        {
+          provider: "anthropic",
+          ok: true,
+          windows: [
+            { label: "Current session", usedPercent: 42, percentLeft: 58, resetsAt: "2026-07-10T05:00:00Z" },
+          ],
+        },
+        {
+          provider: "openai",
+          ok: false,
+          error: "no local codex auth token",
+          windows: [],
+        },
+      ]);
+
+      // no source, errorFamily, valueLabel, or detail — no account identifiers or free-form text
+      const json = JSON.stringify(res.body);
+      expect(json).not.toContain("source");
+      expect(json).not.toContain("errorFamily");
+      expect(json).not.toContain("valueLabel");
+      expect(json).not.toContain("claude-code");
+      expect(json).not.toContain("auth_expired");
+    });
+
+    it("allows a board actor to read the summary", async () => {
+      const app = createAppWithActor({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: ["company-1"],
+      });
+
+      const res = await request(app).get("/api/companies/company-1/costs/quota-summary");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(2);
+    });
+
+    it("denies an agent key from reading another company's summary", async () => {
+      const app = createAppWithActor({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-2",
+        runId: "run-1",
+      });
+
+      const res = await request(app).get("/api/companies/company-1/costs/quota-summary");
+
+      expect(res.status).toBe(403);
+      expect(mockFetchAllQuotaWindows).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 for a company that does not exist", async () => {
+      mockCompanyService.getById.mockResolvedValueOnce(undefined);
+      const app = createAppWithActor({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        runId: "run-1",
+      });
+
+      const res = await request(app).get("/api/companies/company-1/costs/quota-summary");
+
+      expect(res.status).toBe(404);
+      expect(mockFetchAllQuotaWindows).not.toHaveBeenCalled();
+    });
   });
 });
 
