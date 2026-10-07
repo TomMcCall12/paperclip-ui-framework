@@ -5175,6 +5175,15 @@ for (const segment of costSummaryPaths) {
 }
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/costs/quota-summary",
+  tags: ["costs"],
+  summary: "Agent-readable provider quota summary (no tokens or account identifiers)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/cost-events",
   tags: ["costs"],

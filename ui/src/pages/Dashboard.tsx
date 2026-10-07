@@ -42,6 +42,7 @@ import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 import { ClaudeUsageDashboardCard } from "../components/ClaudeUsageDashboardCard";
+import { CodexUsageDashboardCard } from "../components/CodexUsageDashboardCard";
 import { PendingLabChangesDashboardCard } from "../components/PendingLabChangesDashboardCard";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
@@ -464,7 +465,10 @@ export function Dashboard() {
             />
           </div>
 
-          <ClaudeUsageDashboardCard companyId={selectedCompanyId!} />
+          <div className="grid gap-4 md:grid-cols-2">
+            <ClaudeUsageDashboardCard companyId={selectedCompanyId!} />
+            <CodexUsageDashboardCard companyId={selectedCompanyId!} />
+          </div>
 
           <ModelFamilyUsageCard rows={modelUsageRows ?? []} periodLabel="This month" />
 

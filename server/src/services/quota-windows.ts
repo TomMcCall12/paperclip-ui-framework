@@ -1,4 +1,4 @@
-import type { ProviderQuotaResult } from "@paperclipai/shared";
+import type { ProviderQuotaResult, ProviderQuotaSummary } from "@paperclipai/shared";
 import { listServerAdapters } from "../adapters/registry.js";
 
 const QUOTA_PROVIDER_TIMEOUT_MS = 20_000;
@@ -37,6 +37,27 @@ export async function fetchAllQuotaWindows(): Promise<ProviderQuotaResult[]> {
       windows: [],
     };
   });
+}
+
+/**
+ * Reduces the full quota-windows results to the compact, agent-readable shape:
+ * provider, ok/error, and each window's percent used/left and reset time.
+ * Deliberately drops `source`, `errorFamily`, `valueLabel`, and `detail` —
+ * those can carry provider-account identifiers or free-form text, and the
+ * agent-facing summary only needs enough to pick a provider by headroom.
+ */
+export function summarizeQuotaWindows(results: ProviderQuotaResult[]): ProviderQuotaSummary[] {
+  return results.map((result) => ({
+    provider: result.provider,
+    ok: result.ok,
+    ...(result.error != null ? { error: result.error } : {}),
+    windows: result.windows.map((w) => ({
+      label: w.label,
+      usedPercent: w.usedPercent,
+      percentLeft: w.usedPercent == null ? null : Math.max(0, 100 - w.usedPercent),
+      resetsAt: w.resetsAt,
+    })),
+  }));
 }
 
 async function withQuotaTimeout(

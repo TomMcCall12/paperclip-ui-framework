@@ -20,8 +20,8 @@ import {
   accessService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { fetchAllQuotaWindows } from "../services/quota-windows.js";
+import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { fetchAllQuotaWindows, summarizeQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -283,6 +283,23 @@ export function costRoutes(
     }
     const results = await fetchAllQuotaWindows();
     res.json(results);
+  });
+
+  // Agent-readable counterpart to /costs/quota-windows above: a compact,
+  // PII-free summary (provider, ok/error, each window's percent used/left
+  // and reset time — no tokens or account identifiers) so an agent can pick
+  // a provider by remaining headroom without board access.
+  router.get("/companies/:companyId/costs/quota-summary", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoardOrAgent(req);
+    assertCompanyAccess(req, companyId);
+    const company = await companies.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    const results = await fetchAllQuotaWindows();
+    res.json(summarizeQuotaWindows(results));
   });
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {
