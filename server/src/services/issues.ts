@@ -4236,17 +4236,25 @@ async function listIssueBlockerAttentionMap(
 
     if (node.assigneeAgentId) {
       const assignee = agentsById.get(node.assigneeAgentId);
-      if (
-        !assignee ||
-        assignee.companyId !== companyId ||
-        !BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(assignee.status)
-      ) {
+      const assigneeInvokable =
+        Boolean(assignee) &&
+        assignee!.companyId === companyId &&
+        BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(assignee!.status);
+      if (!assigneeInvokable) {
         return {
           covered: false,
           stalled: false,
           sampleBlockerIdentifier: nodeSample,
           sampleStalledBlockerIdentifier: null,
           terminalBlockerIssueId: node.id,
+        };
+      }
+      if (node.status === "todo" || node.status === "in_progress") {
+        return {
+          covered: true,
+          stalled: false,
+          sampleBlockerIdentifier: nodeSample,
+          sampleStalledBlockerIdentifier: null,
         };
       }
     }
