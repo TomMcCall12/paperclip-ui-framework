@@ -197,3 +197,21 @@ Tom asked for skills to work "at the Hermes level": agents learn during tasks, n
 - **Hermes Runtime:** run limit is now 2 hours, and the stale "disabled-until-https" metadata label is gone.
 - **401 diagnosis (`216c87d`):** agent credential refusals are now logged with the reason and claims (never the token). It ships with the pending quiet-window update.
 
+## 7 Oct: Expo and EAS builds in Tom's Lab (no image change)
+- **Why Tom's Lab couldn't before:** the abilities were all there. It lacked an ngrok tunnel, the Expo token, a way to keep Metro alive after a run, and instructions. Hermes had all four.
+- **Setup:**
+  - Tom added `NGROK_AUTHTOKEN` and the Expo token as secrets for the Software Engineer, which now also has an `EXPO_TOKEN` alias.
+  - ngrok, eas-cli and a QR tool live in `/paperclip/.local/bin`, which survives updates. From the next build, the image overlay adds that folder to the end of `PATH`.
+- **Skill `expo-dev-and-eas-builds`** (agent-owned):
+  - When to start the dev server and when to make a build.
+  - EAS build, poll and artifact checks; no Apple sign-ins by agents.
+  - The helper `scripts/expo-remote.sh start|status|stop` starts ngrok and Metro in their own sessions, so they outlive the run. It checks the public manifest and JS bundle, makes a QR code, and stops after 12 hours.
+  - Jarvis routes Expo and builds to the Software Engineer, no longer to Hermes Runtime.
+- **Live test (TOM-140):**
+  - First try: `ERR_NGROK_334`. Tom's token is the same free ngrok account as Hermes's, and Hermes's idle tunnel held the address. The engineer filed TOM-141, and Hermes Runtime closed the tunnel.
+  - Next tries: a helper bug recorded the wrong process group, so Metro was judged dead and stopped. Fixed in the skill.
+  - Then live: the public manifest resolves to Macro Chef Dev (`plated-dev`), and the 20 MB bundle loads over the public address.
+  - Metro and ngrok kept running after the run ended. The address stays up until 22:51 UTC.
+  - The engineer fixed two more helper bugs itself and saved them to the skill. Metro binds only to `::1` here, so the health check now uses `localhost`. The app folder is now recorded before a start can fail, so leftovers get cleaned up.
+- **EAS:** the token signs in to `tommccall12`. The last iOS development build (6 Oct) is FINISHED. No build was started.
+- **Learning:** during the test, the engineer added a skill note on checking `main` through GitHub when `git fetch` has no credential.
