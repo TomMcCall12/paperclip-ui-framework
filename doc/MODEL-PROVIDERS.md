@@ -36,6 +36,7 @@ Task overrides (`assigneeAdapterOverrides`) can name the provider as well as the
 - **Sessions:** sessions are stored per provider, so the other provider never tries to resume this one's session.
 - **Chats** (in-app and external, such as Telegram) always use the agent's own provider.
 - **The task sidebar:** its model picker shows the same headings. Picking a model under the other heading sets `adapterType`; picking one under the assignee's own heading removes it.
+- **The New Task dialog:** its model picker shows the same headings, plus the other provider's default. Picking a model under the other heading sends `adapterType` with the task, maps the thinking effort, and says under the picker that Claude-only (or Codex-only) settings such as Chrome don't apply. **Make this the agent's default** is offered only for the agent's own provider; move the agent itself on its page.
 
 ## Choosing models per task (agents)
 

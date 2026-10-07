@@ -99,4 +99,75 @@ describe("buildAssigneeAdapterOverrides", () => {
       },
     });
   });
+
+  it("runs a Claude assignee's task on OpenAI with Codex keys when the task picks an OpenAI model", () => {
+    expect(
+      buildAssigneeAdapterOverrides({
+        adapterType: "claude_local",
+        taskAdapterType: "codex_local",
+        lane: "custom",
+        modelOverride: "gpt-6-sol",
+        thinkingEffortOverride: "high",
+        chrome: true,
+      }),
+    ).toEqual({
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-6-sol", modelReasoningEffort: "high" },
+    });
+  });
+
+  it("runs a Codex assignee's task on Claude with Claude keys", () => {
+    expect(
+      buildAssigneeAdapterOverrides({
+        adapterType: "codex_local",
+        taskAdapterType: "claude_local",
+        lane: "custom",
+        modelOverride: "claude-opus-5-5",
+        thinkingEffortOverride: "medium",
+        chrome: true,
+      }),
+    ).toEqual({
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-opus-5-5", effort: "medium", chrome: true },
+    });
+  });
+
+  it("keeps a provider switch even with the other provider's default model", () => {
+    expect(
+      buildAssigneeAdapterOverrides({
+        adapterType: "claude_local",
+        taskAdapterType: "codex_local",
+        lane: "custom",
+        modelOverride: "",
+        thinkingEffortOverride: "",
+        chrome: false,
+      }),
+    ).toEqual({ adapterType: "codex_local" });
+  });
+
+  it("leaves adapterType out when the task stays on the assignee's own provider", () => {
+    expect(
+      buildAssigneeAdapterOverrides({
+        adapterType: "codex_local",
+        taskAdapterType: "codex_local",
+        lane: "custom",
+        modelOverride: "gpt-6-sol",
+        thinkingEffortOverride: "",
+        chrome: false,
+      }),
+    ).toEqual({ adapterConfig: { model: "gpt-6-sol" } });
+  });
+
+  it("ignores a provider switch for assignees that are not Claude or Codex agents", () => {
+    expect(
+      buildAssigneeAdapterOverrides({
+        adapterType: "opencode_local",
+        taskAdapterType: "codex_local",
+        lane: "custom",
+        modelOverride: "openai/gpt-6",
+        thinkingEffortOverride: "",
+        chrome: false,
+      }),
+    ).toEqual({ adapterConfig: { model: "openai/gpt-6" } });
+  });
 });

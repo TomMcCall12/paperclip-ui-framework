@@ -650,10 +650,13 @@ describe("NewIssueDialog", () => {
         permissions: {},
       },
     ]);
-    mockAgentsApi.adapterModels.mockResolvedValue([
-      { id: "openai/gpt-5.3-codex", label: "GPT-5.3 Codex" },
-      { id: "openai/gpt-5.2-codex", label: "GPT-5.2 Codex" },
-    ]);
+    mockAgentsApi.adapterModels.mockImplementation(async (_companyId: string, adapterType: string) =>
+      adapterType === "codex_local"
+        ? [
+          { id: "openai/gpt-5.3-codex", label: "GPT-5.3 Codex" },
+          { id: "openai/gpt-5.2-codex", label: "GPT-5.2 Codex" },
+        ]
+        : [{ id: "claude-opus-5-5", label: "Claude Opus 5.5" }]);
 
     const { root } = renderDialog(container);
     await waitForAssertion(() => {
@@ -664,10 +667,13 @@ describe("NewIssueDialog", () => {
     await waitForAssertion(() => {
       expect(Array.from(modelSelect.options).map((option) => option.textContent)).toEqual([
         "Agent default (gpt-6-astra)",
+        "Claude default",
+        "Claude Opus 5.5",
         "GPT-5.2 Codex",
         "GPT-5.3 Codex",
       ]);
     });
+    expect(Array.from(modelSelect.querySelectorAll("optgroup")).map((group) => group.label)).toEqual(["Claude", "OpenAI"]);
 
     await act(async () => {
       modelSelect.value = "openai/gpt-5.3-codex";
@@ -695,6 +701,92 @@ describe("NewIssueDialog", () => {
       }),
     );
 
+    act(() => root.unmount());
+  });
+
+  it("runs a Claude agent's task on OpenAI when an OpenAI model is picked", async () => {
+    dialogState.newIssueDefaults = { title: "Other provider", description: "Run this on OpenAI", assigneeAgentId: "agent-claude" };
+    mockAgentsApi.list.mockResolvedValue([{
+      id: "agent-claude",
+      name: "ClaudeCoder",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-opus-5-5" },
+      runtimeConfig: {},
+      permissions: {},
+    }]);
+    mockAgentsApi.adapterModels.mockImplementation(async (_companyId: string, adapterType: string) =>
+      adapterType === "codex_local"
+        ? [{ id: "gpt-6-sol", label: "GPT-6 Sol" }]
+        : [{ id: "claude-opus-5-5", label: "Claude Opus 5.5" }, { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" }]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="new-issue-model-select"]')).not.toBeNull());
+    const modelSelect = container.querySelector('[data-testid="new-issue-model-select"]') as HTMLSelectElement;
+    await waitForAssertion(() => {
+      expect(Array.from(modelSelect.options).map((option) => option.textContent)).toEqual([
+        "Agent default (claude-opus-5-5)",
+        "Claude Opus 5.5",
+        "Claude Sonnet 5.5",
+        "OpenAI default",
+        "GPT-6 Sol",
+      ]);
+    });
+    expect(container.querySelector('[data-testid="new-issue-provider-note"]')).toBeNull();
+
+    await act(async () => {
+      modelSelect.value = "codex_local|gpt-6-sol";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="new-issue-provider-note"]')?.textContent).toContain("runs on OpenAI (Codex)");
+    expect(container.querySelector('[data-testid="new-issue-provider-note"]')?.textContent).toContain("Chrome don't apply");
+    // Moving the agent itself to OpenAI happens on its page, not from a task.
+    expect(container.querySelector('[data-testid="new-issue-make-default-model"]')).toBeNull();
+
+    await submitTask(container);
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      assigneeAgentId: "agent-claude",
+      assigneeAdapterOverrides: { adapterType: "codex_local", adapterConfig: { model: "gpt-6-sol" } },
+    }));
+    expect(mockAgentsApi.update).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("keeps a Claude agent's task on Claude when one of its own models is picked", async () => {
+    dialogState.newIssueDefaults = { title: "Same provider", description: "Stay on Claude", assigneeAgentId: "agent-claude" };
+    mockAgentsApi.list.mockResolvedValue([{
+      id: "agent-claude",
+      name: "ClaudeCoder",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-opus-5-5" },
+      runtimeConfig: {},
+      permissions: {},
+    }]);
+    mockAgentsApi.adapterModels.mockImplementation(async (_companyId: string, adapterType: string) =>
+      adapterType === "codex_local"
+        ? [{ id: "gpt-6-sol", label: "GPT-6 Sol" }]
+        : [{ id: "claude-opus-5-5", label: "Claude Opus 5.5" }, { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" }]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="new-issue-model-select"]')).not.toBeNull());
+    const modelSelect = container.querySelector('[data-testid="new-issue-model-select"]') as HTMLSelectElement;
+    await waitForAssertion(() => expect(modelSelect.options.length).toBe(5));
+    await act(async () => {
+      modelSelect.value = "codex_local|gpt-6-sol";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      modelSelect.value = "claude-sonnet-5-5";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="new-issue-provider-note"]')).toBeNull();
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="new-issue-make-default-model"]')).not.toBeNull());
+
+    await submitTask(container);
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      assigneeAdapterOverrides: { adapterConfig: { model: "claude-sonnet-5-5" } },
+    }));
     act(() => root.unmount());
   });
 

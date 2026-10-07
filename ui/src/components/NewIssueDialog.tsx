@@ -3,7 +3,16 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type CSSProperties, type DragEvent, type RefObject } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/shared";
+import {
+  isModelProviderAdapterType,
+  MODEL_PROVIDER_ADAPTER_TYPES,
+  MODEL_PROVIDER_LABELS,
+  translateThinkingEffort,
+  type AgentEnvConfig,
+  type EnvBinding,
+  type IssueWorkMode,
+  type ModelProviderAdapterType,
+} from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
@@ -84,6 +93,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
+import { decodeProviderModel, encodeProviderModel } from "./ProviderModelField";
 import { deriveIssueTitle } from "../lib/issue-title";
 
 const DRAFT_KEY = "paperclip:issue-draft";
@@ -584,16 +594,28 @@ export function NewIssueDialog() {
     && typeof selectedAssigneeAgent.adapterConfig.model === "string"
     ? selectedAssigneeAgent.adapterConfig.model
     : "";
-  const effectiveAssigneeModel = assigneeModelOverride || assigneePrimaryModel;
+  // Claude and OpenAI (Codex) assignees can run this task on either provider.
+  // A model from the other provider is kept as `provider|model`; the
+  // assignee's own models stay plain ids.
+  const providerChoice = isModelProviderAdapterType(assigneeAdapterType);
+  const otherProviderModel = providerChoice ? decodeProviderModel(assigneeModelOverride) : null;
+  const taskProviderSwitch: ModelProviderAdapterType | null =
+    otherProviderModel && otherProviderModel.adapterType !== assigneeAdapterType ? otherProviderModel.adapterType : null;
+  const taskAdapterType = taskProviderSwitch ?? assigneeAdapterType;
+  const taskModelOverride = otherProviderModel ? otherProviderModel.model : assigneeModelOverride;
+  const effectiveAssigneeModel = taskModelOverride || (taskProviderSwitch ? "" : assigneePrimaryModel);
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
-  // Offered only when a task model differs from the agent's saved default.
+  // Offered only when a task model on the agent's own provider differs from
+  // its saved default; moving the agent to the other provider is done on the
+  // agent's page.
   const canMakeDefaultModel = Boolean(
     supportsAssigneeOverrides
       && selectedAssigneeAgentId
-      && assigneeModelOverride
-      && assigneeModelOverride !== assigneePrimaryModel,
+      && !taskProviderSwitch
+      && taskModelOverride
+      && taskModelOverride !== assigneePrimaryModel,
   );
   // A choice to change an agent's default applies to one agent and model only.
   useEffect(() => {
@@ -615,6 +637,17 @@ export function NewIssueDialog() {
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
     queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!, { provider: catalogProvider }),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && supportsAssigneeOverrides,
+  });
+  const otherProviderAdapterType: ModelProviderAdapterType | null = providerChoice
+    ? MODEL_PROVIDER_ADAPTER_TYPES.find((type) => type !== assigneeAdapterType) ?? null
+    : null;
+  const { data: otherProviderModels } = useQuery({
+    queryKey:
+      effectiveCompanyId && otherProviderAdapterType
+        ? queryKeys.agents.adapterModels(effectiveCompanyId, otherProviderAdapterType, null, undefined)
+        : ["agents", "none", "adapter-models", otherProviderAdapterType ?? "none"],
+    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, otherProviderAdapterType!),
+    enabled: Boolean(effectiveCompanyId) && newIssueOpen && Boolean(otherProviderAdapterType),
   });
 
   const createIssue = useMutation({
@@ -1025,9 +1058,9 @@ export function NewIssueDialog() {
       return;
     }
     const validThinkingValues =
-      assigneeAdapterType === "codex_local"
+      taskAdapterType === "codex_local"
         ? codexReasoningEffortOptions(effectiveAssigneeModel)
-        : assigneeAdapterType === "opencode_local"
+        : taskAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
           : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
@@ -1035,7 +1068,7 @@ export function NewIssueDialog() {
     }
   }, [
     supportsAssigneeOverrides,
-    assigneeAdapterType,
+    taskAdapterType,
     effectiveAssigneeModel,
     assigneeThinkingEffort,
   ]);
@@ -1115,8 +1148,9 @@ export function NewIssueDialog() {
     const currentTitle = titleRef.current.trim() || deriveIssueTitle(currentDescription);
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
+      taskAdapterType,
       lane: assigneeModelLane,
-      modelOverride: assigneeModelOverride,
+      modelOverride: taskModelOverride,
       thinkingEffortOverride: assigneeThinkingEffort,
       chrome: assigneeChrome,
     });
@@ -1154,8 +1188,8 @@ export function NewIssueDialog() {
           agentId: selectedAssigneeAgentId,
           agentName: selectedAssigneeAgent?.name ?? "the agent",
           agentPath: agentUrl(selectedAssigneeAgent ?? { id: selectedAssigneeAgentId }),
-          model: assigneeModelOverride,
-          modelLabel: modelDisplayName(assigneeModelOverride),
+          model: taskModelOverride,
+          modelLabel: modelDisplayName(taskModelOverride),
           previousModel: assigneePrimaryModel,
           previousModelLabel: modelDisplayName(assigneePrimaryModel),
         }
@@ -1295,17 +1329,17 @@ export function NewIssueDialog() {
     && Boolean(parentExecutionWorkspaceId)
     && !isUsingParentExecutionWorkspace;
   const assigneeOptionsTitle =
-    assigneeAdapterType === "claude_local"
+    taskAdapterType === "claude_local"
       ? "Claude options"
-      : assigneeAdapterType === "codex_local"
+      : taskAdapterType === "codex_local"
         ? "Codex options"
-        : assigneeAdapterType === "opencode_local"
+        : taskAdapterType === "opencode_local"
           ? "OpenCode options"
         : "Agent options";
   const thinkingEffortOptions =
-    assigneeAdapterType === "codex_local"
+    taskAdapterType === "codex_local"
       ? codexReasoningEffortOptions(effectiveAssigneeModel)
-      : assigneeAdapterType === "opencode_local"
+      : taskAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
@@ -1387,25 +1421,71 @@ export function NewIssueDialog() {
   }, [newIssueOpen, orderedProjects, projectId, selectedExecutionWorkspaceId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
     () => {
-      return [...(assigneeAdapterModels ?? [])]
-        .sort((a, b) => {
+      const sortModels = (models: typeof assigneeAdapterModels) =>
+        [...(models ?? [])].sort((a, b) => {
           const providerA = extractProviderIdWithFallback(a.id);
           const providerB = extractProviderIdWithFallback(b.id);
           const byProvider = providerA.localeCompare(providerB);
           if (byProvider !== 0) return byProvider;
           return a.id.localeCompare(b.id);
-        })
-        .map((model) => ({
-          id: model.id,
-          label: model.label,
-          searchText: `${model.id} ${extractProviderIdWithFallback(model.id)}`,
-        }));
+        });
+      if (providerChoice && otherProviderAdapterType) {
+        // One list with a heading per provider; the other provider's models
+        // (and its default) run this task on that provider.
+        return MODEL_PROVIDER_ADAPTER_TYPES.flatMap((type) => {
+          const group = MODEL_PROVIDER_LABELS[type];
+          const own = type !== otherProviderAdapterType;
+          const models = sortModels(own ? assigneeAdapterModels : otherProviderModels).map((model) => ({
+            id: own ? model.id : encodeProviderModel(type, model.id),
+            label: model.label,
+            group,
+            searchText: `${model.id} ${group}`,
+          }));
+          return own
+            ? models
+            : [{ id: encodeProviderModel(type, ""), label: `${group} default`, group, searchText: `${group} default` }, ...models];
+        });
+      }
+      return sortModels(assigneeAdapterModels).map((model) => ({
+        id: model.id,
+        label: model.label,
+        searchText: `${model.id} ${extractProviderIdWithFallback(model.id)}`,
+      }));
     },
-    [assigneeAdapterModels],
+    [assigneeAdapterModels, otherProviderAdapterType, otherProviderModels, providerChoice],
   );
   // Toasts name models as the picker does, falling back to the raw id.
   const modelDisplayName = (modelId: string) =>
     modelOverrideOptions.find((option) => option.id === modelId)?.label ?? modelId;
+  const modelOverrideGroups = useMemo(() => {
+    const groups: Array<{ label: string | null; options: InlineEntityOption[] }> = [];
+    for (const option of modelOverrideOptions) {
+      const label = option.group ?? null;
+      const last = groups[groups.length - 1];
+      if (last && last.label === label) last.options.push(option);
+      else groups.push({ label, options: [option] });
+    }
+    return groups;
+  }, [modelOverrideOptions]);
+  /** A model under the other provider's heading runs this task on that provider. */
+  function handleTaskModelChange(value: string, syncLane = true) {
+    const choice = providerChoice ? decodeProviderModel(value) : null;
+    const nextAdapterType = choice?.adapterType ?? assigneeAdapterType;
+    if (
+      isModelProviderAdapterType(taskAdapterType)
+      && isModelProviderAdapterType(nextAdapterType)
+      && nextAdapterType !== taskAdapterType
+    ) {
+      setAssigneeThinkingEffort(translateThinkingEffort(taskAdapterType, nextAdapterType, assigneeThinkingEffort));
+    }
+    setAssigneeModelOverride(value);
+    if (syncLane) setAssigneeModelLane(value ? "custom" : "primary");
+  }
+  const taskProviderNote = taskProviderSwitch
+    ? taskProviderSwitch === "codex_local"
+      ? `This task runs on OpenAI (Codex) with the responsible person's connected ChatGPT/OpenAI account. ${selectedAssigneeAgent?.name ?? "The agent"} keeps its instructions, skills and folder; Claude-only settings such as Chrome don't apply.`
+      : `This task runs on Claude (Claude Code) with the machine's Claude login. ${selectedAssigneeAgent?.name ?? "The agent"} keeps its instructions, skills and folder; Codex-only settings don't apply.`
+    : null;
   const currentWorkMode = workModeMetaFor(workMode);
   const CurrentWorkModeIcon = currentWorkMode.icon;
   const dialogViewportStyle = useMemo<NewIssueDialogViewportStyle>(() => {
@@ -1653,20 +1733,23 @@ export function NewIssueDialog() {
                     aria-label="Agent model"
                     value={assigneeModelOverride}
                     className="h-8 max-w-48 rounded-md border border-border bg-background px-2.5 py-0 text-xs outline-none transition-colors hover:bg-accent/50 sm:h-auto sm:max-w-none sm:px-2 sm:py-1"
-                    onChange={(event) => {
-                      const nextModel = event.target.value;
-                      setAssigneeModelOverride(nextModel);
-                      setAssigneeModelLane(nextModel ? "custom" : "primary");
-                    }}
+                    onChange={(event) => handleTaskModelChange(event.target.value)}
                   >
                     <option value="">
                       {assigneePrimaryModel ? `Agent default (${assigneePrimaryModel})` : "Agent default"}
                     </option>
-                    {modelOverrideOptions.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.label}
-                      </option>
-                    ))}
+                    {modelOverrideGroups.map((group) => {
+                      const options = group.options.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label}
+                        </option>
+                      ));
+                      return group.label ? (
+                        <optgroup key={group.label} label={group.label}>
+                          {options}
+                        </optgroup>
+                      ) : options;
+                    })}
                   </select>
                 </label>
               ) : null}
@@ -2041,6 +2124,11 @@ export function NewIssueDialog() {
 
           {supportsAssigneeOverrides && (
             <div className="px-4 pb-2">
+            {taskProviderNote ? (
+              <p data-testid="new-issue-provider-note" className="mb-1.5 text-xs text-muted-foreground">
+                {taskProviderNote}
+              </p>
+            ) : null}
             <button
               className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setAssigneeOptionsOpen((open) => !open)}
@@ -2091,7 +2179,7 @@ export function NewIssueDialog() {
                       noneLabel="Default model"
                       searchPlaceholder="Search models..."
                       emptyMessage="No models found."
-                      onChange={setAssigneeModelOverride}
+                      onChange={(value) => handleTaskModelChange(value, false)}
                     />
                     {canMakeDefaultModel ? (
                       <MakeDefaultModelToggle
@@ -2121,7 +2209,7 @@ export function NewIssueDialog() {
                     </div>
                   </div>
                 )}
-                {assigneeAdapterType === "claude_local" && assigneeModelLane === "custom" && (
+                {taskAdapterType === "claude_local" && assigneeModelLane === "custom" && (
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
                     <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
                     <ToggleSwitch
