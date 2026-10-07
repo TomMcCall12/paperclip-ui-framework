@@ -31,6 +31,13 @@ export function dashboardRoutes(db: Db) {
     res.json(summary);
   });
 
+  router.get("/companies/:companyId/dashboard/pending-lab-changes", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const pending = await svc.pendingLabChanges(companyId);
+    res.json(pending);
+  });
+
   router.get("/companies/:companyId/recovery-observability", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

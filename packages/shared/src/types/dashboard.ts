@@ -52,3 +52,49 @@ export interface DashboardSummary {
   };
   runActivity: DashboardRunActivityDay[];
 }
+
+/** One change listed in the open "Rebuild queue: …" task's build table. */
+export interface PendingLabChangeItem {
+  /** The change's own description (the table's "Change" column). */
+  title: string;
+  /** The linked task's identifier, e.g. "TOM-167", when the row names one. */
+  taskIdentifier: string | null;
+  /** Href to the linked task, when `taskIdentifier` is set. */
+  href: string | null;
+  /** The table's raw "Task" cell when it does not link a task (e.g. "Lab session, 7 Oct"). */
+  source: string | null;
+}
+
+/**
+ * Where the queued rebuild is, inferred from the queue task's confirmation
+ * status plus the host update command's own progress comment (prefixed
+ * `**Tom's Lab updater:**`). There is no structured deploy-state field yet —
+ * this is the best a reader of the task thread can tell, so it is re-derived
+ * the same way a human would read it.
+ */
+export type PendingLabChangesDeployState =
+  | "awaiting_approval"
+  | "declined"
+  | "expired"
+  | "queued"
+  | "building"
+  | "live"
+  | "rolled_back"
+  | "failed";
+
+export interface PendingLabChangesConfirmation {
+  id: string;
+  status: string;
+  prompt: string;
+  acceptLabel: string | null;
+  rejectLabel: string | null;
+}
+
+export interface PendingLabChanges {
+  issue: { id: string; identifier: string; title: string; href: string } | null;
+  commit: string | null;
+  branch: string | null;
+  items: PendingLabChangeItem[];
+  confirmation: PendingLabChangesConfirmation | null;
+  deployState: PendingLabChangesDeployState | null;
+}
