@@ -1,6 +1,7 @@
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
+import { stampClaudeMods } from "./claude-mods.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
@@ -254,7 +255,7 @@ const grokLoginCapability: AdapterLoginCapability = {
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   runtimeToolDelivery: "native_mcp",
-  execute: stampClaudeAgentIdHeader(claudeExecute),
+  execute: stampClaudeMods(stampClaudeAgentIdHeader(claudeExecute)),
   testEnvironment: claudeTestEnvironment,
   acp: {
     agentId: "claude",
