@@ -1,0 +1,11 @@
+[Unit]
+Description=Telegram alert for failed unit %i
+# No OnFailure= here: an alert unit that alerts on its own failure can loop.
+
+[Service]
+Type=oneshot
+EnvironmentFile=/srv/paperclip/env/telegram.env
+ExecStart=/srv/paperclip/current/deploy/native/scripts/telegram-alert.sh "%i"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-alert

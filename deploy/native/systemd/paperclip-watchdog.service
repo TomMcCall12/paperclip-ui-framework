@@ -1,0 +1,14 @@
+[Unit]
+Description=Paperclip health-check watchdog (triggered by paperclip-watchdog.timer)
+After=paperclip.service
+OnFailure=paperclip-alert@%n.service
+
+[Service]
+Type=oneshot
+User=paperclip
+Group=paperclip
+EnvironmentFile=/srv/paperclip/env/paperclip.env
+ExecStart=/srv/paperclip/current/deploy/native/scripts/paperclip-watchdog.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-watchdog

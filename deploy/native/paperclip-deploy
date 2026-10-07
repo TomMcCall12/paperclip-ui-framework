@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# Native replacement for the old Docker-based host `report` / `status` /
+# `deploy <commit>` forced commands. Deploy = DB snapshot, build the new
+# release, switch `current`, restart, health check, automatic rollback
+# (switch back, restore the DB snapshot if a migration ran).
+#
+# Usage:
+#   paperclip-deploy report
+#   paperclip-deploy status
+#   paperclip-deploy deploy <commit> [--dry-run]
+#
+# SSH forced command: set this as the `command=` in authorized_keys for the
+# deploy key, e.g.:
+#   command="/srv/paperclip/current/deploy/native/paperclip-deploy" ssh-ed25519 AAAA...
+# The client then runs `ssh host report` / `ssh host deploy <commit>`, and
+# sshd exports SSH_ORIGINAL_COMMAND with that request; this script reads it
+# in place of argv when present.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+PAPERCLIP_CURRENT="/srv/paperclip/current"
+RELEASES_DIR="/srv/paperclip/releases"
+PAPERCLIP_HOME="${PAPERCLIP_HOME:-/srv/paperclip/data}"
+ENV_FILE="/srv/paperclip/env/paperclip.env"
+REPO_URL="https://github.com/TomMcCall12/toms-lab.git"
+SNAPSHOT_DIR="/srv/paperclip/data/.pre-deploy-snapshot"
+HEALTH_CHECK_ATTEMPTS=12
+HEALTH_CHECK_DELAY=5
+KEEP_RELEASES=5
+MIGRATIONS_PATH="packages/db/src/migrations"
+
+# shellcheck disable=SC1090
+[[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
+PORT="${PORT:-3100}"
+HEALTH_URL="http://127.0.0.1:${PORT}/api/health"
+
+usage() {
+  sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+}
+
+current_commit() {
+  if [[ -L "$PAPERCLIP_CURRENT" ]]; then
+    basename "$(readlink -f "$PAPERCLIP_CURRENT")"
+  else
+    echo "none"
+  fi
+}
+
+check_health() {
+  curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1
+}
+
+wait_for_health() {
+  local i
+  for ((i = 1; i <= HEALTH_CHECK_ATTEMPTS; i++)); do
+    if check_health; then
+      log "Health check OK (attempt $i/$HEALTH_CHECK_ATTEMPTS)"
+      return 0
+    fi
+    log "Health check not ready yet (attempt $i/$HEALTH_CHECK_ATTEMPTS)"
+    sleep "$HEALTH_CHECK_DELAY"
+  done
+  return 1
+}
+
+cmd_report() {
+  echo "== Paperclip native report =="
+  echo "current release: $(current_commit)  ($PAPERCLIP_CURRENT -> $(readlink -f "$PAPERCLIP_CURRENT" 2>/dev/null || echo 'not linked'))"
+  echo "service:"
+  systemctl --no-pager status paperclip.service 2>&1 | sed 's/^/  /' || true
+  echo "health: $(check_health && echo OK || echo FAILING) ($HEALTH_URL)"
+  echo "disk /srv/paperclip:"
+  df -h /srv/paperclip 2>&1 | sed 's/^/  /' || true
+  echo "disk /srv/hdd:"
+  df -h /srv/hdd 2>&1 | sed 's/^/  /' || true
+  echo "last backup:"
+  # shellcheck disable=SC2012
+  ls -1dt /srv/hdd/backups/*/ 2>/dev/null | head -1 | sed 's/^/  /' || echo "  none found"
+  echo "releases on disk (newest first):"
+  # Release dir names are git commit SHAs (safe charset); ls|grep is fine here.
+  # shellcheck disable=SC2012,SC2010
+  ls -1dt "$RELEASES_DIR"/*/ 2>/dev/null | grep -v '\.git-mirror\.git/$' | sed 's/^/  /' || true
+}
+
+cmd_status() {
+  local active commit health
+  active="$(systemctl is-active paperclip.service 2>/dev/null || echo unknown)"
+  commit="$(current_commit)"
+  health="$(check_health && echo ok || echo failing)"
+  echo "paperclip.service=$active current=$commit health=$health"
+}
+
+cmd_deploy() {
+  local commit="$1" dry_run="${2:-0}"
+  DRY_RUN="$dry_run"
+  [[ "$commit" =~ ^[0-9a-f]{7,40}$ ]] || die "deploy: commit must be a hex git sha (got: $commit)"
+
+  local prev_release prev_commit migration_ran=0
+  prev_release="$(readlink -f "$PAPERCLIP_CURRENT" 2>/dev/null || true)"
+  prev_commit="$(current_commit)"
+  log "Deploying $commit (currently $prev_commit)"
+
+  log "== Pre-deploy DB snapshot =="
+  run "Logical DB dump (pnpm paperclipai db:backup)" -- \
+    bash -c "cd '$PAPERCLIP_CURRENT' && PAPERCLIP_HOME='$PAPERCLIP_HOME' pnpm paperclipai db:backup"
+  if [[ -d "$PAPERCLIP_HOME/db" ]]; then
+    run "Snapshot \$PAPERCLIP_HOME/db -> $SNAPSHOT_DIR/db (for instant rollback)" -- \
+      rsync -a --delete "$PAPERCLIP_HOME/db/" "$SNAPSHOT_DIR/db/"
+  fi
+
+  if [[ "$prev_commit" != "none" && -d "$RELEASES_DIR/.git-mirror.git" ]]; then
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "[dry-run] would check whether $MIGRATIONS_PATH differs between $prev_commit and $commit"
+    elif git -C "$RELEASES_DIR/.git-mirror.git" diff --quiet "$prev_commit" "$commit" -- "$MIGRATIONS_PATH" 2>/dev/null; then
+      migration_ran=0
+    else
+      migration_ran=1
+      log "Migrations differ between $prev_commit and $commit; a failed health check will restore the DB snapshot too."
+    fi
+  fi
+
+  log "== Build $commit =="
+  if [[ "$DRY_RUN" == "1" ]]; then
+    "$SCRIPT_DIR/scripts/build-release.sh" --commit "$commit" --dest "$RELEASES_DIR/$commit" --repo-url "$REPO_URL" --dry-run
+  else
+    runuser -u paperclip -- "$SCRIPT_DIR/scripts/build-release.sh" --commit "$commit" --dest "$RELEASES_DIR/$commit" --repo-url "$REPO_URL"
+  fi
+
+  log "== Switch current and restart =="
+  run "Point current at $RELEASES_DIR/$commit" -- ln -sfn "$RELEASES_DIR/$commit" "$PAPERCLIP_CURRENT"
+  run "Restart paperclip.service" -- sudo systemctl restart paperclip.service
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "[dry-run] would wait for $HEALTH_URL to become healthy (up to $((HEALTH_CHECK_ATTEMPTS * HEALTH_CHECK_DELAY))s)"
+    log "[dry-run] on failure: switch current back to $prev_commit, restart, and (migration_ran=$migration_ran) restore the DB snapshot"
+    log "[dry-run] on success: prune releases beyond the last $KEEP_RELEASES"
+    return 0
+  fi
+
+  if wait_for_health; then
+    log "Deploy of $commit succeeded."
+    log "Pruning releases beyond the last $KEEP_RELEASES..."
+    # Release dir names are git commit SHAs (safe charset); ls|grep is fine here.
+    # shellcheck disable=SC2012,SC2010
+    ls -1dt "$RELEASES_DIR"/*/ 2>/dev/null \
+      | grep -v '\.git-mirror\.git/$' \
+      | grep -v "^$RELEASES_DIR/$commit/\$" \
+      | tail -n "+$KEEP_RELEASES" \
+      | while read -r old; do rm -rf "${old%/}"; done
+    return 0
+  fi
+
+  log "Health check failed after deploying $commit. Rolling back to $prev_commit..."
+  if [[ -z "$prev_release" ]]; then
+    die "No previous release to roll back to. Manual intervention required."
+  fi
+  ln -sfn "$prev_release" "$PAPERCLIP_CURRENT"
+  sudo systemctl restart paperclip.service
+  if [[ "$migration_ran" == "1" && -d "$SNAPSHOT_DIR/db" ]]; then
+    log "Migration ran during the failed deploy; restoring the pre-deploy DB snapshot."
+    sudo systemctl stop paperclip.service
+    rsync -a --delete "$SNAPSHOT_DIR/db/" "$PAPERCLIP_HOME/db/"
+    sudo systemctl start paperclip.service
+  fi
+  if wait_for_health; then
+    die "Deploy of $commit failed and was rolled back to $prev_commit successfully."
+  else
+    die "Deploy of $commit failed AND the rollback to $prev_commit did not pass its health check. Manual intervention required."
+  fi
+}
+
+main() {
+  local args=("$@")
+  if [[ -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then
+    IFS=' ' read -r -a args <<< "$SSH_ORIGINAL_COMMAND"
+  fi
+
+  local sub="${args[0]:-}"
+  case "$sub" in
+    report) cmd_report ;;
+    status) cmd_status ;;
+    deploy)
+      local commit="${args[1]:-}" dry=0
+      [[ "${args[2]:-}" == "--dry-run" ]] && dry=1
+      [[ -n "$commit" ]] || die "deploy: give a commit sha"
+      cmd_deploy "$commit" "$dry"
+      ;;
+    -h|--help|"") usage ;;
+    *) die "Unknown command: $sub (expected report, status or deploy <commit>)" ;;
+  esac
+}
+
+main "$@"

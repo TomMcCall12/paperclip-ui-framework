@@ -1,0 +1,15 @@
+[Unit]
+Description=Paperclip backup run (triggered by paperclip-backup.timer)
+RequiresMountsFor=/srv/paperclip /srv/hdd
+OnFailure=paperclip-alert@%n.service
+
+[Service]
+Type=oneshot
+User=paperclip
+Group=paperclip
+EnvironmentFile=/srv/paperclip/env/paperclip.env
+EnvironmentFile=-/srv/paperclip/env/rclone.env
+ExecStart=/srv/paperclip/current/deploy/native/scripts/paperclip-backup.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-backup
