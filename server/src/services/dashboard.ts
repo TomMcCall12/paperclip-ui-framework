@@ -1,11 +1,100 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  agents,
+  approvals,
+  companies,
+  costEvents,
+  heartbeatRuns,
+  issueComments,
+  issueThreadInteractions,
+  issues,
+} from "@paperclipai/db";
+import type {
+  PendingLabChangeItem,
+  PendingLabChanges,
+  PendingLabChangesDeployState,
+  RequestConfirmationPayload,
+} from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { executionIssueCondition } from "./issue-visibility.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
+
+/** The convention the `toms-lab-self-update` skill uses to name the one open rebuild queue task. */
+const REBUILD_QUEUE_TITLE_PREFIX = "Rebuild queue:";
+/** The host update command's own progress-comment prefix on the queue task. */
+const LAB_UPDATER_COMMENT_PREFIX = "**Tom's Lab updater:**";
+
+const COMMIT_LINE_PATTERN = /Commit `([0-9a-f]{6,40})` on `([^`]+)`/i;
+const TABLE_ROW_PATTERN = /^\|(.+)\|(.+)\|\s*$/;
+const TASK_LINK_PATTERN = /\[(\S+)\]\(([^)]+)\)/;
+
+export function parseQueueDescription(description: string | null): {
+  commit: string | null;
+  branch: string | null;
+  items: PendingLabChangeItem[];
+} {
+  if (!description) return { commit: null, branch: null, items: [] };
+
+  const commitMatch = description.match(COMMIT_LINE_PATTERN);
+  const commit = commitMatch?.[1] ?? null;
+  const branch = commitMatch?.[2] ?? null;
+
+  const lines = description.split("\n");
+  const items: PendingLabChangeItem[] = [];
+  let pastHeader = false;
+  let pastSeparator = false;
+  for (const line of lines) {
+    const row = line.match(TABLE_ROW_PATTERN);
+    if (!row) {
+      if (pastHeader) break; // the table ended
+      continue;
+    }
+    const [, col1, col2] = row;
+    if (!pastHeader) {
+      if (/^change$/i.test(col1.trim()) && /^task$/i.test(col2.trim())) {
+        pastHeader = true;
+      }
+      continue;
+    }
+    if (!pastSeparator) {
+      // The `|---|---|` row right after the header.
+      pastSeparator = true;
+      continue;
+    }
+    const title = col1.trim();
+    const taskCell = col2.trim();
+    const linkMatch = taskCell.match(TASK_LINK_PATTERN);
+    items.push({
+      title,
+      taskIdentifier: linkMatch?.[1] ?? null,
+      href: linkMatch ? `/issues/${linkMatch[1]}` : null,
+      source: linkMatch ? null : taskCell,
+    });
+  }
+
+  return { commit, branch, items };
+}
+
+export function inferDeployState(
+  confirmationStatus: string | null,
+  updaterNote: string | null,
+): PendingLabChangesDeployState | null {
+  if (!confirmationStatus) return null;
+  if (confirmationStatus === "pending") return "awaiting_approval";
+  if (confirmationStatus === "rejected" || confirmationStatus === "cancelled") return "declined";
+  if (confirmationStatus === "expired" || confirmationStatus === "failed") return "expired";
+  // accepted: read the host update command's own progress note, the only
+  // place the build/deploy/rollback lifecycle is recorded today.
+  const note = updaterNote ?? "";
+  if (/is live as/i.test(note)) return "live";
+  if (/rolled back|restore `/i.test(note)) return "rolled_back";
+  if (/\bbuilding\b/i.test(note)) return "building";
+  if (/\bfailed\b/i.test(note)) return "failed";
+  return "queued";
+}
 
 function formatUtcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -207,6 +296,86 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+      };
+    },
+    pendingLabChanges: async (companyId: string): Promise<PendingLabChanges> => {
+      const [queueIssue] = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          description: issues.description,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            ilike(issues.title, `${REBUILD_QUEUE_TITLE_PREFIX}%`),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ),
+        )
+        .orderBy(desc(issues.createdAt))
+        .limit(1);
+
+      if (!queueIssue || !queueIssue.identifier) {
+        return { issue: null, commit: null, branch: null, items: [], confirmation: null, deployState: null };
+      }
+
+      const { commit, branch, items } = parseQueueDescription(queueIssue.description);
+
+      const [confirmation] = await db
+        .select({
+          id: issueThreadInteractions.id,
+          status: issueThreadInteractions.status,
+          payload: issueThreadInteractions.payload,
+        })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.issueId, queueIssue.id),
+            eq(issueThreadInteractions.kind, "request_confirmation"),
+          ),
+        )
+        .orderBy(desc(issueThreadInteractions.createdAt))
+        .limit(1);
+
+      const [updaterComment] = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, queueIssue.id),
+            ilike(issueComments.body, `${LAB_UPDATER_COMMENT_PREFIX}%`),
+          ),
+        )
+        .orderBy(desc(issueComments.createdAt))
+        .limit(1);
+
+      const deployState = inferDeployState(confirmation?.status ?? null, updaterComment?.body ?? null);
+
+      return {
+        issue: {
+          id: queueIssue.id,
+          identifier: queueIssue.identifier,
+          title: queueIssue.title,
+          href: `/issues/${queueIssue.identifier}`,
+        },
+        commit,
+        branch,
+        items,
+        confirmation: confirmation
+          ? (() => {
+              const payload = confirmation.payload as RequestConfirmationPayload;
+              return {
+                id: confirmation.id,
+                status: confirmation.status,
+                prompt: payload.prompt,
+                acceptLabel: payload.acceptLabel ?? null,
+                rejectLabel: payload.rejectLabel ?? null,
+              };
+            })()
+          : null,
+        deployState,
       };
     },
   };
