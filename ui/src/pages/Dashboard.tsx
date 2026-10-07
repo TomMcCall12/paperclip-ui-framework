@@ -14,6 +14,9 @@ import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { costsApi } from "../api/costs";
+import { computeRange } from "../hooks/useDateRange";
+import { ModelFamilyUsageCard } from "../components/ModelFamilyUsageCard";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -202,6 +205,14 @@ export function Dashboard() {
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const monthRange = useMemo(() => computeRange("mtd"), []);
+  const { data: modelUsageRows } = useQuery({
+    queryKey: [...queryKeys.dashboard(selectedCompanyId!), "model-usage", monthRange.from],
+    queryFn: () => costsApi.byProvider(selectedCompanyId!, monthRange.from, monthRange.to),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 60_000,
   });
 
   const userProfileMap = useMemo(
@@ -450,6 +461,8 @@ export function Dashboard() {
               }
             />
           </div>
+
+          <ModelFamilyUsageCard rows={modelUsageRows ?? []} periodLabel="This month" />
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 

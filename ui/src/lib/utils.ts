@@ -133,6 +133,33 @@ export function providerDisplayName(provider: string): string {
   return map[provider.toLowerCase()] ?? provider;
 }
 
+export type ModelFamily = "claude" | "gpt" | "other";
+
+/**
+ * Classify a cost event's model family for the dashboard's Claude-vs-GPT
+ * usage split. Keyed off the model id rather than the billing provider:
+ * both families can be billed through providers like "openrouter" or
+ * "aws_bedrock", so the provider alone can't tell Claude apart from GPT.
+ */
+export function classifyModelFamily(model: string): ModelFamily {
+  const normalized = model.toLowerCase();
+  if (normalized.includes("claude")) return "claude";
+  if (
+    normalized.includes("gpt") ||
+    normalized.includes("chatgpt") ||
+    /(^|[^a-z])o[134](-|$|[^a-z])/.test(normalized)
+  ) {
+    return "gpt";
+  }
+  return "other";
+}
+
+export const MODEL_FAMILY_LABELS: Record<ModelFamily, string> = {
+  claude: "Claude",
+  gpt: "GPT",
+  other: "Other models",
+};
+
 export function billingTypeDisplayName(billingType: BillingType): string {
   const map: Record<BillingType, string> = {
     metered_api: "Metered API",
