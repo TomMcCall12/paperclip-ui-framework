@@ -215,3 +215,23 @@ Tom asked for skills to work "at the Hermes level": agents learn during tasks, n
   - The engineer fixed two more helper bugs itself and saved them to the skill. Metro binds only to `::1` here, so the health check now uses `localhost`. The app folder is now recorded before a start can fail, so leftovers get cleaned up.
 - **EAS:** the token signs in to `tommccall12`. The last iOS development build (6 Oct) is FINISHED. No build was started.
 - **Learning:** during the test, the engineer added a skill note on checking `main` through GitHub when `git fetch` has no credential.
+
+## 7 Oct: Tom's Lab without Hermes for vault sync and server settings
+Tom keeps Hermes running, but wants Tom's Lab to do these itself.
+- **Vault sync (`cd4a574`):** the notes vault bridge can sync the vault with its Google Drive copy both ways (rclone bisync) every 5 minutes and 30 seconds after each write.
+  - Conflicts keep both versions.
+  - The first run merges without deleting.
+  - rclone stops runs that would delete half the vault.
+  - Agents can see the status and ask for a sync through `GET/POST /notes-vault/sync` (ships with the next image).
+- **What it fixes:** Hermes's sync was a one-way copy from the ZimaBoard to Drive. 31 Drive-only files never reached Tom's Lab: notes Claudian wrote in Obsidian on Tom's computer (the Hormozi book source material, Clip Notes), two canvases and plugin files. Drive-side edits to shared notes would also be overwritten within 15 minutes.
+- **Waiting on Tom:**
+  - The safety check stopped the step that gives the bridge its own copy of the Google Drive sign-in, so Tom's approval is needed.
+  - Everything else is staged: the script, a vault backup step, the compose change and pausing Hermes's copy job (`1b44d3d05a16`).
+- **Server settings (host `lab-update.sh`, backup `.pre-settings-*`):** new commands `settings` and `set <TASK-ID> <NAME> <VALUE>` for the vault writer and reader lists and the adapter model catalog.
+  - A change needs Tom's accepted confirmation containing `setting NAME=<sha256[:12] of the value>`.
+  - The value is checked: agent ids must be Tom's Lab agents, and the models setting must be valid JSON.
+  - Only the paperclip service's `environment` changes, never `.env`.
+  - It waits for idle, restarts, confirms the value is live and healthy, and rolls back otherwise.
+  - Tested: the edit on a copy (replace, add, block scalar, quotes) and every refusal path through the agent key. Not yet tested: a full approved change.
+  - The `toms-lab-self-update` skill and Jarvis's routing explain it.
+- **TOM-127:** the Hormozi agent already has vault write access (live since 6 Oct). Its book notes are among the Drive-only files the sync will bring in.
