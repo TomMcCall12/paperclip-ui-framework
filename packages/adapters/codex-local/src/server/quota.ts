@@ -470,7 +470,10 @@ type PendingRequest = {
 class CodexRpcClient {
   private proc = spawn(
     "codex",
-    ["-s", "read-only", "-a", "untrusted", "app-server"],
+    // Only account-read RPCs are sent; no agent turn is started. Keep the
+    // read-only sandbox and use the approval policy supported by current CLIs
+    // ("untrusted" was removed; only "on-request" and "never" remain).
+    ["-s", "read-only", "-a", "on-request", "app-server"],
     { stdio: ["pipe", "pipe", "pipe"], env: process.env },
   );
 

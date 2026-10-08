@@ -221,4 +221,21 @@ describe("CodexRpcClient spawn failures", () => {
     expect(result.error).toContain("Codex app-server");
     expect(result.error).toContain("spawn codex ENOENT");
   });
+
+  it("spawns the app-server with an approval policy value the current CLI accepts", async () => {
+    const enoent = Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" });
+    mockSpawn.mockImplementation(() => createChildThatErrorsOnMicrotask(enoent));
+
+    await getQuotaWindows();
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "codex",
+      ["-s", "read-only", "-a", "on-request", "app-server"],
+      expect.anything(),
+    );
+    // "untrusted" was removed from the installed Codex CLI's
+    // `--ask-for-approval` values (only "on-request" and "never" remain).
+    const [, args] = mockSpawn.mock.calls[0]!;
+    expect(args).not.toContain("untrusted");
+  });
 });
