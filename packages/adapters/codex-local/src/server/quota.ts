@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import { codexHomeHasUsableAuth, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import {
   classifyCodexAuthRefreshFailure,
   type CodexAuthRefreshFailureClass,
@@ -166,8 +167,28 @@ export async function readCodexAuthInfo(codexHome?: string): Promise<CodexAuthIn
   };
 }
 
-export async function readCodexToken(): Promise<{ token: string; accountId: string | null } | null> {
-  const auth = await readCodexAuthInfo();
+/**
+ * Resolves the Codex home the quota probe should read credentials from, using
+ * the same fallback chain real agent runs resolve through
+ * {@link evaluateCodexCredentialReadiness} in `codex-home.ts`: a company's own
+ * managed home first, then the shared host-login home. Agent runs for a given
+ * company authenticate from whichever of these actually holds usable
+ * credentials, so the probe must check them in the same order instead of
+ * looking only at the shared host-login home.
+ */
+export async function resolveQuotaCodexHome(companyId?: string): Promise<string> {
+  if (companyId) {
+    const managed = resolveManagedCodexHomeDir(process.env, companyId);
+    if (await codexHomeHasUsableAuth(managed)) return managed;
+  }
+  return resolveSharedCodexHomeDir(process.env);
+}
+
+export async function readCodexToken(
+  companyId?: string,
+): Promise<{ token: string; accountId: string | null } | null> {
+  const home = await resolveQuotaCodexHome(companyId);
+  const auth = await readCodexAuthInfo(home);
   if (!auth) return null;
   return { token: auth.accessToken, accountId: auth.accountId };
 }
@@ -468,25 +489,28 @@ type PendingRequest = {
 };
 
 class CodexRpcClient {
-  private proc = spawn(
-    "codex",
-    // Only account-read RPCs are sent; no agent turn is started. Keep the
-    // read-only sandbox and use the approval policy supported by current CLIs
-    // ("untrusted" was removed; only "on-request" and "never" remain).
-    ["-s", "read-only", "-a", "on-request", "app-server"],
-    { stdio: ["pipe", "pipe", "pipe"], env: process.env },
-  );
-
+  private proc: ReturnType<typeof spawn>;
   private nextId = 1;
   private buffer = "";
   private pending = new Map<number, PendingRequest>();
   private stderr = "";
 
-  constructor() {
-    this.proc.stdout.setEncoding("utf8");
-    this.proc.stderr.setEncoding("utf8");
-    this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
-    this.proc.stderr.on("data", (chunk: string) => {
+  constructor(codexHome: string) {
+    this.proc = spawn(
+      "codex",
+      // Only account-read RPCs are sent; no agent turn is started. Keep the
+      // read-only sandbox and use the approval policy supported by current CLIs
+      // ("untrusted" was removed; only "on-request" and "never" remain).
+      ["-s", "read-only", "-a", "on-request", "app-server"],
+      // CODEX_HOME points the app-server at the same credential the quota
+      // read is checking (see resolveQuotaCodexHome), not whatever default
+      // home the server process itself happens to have.
+      { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, CODEX_HOME: codexHome } },
+    );
+    this.proc.stdout!.setEncoding("utf8");
+    this.proc.stderr!.setEncoding("utf8");
+    this.proc.stdout!.on("data", (chunk: string) => this.onStdout(chunk));
+    this.proc.stderr!.on("data", (chunk: string) => {
       this.stderr += chunk;
     });
     this.proc.on("exit", () => {
@@ -538,12 +562,12 @@ class CodexRpcClient {
         reject(new Error(`codex app-server timed out on ${method}`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.proc.stdin.write(payload);
+      this.proc.stdin!.write(payload);
     });
   }
 
   private notify(method: string, params: Record<string, unknown> = {}) {
-    this.proc.stdin.write(JSON.stringify({ method, params }) + "\n");
+    this.proc.stdin!.write(JSON.stringify({ method, params }) + "\n");
   }
 
   async initialize() {
@@ -575,8 +599,9 @@ class CodexRpcClient {
   }
 }
 
-export async function fetchCodexRpcQuota(): Promise<CodexRpcQuotaSnapshot> {
-  const client = new CodexRpcClient();
+export async function fetchCodexRpcQuota(companyId?: string): Promise<CodexRpcQuotaSnapshot> {
+  const home = await resolveQuotaCodexHome(companyId);
+  const client = new CodexRpcClient(home);
   try {
     await client.initialize();
     const [limits, account] = await Promise.all([
@@ -600,12 +625,12 @@ export function readCodexQuotaErrorFamily(error: unknown): CodexAuthRefreshFailu
   return classifyCodexAuthRefreshFailure({ errorMessage: message });
 }
 
-export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+export async function getQuotaWindows(companyId?: string): Promise<ProviderQuotaResult> {
   const errors: string[] = [];
   let rpcErrorFamily: CodexAuthRefreshFailureClass | null = null;
 
   try {
-    const rpc = await fetchCodexRpcQuota();
+    const rpc = await fetchCodexRpcQuota(companyId);
     if (rpc.windows.length > 0) {
       return { provider: "openai", source: CODEX_USAGE_SOURCE_RPC, ok: true, windows: rpc.windows };
     }
@@ -617,7 +642,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     }
   }
 
-  const auth = await readCodexToken();
+  const auth = await readCodexToken(companyId);
   if (auth) {
     try {
       const windows = await fetchCodexQuota(auth.token, auth.accountId);

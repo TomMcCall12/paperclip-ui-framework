@@ -466,6 +466,11 @@ describe("cost routes", () => {
       expect(json).not.toContain("valueLabel");
       expect(json).not.toContain("claude-code");
       expect(json).not.toContain("auth_expired");
+
+      // the route's companyId is threaded through so each provider probe can
+      // read the credential that company's own agent runs authenticate with,
+      // instead of only ever checking the server process's own environment.
+      expect(mockFetchAllQuotaWindows).toHaveBeenCalledWith("company-1");
     });
 
     it("allows a board actor to read the summary", async () => {
