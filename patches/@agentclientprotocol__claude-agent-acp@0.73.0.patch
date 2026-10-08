@@ -1,5 +1,5 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
-index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef14627011e02b30 100644
+index 0214a50..4afc3b9 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
 @@ -2922,9 +2922,19 @@ export class ClaudeAcpAgent {
@@ -25,7 +25,32 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
                                      },
                                  });
                              }
-@@ -5311,6 +5321,10 @@ export class ClaudeAcpAgent {
+@@ -5300,6 +5310,24 @@ export class ClaudeAcpAgent {
+             // Opt-in to session state events like when the agent is idle
+             CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+         };
++        // `CLAUDE_CODE_PLUGIN_DIRS` is how a Claude CLI process loads plugins
++        // from its own env at startup. The SDK's query() never starts that CLI
++        // process directly: it spawns its own bundled binary and tells it which
++        // plugins to load only through this `plugins` option. So Paperclip's
++        // env-based mod rollout (stampClaudeMods) is translated into that option
++        // here, the one route an ACP session actually honours.
++        const paperclipPluginDirs = (env.CLAUDE_CODE_PLUGIN_DIRS ?? "")
++            .split(":")
++            .map((dir) => dir.trim())
++            .filter((dir) => dir.length > 0);
++        if (paperclipPluginDirs.length > 0) {
++            // The plugin directory loads, but its hooks module (register.ts)
++            // still does not run without this: the bundled binary gates
++            // function-hooks plugins behind a GrowthBook rollout flag that
++            // defaults off here (no GrowthBook reachable / telemetry opted
++            // out), and only this env var opts a process back in early.
++            env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
++        }
+         // Scopes the context-window cache to this query's backend (see
+         // `contextWindowCache`). Derived from the same `env` object handed to the
+         // SDK, so per-session `_meta` env routing and ambient process-env routing
+@@ -5311,14 +5339,26 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -34,9 +59,15 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
 +            // would reintroduce host prompts, plugins, skills, and MCP servers.
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { settingSources: ["user"] }),
              ...(settings && { settings }),
++            ...(paperclipPluginDirs.length > 0 && {
++                plugins: [
++                    ...(userProvidedOptions?.plugins ?? []),
++                    ...paperclipPluginDirs.map((path) => ({ type: "local", path })),
++                ],
++            }),
              env,
              // Override certain fields that must be controlled by ACP
-@@ -5318,7 +5332,9 @@ export class ClaudeAcpAgent {
+             cwd: params.cwd,
              includePartialMessages: true,
              forwardSubagentText,
              mcpServers: {
@@ -47,7 +78,7 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5345,16 @@ export class ClaudeAcpAgent {
+@@ -5329,6 +5369,16 @@ export class ClaudeAcpAgent {
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),
