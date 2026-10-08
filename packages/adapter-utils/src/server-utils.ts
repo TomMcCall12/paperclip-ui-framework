@@ -2243,8 +2243,9 @@ export const PAPERCLIP_BOARD_WRITING_GUIDANCE = [
 /**
  * The end-of-run learning step, adapted from Hermes's background skill review
  * (MIT): agents turn corrections, hard-won fixes and reusable procedures into
- * skills, the way Hermes does after a turn with enough tool work. Agents may
- * only change agent-owned skills; Paperclip enforces that.
+ * skills, the way Hermes does after a turn with enough tool work. The
+ * company's skill policy decides which skills agents may change; Paperclip
+ * enforces it.
  */
 /** Every task run: find another route before giving up on any part of the work. */
 export const PAPERCLIP_FIND_A_WAY_GUIDANCE = [
@@ -2280,7 +2281,7 @@ export const PAPERCLIP_SKILL_LEARNING_GUIDANCE = [
   "",
   "Memory is separate from skills: if the board told you a lasting preference, decision or fact about themselves, save it where your instructions say you keep memory (skip this if they don't say).",
   "",
-  "API: list skills with `GET /api/companies/{companyId}/skills`; read one with `GET /api/companies/{companyId}/skills/{skillId}` before you change it; create with `POST /api/companies/{companyId}/skills` (`name`, `description` saying when to use it, `markdown`); update a file with `PATCH /api/companies/{companyId}/skills/{skillId}/files` (`path`, `content`). Skills you create are yours and are handed to the agents who need them. Change only agent-owned skills (categories `learned`, `curated` or `hermes-import`, and not `pinned`); if another skill is wrong, say so in your comment instead. A `403 skill_policy_denied` means the company protects that skill.",
+  "API: list skills with `GET /api/companies/{companyId}/skills`; read one with `GET /api/companies/{companyId}/skills/{skillId}` before you change it; create with `POST /api/companies/{companyId}/skills` (`name`, `description` saying when to use it, `markdown`); update a file with `PATCH /api/companies/{companyId}/skills/{skillId}/files` (`path`, `content`). Skills you create are yours and are handed to the agents who need them. When any skill you used is wrong or out of date, fix it there, unless it is `pinned`. A `403 skill_policy_denied` means the company protects that skill: then put the fix in your comment for the board instead.",
   "",
   "Finish your final comment with one line: `Learning: <what you saved or changed>` or `Learning: nothing to save`.",
 ].join("\n");
