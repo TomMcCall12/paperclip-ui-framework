@@ -9,9 +9,15 @@ type ClaudeExecute = ServerAdapterModule["execute"];
  * claude_local agent run. Each entry is a plugin directory; a missing one is
  * skipped, so a Paperclip install without the directory behaves as before.
  *
+ * `token-budget` warns a run at 70/85/95% of its context window so it wraps up
+ * instead of losing work mid-job; the mod owns those thresholds.
+ *
  * Override with `PAPERCLIP_CLAUDE_MOD_DIRS` (path-list separated by `:`).
  */
-const DEFAULT_MOD_DIRS = ["/paperclip/mods/audit-trail"];
+export const DEFAULT_MOD_DIRS = [
+  "/paperclip/mods/audit-trail",
+  "/paperclip/mods/token-budget",
+];
 
 /** Where the audit-trail mod writes its JSONL logs. */
 const DEFAULT_AUDIT_TRAIL_DIR = "/paperclip/storage/audit-trail";

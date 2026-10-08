@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync, readdirSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { pruneAuditTrail, resetAuditTrailPruneClock, stampClaudeMods } from "./claude-mods.js";
+import {
+  DEFAULT_MOD_DIRS,
+  pruneAuditTrail,
+  resetAuditTrailPruneClock,
+  stampClaudeMods,
+} from "./claude-mods.js";
 
 type ExecuteCtx = {
   config?: { env?: Record<string, unknown>; [key: string]: unknown };
@@ -33,6 +38,15 @@ beforeEach(() => {
 
 afterEach(() => {
   resetAuditTrailPruneClock();
+});
+
+describe("DEFAULT_MOD_DIRS", () => {
+  it("loads both the audit-trail and token-budget mods by default", () => {
+    expect(DEFAULT_MOD_DIRS).toEqual([
+      "/paperclip/mods/audit-trail",
+      "/paperclip/mods/token-budget",
+    ]);
+  });
 });
 
 describe("stampClaudeMods", () => {
