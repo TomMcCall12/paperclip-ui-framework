@@ -681,6 +681,12 @@ function watchdogWakeContext(input: {
   watchdogIssue: IssueRow;
   sourceIssue: IssueRow;
   classification: Extract<TaskWatchdogClassifierResult, { state: "stopped" }>;
+  // The fingerprint actually persisted on watchdogIssue.originFingerprint, which
+  // may differ from classification.stopFingerprint if this evaluation lost a
+  // concurrent create race (see the caller in evaluateWatchdog). This is the
+  // value revalidateMutationScope will compare against, so it must be the one
+  // bound into the run's context, not the possibly-superseded classification.
+  stopFingerprint: string;
 }) {
   return {
     issueId: input.watchdogIssue.id,
@@ -691,7 +697,7 @@ function watchdogWakeContext(input: {
       watchedIssueId: input.sourceIssue.id,
       watchedIssueIdentifier: input.sourceIssue.identifier,
       watchedIssueTitle: input.sourceIssue.title,
-      stopFingerprint: input.classification.stopFingerprint,
+      stopFingerprint: input.stopFingerprint,
       pendingInteractions: input.classification.pendingInteractionsByIssueId,
       pendingApprovals: Object.fromEntries(Object.entries(input.classification.stopSnapshot.waitsByIssueId)
         .filter(([, waits]) => waits.pendingApprovalIds.length > 0)
@@ -726,7 +732,7 @@ function watchdogWakeContext(input: {
     watchdogId: input.watchdog.id,
     watchedIssueId: input.sourceIssue.id,
     watchedIssueIdentifier: input.sourceIssue.identifier,
-    stopFingerprint: input.classification.stopFingerprint,
+    stopFingerprint: input.stopFingerprint,
     stoppedLeaves: input.classification.stoppedLeaves,
     customInstructions: input.watchdog.instructions,
     resumeIntent: true,
@@ -1508,13 +1514,25 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       classification,
       runId: opts.runId ?? null,
     });
+    // ensureReusableWatchdogIssue can lose a concurrent create race (two triggers
+    // both find no existing watchdog issue and both attempt to create one; the
+    // loser hits issues_active_task_watchdog_uq and falls back to the winner's
+    // issue). When that happens, watchdogIssue.originFingerprint is the winner's
+    // fingerprint, not this call's own `classification.stopFingerprint`. Every
+    // value we persist or bind a wake to below must follow the fingerprint that
+    // actually ended up on the issue - the one a later revalidateMutationScope
+    // check will recompute and compare against - or the wake this evaluation
+    // triggers can never pass that check again (TOM-237).
+    const effectiveStopFingerprint =
+      normalizeStopFingerprint(watchdogIssue.originFingerprint) ?? classification.stopFingerprint;
+    const fingerprintRaceLost = effectiveStopFingerprint !== classification.stopFingerprint;
     const now = new Date();
     await db
       .update(issueWatchdogs)
       .set({
         watchdogIssueId: watchdogIssue.id,
-        lastObservedFingerprint: classification.stopFingerprint,
-        lastObservedStopSnapshot: classification.stopSnapshot,
+        lastObservedFingerprint: effectiveStopFingerprint,
+        lastObservedStopSnapshot: fingerprintRaceLost ? null : classification.stopSnapshot,
         lastTriggeredAt: now,
         triggerCount: sql`${issueWatchdogs.triggerCount} + 1`,
         updatedAt: now,
@@ -1534,9 +1552,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         source: "task_watchdogs.evaluate",
         watchdogId: watchdog.id,
         watchdogIssueId: watchdogIssue.id,
-        stopFingerprint: classification.stopFingerprint,
+        stopFingerprint: effectiveStopFingerprint,
         stopSnapshot: classification.stopSnapshot,
         stoppedLeaves: classification.stoppedLeaves,
+        fingerprintRaceLost,
       },
     });
 
@@ -1545,6 +1564,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       watchdogIssue,
       sourceIssue,
       classification,
+      stopFingerprint: effectiveStopFingerprint,
     });
     const wake = deps.enqueueWakeup
       ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
@@ -1553,7 +1573,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         reason: "task_watchdog_stopped_subtree",
         payload: context,
         contextSnapshot: context,
-        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
+        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, effectiveStopFingerprint),
         requestedByActorType: "system",
         requestedByActorId: null,
       })
