@@ -229,6 +229,75 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.triggerCount).toBe(1);
   });
 
+  it("keeps issueWatchdogs.lastObservedFingerprint in sync with the watchdog issue it actually created when two triggers race to create it", async () => {
+    // Reproduces the TOM-237 lockout: the watchdog issue's own `originFingerprint`
+    // is the single source of truth for which stop fingerprint is "bound" to a run
+    // (see resolveTaskWatchdogMutationScope, which reads it from the run's wake
+    // context). If a concurrent trigger wins the race to create that issue (via the
+    // `issues_active_task_watchdog_uq` unique index), this evaluation must adopt the
+    // winner's fingerprint for everything it persists and wakes with, not its own
+    // now-superseded classification - otherwise the wake it enqueues is permanently
+    // unable to pass revalidateMutationScope, because recomputing the classifier
+    // will only ever reproduce the winner's fingerprint from then on.
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-RACEFP", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const winnerFingerprint = "task_watchdog_stop:winner00000000000000000000000000000000000000000000000000000000";
+
+    // Hold a transaction open after inserting the "winning" watchdog issue, so a
+    // concurrent trigger's own existence-check (read-committed) still sees none yet
+    // committed, while its later create() attempt blocks on the still-uncommitted
+    // unique-index entry until this transaction resolves - exactly reproducing the
+    // two-tick race described in the TOM-236/TOM-235 report.
+    let releaseWinnerTx: (() => void) | null = null;
+    const winnerTxReleased = new Promise<void>((resolve) => {
+      releaseWinnerTx = resolve;
+    });
+    const winnerTx = db.transaction(async (tx) => {
+      await tx.insert(issues).values({
+        id: randomUUID(),
+        companyId,
+        title: "Watchdog review for WDOG-RACEFP",
+        status: "todo",
+        priority: "medium",
+        identifier: "WDOG-RACEFP-WATCH",
+        issueNumber: Math.floor(Math.random() * 10_000) + 50_000,
+        parentId: sourceId,
+        assigneeAgentId: agentId,
+        originKind: "task_watchdog",
+        originId: sourceId,
+        originFingerprint: winnerFingerprint,
+        createdAt: new Date(),
+      });
+      await winnerTxReleased;
+    });
+
+    const reconcilePromise = service.reconcileTaskWatchdogs({ companyId });
+    // Give the racing evaluation time to run its own existence check (which must
+    // see nothing committed yet) and reach its own create() attempt before the
+    // winner transaction commits and that create() conflicts against it.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    releaseWinnerTx!();
+    await winnerTx;
+    const result = await reconcilePromise;
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdog!.watchdogIssueId!));
+
+    expect(watchdogIssue?.originFingerprint).toBe(winnerFingerprint);
+    expect(watchdog?.lastObservedFingerprint).toBe(watchdogIssue?.originFingerprint);
+    expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
+      taskWatchdog: { stopFingerprint: watchdogIssue?.originFingerprint },
+      stopFingerprint: watchdogIssue?.originFingerprint,
+    });
+  });
+
   it("does not append duplicate review comments for an already-open same-fingerprint review", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-DUPE", status: "done" });
