@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram alert for failed unit %i
+# No OnFailure= here: an alert unit that alerts on its own failure can loop.
+
+[Service]
+Type=oneshot
+EnvironmentFile=/DATA/.media/External SSD/paperclip-native/env/telegram.env
+# Fixed location outside the release tree (see README.md) -- every other
+# unit's OnFailure= points here, including paperclip-native.service itself,
+# so this alert must still work even when the release that broke is the
+# one this script would otherwise live inside. install-native-zimaos.sh
+# retargets this path to <root>/recovery/scripts if /usr/local/lib is not
+# writable on this ZimaOS.
+ExecStart=/usr/local/lib/paperclip/scripts/telegram-alert.sh "%i"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-alert

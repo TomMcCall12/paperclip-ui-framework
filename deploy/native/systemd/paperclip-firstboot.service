@@ -1,0 +1,31 @@
+[Unit]
+Description=Paperclip first-boot health gate (native cutover, one-shot)
+Documentation=https://github.com/TomMcCall12/toms-lab
+# Soft ordering only -- no Requires=paperclip.service. If paperclip.service's
+# own start job fails outright (crash loop, dependency failure, mount
+# failure), Requires= would fail this unit's job too and the script below
+# -- the only thing that actually reboots back to ZimaOS -- would never run.
+# This unit must fire and its own deadline must hold regardless of whether
+# paperclip.service ever reaches "active".
+After=paperclip.service
+RequiresMountsFor=/boot/efi
+OnFailure=paperclip-alert@%n.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/srv/paperclip/env/paperclip.env
+# Fixed location outside the release tree (see README.md) -- never
+# /srv/paperclip/current/..., which resolves through the release symlink and
+# would be missing or wrong if the release is broken or half-built.
+ExecStart=/usr/local/lib/paperclip/scripts/paperclip-firstboot.sh
+# Comfortably above the script's own ~240s polling deadline (see
+# DEADLINE_SECONDS in the script) so systemd never kills this unit before
+# the script's own reboot decision fires.
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-firstboot
+
+[Install]
+WantedBy=multi-user.target

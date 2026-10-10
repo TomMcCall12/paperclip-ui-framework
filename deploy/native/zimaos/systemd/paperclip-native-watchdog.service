@@ -1,0 +1,18 @@
+[Unit]
+Description=Paperclip native health-check watchdog (triggered by paperclip-native-watchdog.timer)
+After=paperclip-native.service
+OnFailure=paperclip-native-alert@%n.service
+
+[Service]
+Type=oneshot
+User=paperclip
+Group=paperclip
+EnvironmentFile=/DATA/.media/External SSD/paperclip-native/env/paperclip-native.env
+# Fixed location outside the release tree (see README.md) -- this unit's
+# OnFailure= alert must still be able to fire even if the current release
+# is broken. install-native-zimaos.sh retargets this path to
+# <root>/recovery/scripts if /usr/local/lib is not writable on this ZimaOS.
+ExecStart=/usr/local/lib/paperclip/scripts/paperclip-watchdog.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-watchdog

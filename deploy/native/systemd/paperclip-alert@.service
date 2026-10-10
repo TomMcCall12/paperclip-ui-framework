@@ -5,7 +5,11 @@ Description=Telegram alert for failed unit %i
 [Service]
 Type=oneshot
 EnvironmentFile=/srv/paperclip/env/telegram.env
-ExecStart=/srv/paperclip/current/deploy/native/scripts/telegram-alert.sh "%i"
+# Fixed location outside the release tree (see README.md) -- every other
+# unit's OnFailure= points here, including paperclip.service itself, so
+# this alert must still work even when the release that broke is the one
+# this script would otherwise live inside.
+ExecStart=/usr/local/lib/paperclip/scripts/telegram-alert.sh "%i"
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=paperclip-alert

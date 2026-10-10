@@ -32,9 +32,7 @@ HEALTH_CHECK_DELAY=5
 KEEP_RELEASES=5
 MIGRATIONS_PATH="packages/db/src/migrations"
 
-# shellcheck disable=SC1090
-[[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
-PORT="${PORT:-3100}"
+require_port_from_env_file "$ENV_FILE" 0
 HEALTH_URL="http://127.0.0.1:${PORT}/api/health"
 
 usage() {

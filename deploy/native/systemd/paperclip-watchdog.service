@@ -8,7 +8,10 @@ Type=oneshot
 User=paperclip
 Group=paperclip
 EnvironmentFile=/srv/paperclip/env/paperclip.env
-ExecStart=/srv/paperclip/current/deploy/native/scripts/paperclip-watchdog.sh
+# Fixed location outside the release tree (see README.md) -- this unit's
+# OnFailure= alert must still be able to fire even if the current release
+# is broken.
+ExecStart=/usr/local/lib/paperclip/scripts/paperclip-watchdog.sh
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=paperclip-watchdog

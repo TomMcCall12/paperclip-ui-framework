@@ -1,0 +1,15 @@
+[Unit]
+Description=Sync the notes vault to Google Drive (one-way, triggered by paperclip-native-vault-sync.timer)
+RequiresMountsFor="/DATA/.media/External SSD"
+OnFailure=paperclip-native-alert@%n.service
+
+[Service]
+Type=oneshot
+User=paperclip
+Group=paperclip
+EnvironmentFile=/DATA/.media/External SSD/paperclip-native/env/paperclip-native.env
+EnvironmentFile=-/DATA/.media/External SSD/paperclip-native/env/rclone.env
+ExecStart=/DATA/.media/External SSD/paperclip-native/current/deploy/native/scripts/vault-drive-sync.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-vault-sync
