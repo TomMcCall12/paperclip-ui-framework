@@ -4,6 +4,7 @@ import type {
   AskUserQuestionsAnswer,
   Approval,
   CompactIssue,
+  CreateIssueScheduledCheckInput,
   CreateIssueTreeHold,
   DocumentRevision,
   FeedbackTargetType,
@@ -19,6 +20,8 @@ import type {
   IssueLabel,
   IssueRecoveryAction,
   IssueRetryNowResponse,
+  IssueScheduledCheck,
+  IssueScheduledCheckRunNowResponse,
   StalledReviewDecision,
   StalledReviewDecisionResponse,
   IssueThreadInteraction,
@@ -32,6 +35,7 @@ import type {
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
   ReleaseIssueTreeHoldResponse,
+  UpdateIssueScheduledCheckInput,
   UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
@@ -336,6 +340,21 @@ export const issuesApi = {
     ),
   checkMonitorNow: (id: string) =>
     api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
+  listScheduledChecks: (id: string) =>
+    api
+      .get<{ scheduledChecks: IssueScheduledCheck[] }>(`/issues/${id}/scheduled-checks`)
+      .then((res) => res.scheduledChecks),
+  createScheduledCheck: (id: string, data: CreateIssueScheduledCheckInput) =>
+    api.post<IssueScheduledCheck>(`/issues/${id}/scheduled-checks`, data),
+  updateScheduledCheck: (id: string, checkId: string, data: UpdateIssueScheduledCheckInput) =>
+    api.patch<IssueScheduledCheck>(`/issues/${id}/scheduled-checks/${checkId}`, data),
+  deleteScheduledCheck: (id: string, checkId: string) =>
+    api.delete<{ ok: true }>(`/issues/${id}/scheduled-checks/${checkId}`),
+  runScheduledCheckNow: (id: string, checkId: string) =>
+    api.post<IssueScheduledCheckRunNowResponse>(
+      `/issues/${id}/scheduled-checks/${checkId}/run-now`,
+      {},
+    ),
   retryScheduledRetryNow: (id: string) =>
     api.post<IssueRetryNowResponse>(
       `/issues/${id}/scheduled-retry/retry-now`,

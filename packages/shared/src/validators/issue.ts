@@ -15,6 +15,7 @@ import {
   ISSUE_COMMENT_PRESENTATION_DENSITIES,
   ISSUE_HARNESS_KINDS,
   ISSUE_MONITOR_SCHEDULED_BY,
+  ISSUE_SCHEDULED_CHECK_NOTES_MAX_LENGTH,
   ISSUE_PRIORITIES,
   ISSUE_RECOVERY_ACTION_KINDS,
   ISSUE_RECOVERY_ACTION_OUTCOMES,
@@ -396,7 +397,7 @@ export const issueExecutionStageSchema = z.object({
 
 export const issueExecutionMonitorPolicySchema = z.object({
   nextCheckAt: z.string().datetime(),
-  notes: z.string().max(500).optional().nullable().default(null),
+  notes: z.string().max(ISSUE_SCHEDULED_CHECK_NOTES_MAX_LENGTH).optional().nullable().default(null),
   scheduledBy: z
     .enum(ISSUE_MONITOR_SCHEDULED_BY)
     .optional()
@@ -460,7 +461,7 @@ export const issueExecutionMonitorStateSchema = z.object({
   nextCheckAt: z.string().datetime().nullable(),
   lastTriggeredAt: z.string().datetime().nullable(),
   attemptCount: z.number().int().nonnegative().default(0),
-  notes: z.string().max(500).nullable(),
+  notes: z.string().max(ISSUE_SCHEDULED_CHECK_NOTES_MAX_LENGTH).nullable(),
   scheduledBy: z.enum(ISSUE_MONITOR_SCHEDULED_BY).nullable(),
   kind: z
     .enum(ISSUE_EXECUTION_MONITOR_KINDS)
@@ -2142,3 +2143,41 @@ export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
 export type RestoreIssueDocumentRevision = z.infer<
   typeof restoreIssueDocumentRevisionSchema
 >;
+
+/**
+ * `issue_scheduled_checks` CRUD (TOM-413). Unlike `issueExecutionMonitorPolicySchema`
+ * (one monitor per issue, back-compat `executionPolicy.monitor` PATCH path), an
+ * issue can have any number of these rows — see `/api/issues/:id/scheduled-checks`.
+ *
+ * Recurrence only understands a simplified 5-field cron subset
+ * (`minute hour * * *` daily, or `minute hour * * dayOfWeek` weekly); anything
+ * else is accepted and stored but is not rescheduled automatically after it
+ * fires once — see `computeNextCronOccurrence` in
+ * `server/src/services/issue-scheduled-checks.ts`.
+ */
+const CRON_FIELD_PATTERN = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/;
+
+export const createIssueScheduledCheckSchema = z.object({
+  nextCheckAt: z.string().datetime(),
+  notes: z.string().max(ISSUE_SCHEDULED_CHECK_NOTES_MAX_LENGTH).trim().optional().nullable().default(null),
+  recurrenceCron: z.string().trim().regex(CRON_FIELD_PATTERN, "Expected a 5-field cron expression").optional().nullable().default(null),
+  recurrenceTimezone: z.string().trim().min(1).max(100).optional().nullable().default(null),
+  cancelOnComment: z.boolean().optional().default(false),
+})
+  .refine((value) => !value.recurrenceCron || !!value.recurrenceTimezone, {
+    message: "recurrenceTimezone is required when recurrenceCron is set",
+    path: ["recurrenceTimezone"],
+  });
+
+export type CreateIssueScheduledCheck = z.infer<typeof createIssueScheduledCheckSchema>;
+
+export const updateIssueScheduledCheckSchema = z.object({
+  nextCheckAt: z.string().datetime().optional(),
+  notes: z.string().max(ISSUE_SCHEDULED_CHECK_NOTES_MAX_LENGTH).trim().optional().nullable(),
+  recurrenceCron: z.string().trim().regex(CRON_FIELD_PATTERN, "Expected a 5-field cron expression").optional().nullable(),
+  recurrenceTimezone: z.string().trim().min(1).max(100).optional().nullable(),
+  cancelOnComment: z.boolean().optional(),
+  status: z.enum(["scheduled", "cancelled"]).optional(),
+});
+
+export type UpdateIssueScheduledCheck = z.infer<typeof updateIssueScheduledCheckSchema>;

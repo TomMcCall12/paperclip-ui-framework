@@ -378,6 +378,7 @@ import {
   publishPluginDomainEvent,
   type LogActivityInput,
 } from "./activity-log.js";
+import { tickDueIssueScheduledChecks } from "./issue-scheduled-checks.js";
 import {
   buildWorkspaceReadyComment,
   buildWorkspaceReadyMetadata,
@@ -30029,10 +30030,16 @@ export function heartbeatService(
       }
 
       const issueMonitors = await tickDueIssueMonitors(now);
+      const scheduledChecks = await tickDueIssueScheduledChecks(
+        db,
+        { wakeup: trackWakeup, logActivity },
+        now,
+      );
 
       return {
-        checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
+        checked: checked + issueMonitors.checked + scheduledChecks.checked,
+        enqueued:
+          enqueued + issueMonitors.triggered + scheduledChecks.triggered,
         skipped: skipped + issueMonitors.skipped,
       };
     },

@@ -518,6 +518,10 @@ export {
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
   type UpsertIssueWatchdog,
+  createIssueScheduledCheckSchema,
+  updateIssueScheduledCheckSchema,
+  type CreateIssueScheduledCheck,
+  type UpdateIssueScheduledCheck,
 } from "./issue.js";
 
 export {

@@ -57,6 +57,7 @@ import {
   formatMonitorOffset,
   useMonitorCountdown,
 } from "../../lib/issue-monitor";
+import { IssueScheduledChecksSection } from "./IssueScheduledChecks";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
 import { formatRetryReason } from "../../lib/runRetryState";
 import { useRetryNowMutation } from "../../hooks/useRetryNowMutation";
@@ -2772,6 +2773,10 @@ export function IssueProperties({
         >
           {monitorContent}
         </PropertyPicker>
+
+        <div className="mt-2 border-t border-border pt-2">
+          <IssueScheduledChecksSection issueId={issue.id} />
+        </div>
 
         <PropertyPicker
           inline={inline}

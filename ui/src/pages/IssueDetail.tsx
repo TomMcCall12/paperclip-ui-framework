@@ -205,17 +205,13 @@ import { IssueFieldChangeReceipt } from "../components/IssueFieldChangeReceipt";
 import { IssueWriteDenialNotice } from "../components/IssueWriteDenialNotice";
 import { issueWriteDenialForActivity } from "../lib/issue-write-denial-activity";
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
-import {
-  IssueMonitorBanner,
-  IssueMonitorComposerStrip,
-  hasVisibleMonitorSurface,
-} from "../components/IssueMonitorBanner";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { ExternallyConnectedTaskBanner } from "../components/chat/ExternallyConnectedTaskBanner";
 import {
   IssueProperties,
   type IssuePropertiesDocumentDeepLink,
 } from "../components/IssueProperties";
+import { IssueScheduledChecksBadge } from "../components/issue-properties/IssueScheduledChecks";
 import { TaskSidePanel, type TaskSidePanelProps } from "../components/task-side-panel";
 import { SidePanelToggleButton } from "../components/side-panel";
 import {
@@ -2837,7 +2833,6 @@ function IssueDetailActivityTab({
         issueId={issue.id}
         scheduledRetry={issue.scheduledRetry ?? null}
       />
-      {/* Waiting-monitor state now lives in the pinned top banner (IssueMonitorBanner) — PAP-14557 decision 1. */}
     </>
   );
 }
@@ -7094,6 +7089,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 <Copy className="h-4 w-4" />
               )}
             </Button>
+            {issue?.id ? <IssueScheduledChecksBadge issueId={issue.id} /> : null}
             <Button
               variant="ghost"
               size="icon-xs"
@@ -7303,12 +7299,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       {taskChatShellEnabled && !streamlinedTaskDetailEnabled
         ? subTasksTree
         : null}
-
-      <IssueMonitorBanner
-        issue={issue}
-        onCheckNow={() => checkIssueMonitorNow.mutate()}
-        checkingNow={checkIssueMonitorNow.isPending}
-      />
 
       {taskChatShellEnabled ? null : (
         <InlineEditor
@@ -7849,15 +7839,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onLoadOlderComments={loadOlderComments}
                   onRefreshLatestComments={refetchLatestComments}
                   composerRef={commentComposerRef}
-                  composerAccessory={
-                    hasVisibleMonitorSurface(issue) ? (
-                      <IssueMonitorComposerStrip
-                        issue={issue}
-                        onCheckNow={() => checkIssueMonitorNow.mutate()}
-                        checkingNow={checkIssueMonitorNow.isPending}
-                      />
-                    ) : null
-                  }
+                  composerAccessory={null}
                   footer={
                     !taskChatShellEnabled && siblingNavigation ? (
                       <IssueSiblingNavigation
