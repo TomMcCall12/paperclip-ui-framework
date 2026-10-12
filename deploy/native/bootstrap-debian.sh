@@ -38,10 +38,17 @@ ESP_SIZE_MIB=512
 ROOT_MOUNT="/mnt/paperclip-root"
 
 BASE_PACKAGES=(
-  openssh-server sudo tailscale cloudflared chrony unattended-upgrades
+  openssh-server sudo chrony unattended-upgrades ca-certificates gnupg
   rclone git curl jq build-essential wakeonlan
   linux-image-amd64 grub-efi-amd64 efibootmgr dosfstools
 )
+
+# tailscale and cloudflared are not in Debian's own archive; they ship from
+# their own vendor apt repos (pkgs.tailscale.com, pkg.cloudflare.com). They
+# are installed in a separate step, after those repos are added, so a
+# missing/renamed suite there fails on its own with a clear message instead
+# of aborting the whole BASE_PACKAGES install.
+VENDOR_PACKAGES=(tailscale cloudflared)
 
 usage() {
   sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
@@ -152,28 +159,84 @@ for d in dev proc sys run; do
   run "Bind-mount /$d into target" -- mount --bind "/$d" "$ROOT_MOUNT/$d"
 done
 
-log "== Base packages, GRUB, SSH/password policy (inside chroot) =="
+log "== Base packages, vendor repos, GRUB, SSH/password policy (inside chroot) =="
 CHROOT_SCRIPT="$(cat <<'EOS'
+#!/usr/bin/env bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+
+log() { printf '[chroot] %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+log "Installing Debian-native base packages..."
 apt-get update
-apt-get install -y --no-install-recommends PACKAGES_PLACEHOLDER
+apt-get install -y --no-install-recommends BASE_PACKAGES_PLACEHOLDER
+
+log "Adding the Tailscale apt repository (pkgs.tailscale.com, suite=SUITE_PLACEHOLDER)..."
+install -d -m 755 /usr/share/keyrings
+curl -fsSL "https://pkgs.tailscale.com/stable/debian/SUITE_PLACEHOLDER.noarmor.gpg" \
+  -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+  || die "Could not fetch the Tailscale signing key for suite 'SUITE_PLACEHOLDER' from pkgs.tailscale.com. Check that suite is listed at https://pkgs.tailscale.com/stable/debian/."
+curl -fsSL "https://pkgs.tailscale.com/stable/debian/SUITE_PLACEHOLDER.tailscale-keyring.list" \
+  -o /etc/apt/sources.list.d/tailscale.list \
+  || die "Could not fetch the Tailscale apt source list for suite 'SUITE_PLACEHOLDER' from pkgs.tailscale.com."
+
+log "Adding the Cloudflare apt repository (pkg.cloudflare.com, suite=SUITE_PLACEHOLDER)..."
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+  -o /usr/share/keyrings/cloudflare-main.gpg \
+  || die "Could not fetch the Cloudflare signing key from pkg.cloudflare.com."
+printf 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared SUITE_PLACEHOLDER main\n' \
+  > /etc/apt/sources.list.d/cloudflared.list
+
+log "Installing tailscale and cloudflared from their vendor repositories..."
+apt-get update || die "apt-get update failed after adding the Tailscale/Cloudflare apt repositories."
+apt-get install -y --no-install-recommends VENDOR_PACKAGES_PLACEHOLDER \
+  || die "Installing VENDOR_PACKAGES_PLACEHOLDER from their vendor repositories failed. Check that suite 'SUITE_PLACEHOLDER' is supported by pkgs.tailscale.com and pkg.cloudflare.com."
+
 sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 systemctl enable ssh chrony tailscaled fstrim.timer unattended-upgrades
-grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=debian --no-nvram --removable
+
+# --no-nvram (not --removable): --removable installs only the fallback
+# \EFI\BOOT\BOOTX64.EFI path and never creates \EFI\debian\grubx64.efi, which
+# is the exact loader path the UEFI boot entry below points at. Without
+# --removable, --bootloader-id=debian creates \EFI\debian\grubx64.efi, and we
+# additionally copy it to \EFI\BOOT\BOOTX64.EFI ourselves as a fallback for
+# firmware that ignores NVRAM boot entries.
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=debian --no-nvram
+[[ -f /boot/efi/EFI/debian/grubx64.efi ]] \
+  || die "grub-install did not produce /boot/efi/EFI/debian/grubx64.efi -- refusing to continue, the UEFI boot entry would point at a missing loader."
+mkdir -p /boot/efi/EFI/BOOT
+cp /boot/efi/EFI/debian/grubx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI
 update-grub
 EOS
 )"
-CHROOT_SCRIPT="${CHROOT_SCRIPT/PACKAGES_PLACEHOLDER/${BASE_PACKAGES[*]}}"
+CHROOT_SCRIPT="${CHROOT_SCRIPT/BASE_PACKAGES_PLACEHOLDER/${BASE_PACKAGES[*]}}"
+CHROOT_SCRIPT="${CHROOT_SCRIPT//SUITE_PLACEHOLDER/$SUITE}"
+CHROOT_SCRIPT="${CHROOT_SCRIPT//VENDOR_PACKAGES_PLACEHOLDER/${VENDOR_PACKAGES[*]}}"
 if [[ "$DRY_RUN" == "1" ]]; then
-  log "[dry-run] would chroot into $ROOT_MOUNT and run:"
+  log "[dry-run] would chroot into $ROOT_MOUNT and run via /bin/bash (interpreter line shown below):"
   printf '%s\n' "$CHROOT_SCRIPT" | sed 's/^/[dry-run]   /'
 else
   printf '%s' "$CHROOT_SCRIPT" > "$ROOT_MOUNT/tmp/bootstrap-chroot.sh"
   chmod +x "$ROOT_MOUNT/tmp/bootstrap-chroot.sh"
-  run "Run base-package/GRUB setup inside chroot" -- chroot "$ROOT_MOUNT" /tmp/bootstrap-chroot.sh
+  # Without a bash shebang, chroot's exec falls back to the target's /bin/sh
+  # (dash on Debian), which has no [[ -- the script would fail with
+  # "[[: not found" partway through. Fail loudly here instead.
+  [[ "$(head -n1 "$ROOT_MOUNT/tmp/bootstrap-chroot.sh")" == "#!/usr/bin/env bash" ]] \
+    || die "Generated chroot script at $ROOT_MOUNT/tmp/bootstrap-chroot.sh has no bash shebang as its first line -- refusing to run it."
+  run "Run base-package/GRUB setup inside chroot" -- chroot "$ROOT_MOUNT" /bin/bash /tmp/bootstrap-chroot.sh
   rm -f "$ROOT_MOUNT/tmp/bootstrap-chroot.sh"
+fi
+
+log "== Verifying the GRUB loader exists on the ESP before creating a UEFI entry for it =="
+GRUB_LOADER_PATH="$ROOT_MOUNT/boot/efi/EFI/debian/grubx64.efi"
+if [[ "$DRY_RUN" == "1" ]]; then
+  log "[dry-run] would assert $GRUB_LOADER_PATH exists before calling efibootmgr --create, and fail loudly if it does not"
+else
+  [[ -f "$GRUB_LOADER_PATH" ]] \
+    || die "$GRUB_LOADER_PATH is missing after grub-install. Refusing to create a UEFI boot entry that would point at a loader that does not exist."
+  log "Confirmed: $GRUB_LOADER_PATH exists."
 fi
 
 log "== UEFI boot entry: BootNext only, BootOrder is never touched =="

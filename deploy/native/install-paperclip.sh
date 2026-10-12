@@ -7,11 +7,17 @@
 #
 # Usage:
 #   install-paperclip.sh --commit <sha> --data-src <path> \
-#     [--repo-url <url>] [--dry-run]
+#     (--repo-src <local-path> | --repo-url <url>) [--dry-run]
 #
 # --data-src must point at a directory shaped like the existing
 # ~/.paperclip/instances/default/ tree (db/, data/, secrets/master.key, ...).
 # Its contents are copied, never moved, so the source backup stays intact.
+#
+# --repo-src clones the release from a local checkout path instead of
+# GitHub -- use this when the box has no GitHub credential and
+# TomMcCall12/toms-lab is private (true of a freshly migrated box; see
+# README.md). --repo-url remains for later use once the box has its own
+# credential.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,13 +28,14 @@ DRY_RUN=0
 COMMIT=""
 DATA_SRC=""
 REPO_URL="https://github.com/TomMcCall12/toms-lab.git"
+REPO_SRC=""
 PAPERCLIP_USER="paperclip"
 SRV_ROOT="/srv/paperclip"
 HDD_ROOT="/srv/hdd"
 NODE_MAJOR="24"
 
 usage() {
-  sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -36,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --commit) COMMIT="$2"; shift 2 ;;
     --data-src) DATA_SRC="$2"; shift 2 ;;
     --repo-url) REPO_URL="$2"; shift 2 ;;
+    --repo-src) REPO_SRC="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown argument: $1 (see --help)" ;;
@@ -47,6 +55,7 @@ done
 [[ -n "$DATA_SRC" ]] || die "Give --data-src <path> to restore the data directory from."
 if [[ "$DRY_RUN" != "1" ]]; then
   [[ -d "$DATA_SRC" ]] || die "--data-src '$DATA_SRC' is not a directory."
+  [[ -z "$REPO_SRC" || -d "$REPO_SRC" ]] || die "--repo-src '$REPO_SRC' is not a directory."
 fi
 
 if [[ "$DRY_RUN" != "1" ]]; then
@@ -100,11 +109,13 @@ fi
 
 log "== Release: build commit $COMMIT at $SRV_ROOT/releases/$COMMIT =="
 RELEASE_DIR="$SRV_ROOT/releases/$COMMIT"
+REPO_SOURCE_ARGS=(--repo-url "$REPO_URL")
+[[ -n "$REPO_SRC" ]] && REPO_SOURCE_ARGS=(--repo-src "$REPO_SRC")
 if [[ "$DRY_RUN" == "1" ]]; then
-  "$SCRIPT_DIR/scripts/build-release.sh" --commit "$COMMIT" --dest "$RELEASE_DIR" --repo-url "$REPO_URL" --dry-run
+  "$SCRIPT_DIR/scripts/build-release.sh" --commit "$COMMIT" --dest "$RELEASE_DIR" "${REPO_SOURCE_ARGS[@]}" --dry-run
 else
   run "Build release $COMMIT as $PAPERCLIP_USER" -- runuser -u "$PAPERCLIP_USER" -- \
-    "$SCRIPT_DIR/scripts/build-release.sh" --commit "$COMMIT" --dest "$RELEASE_DIR" --repo-url "$REPO_URL"
+    "$SCRIPT_DIR/scripts/build-release.sh" --commit "$COMMIT" --dest "$RELEASE_DIR" "${REPO_SOURCE_ARGS[@]}"
 fi
 
 log "== Restore data directory from $DATA_SRC (embedded Postgres db/, secrets/master.key) =="

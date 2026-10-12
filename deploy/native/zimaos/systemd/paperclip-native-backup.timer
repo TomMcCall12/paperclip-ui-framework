@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Paperclip native backup (DB dump + data + vault + configs, then Drive)
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
