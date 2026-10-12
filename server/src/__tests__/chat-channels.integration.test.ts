@@ -17525,6 +17525,111 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it("admits a Telegram DM /new past the chronology guard after a proven control boundary, despite clock skew (TOM-403)", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } = await configuredTelegramEndpoint(
+      fixture,
+      { scheduleDeferredWork: () => undefined },
+    );
+    const dm = makeThread({
+      channelId: "77119900",
+      id: "telegram:77119900",
+      isDM: true,
+      name: "Telegram DM recovery",
+    });
+    try {
+      await db
+        .update(chatEndpoints)
+        .set({ status: "active" })
+        .where(eq(chatEndpoints.id, endpoint.id));
+
+      // Start a task, then close it with a delivered /close, so the thread
+      // has a proven control boundary: this is the state Tom's bot was
+      // actually in before every later message, including his own /new
+      // rescue attempts, was silently discarded.
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: dm.thread,
+        message: makeMessage({
+          id: "77119900:1",
+          text: "Please check on the deploy",
+          userId: "77119900",
+        }),
+        trigger: "direct_message",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: dm.thread,
+        message: makeMessage({
+          id: "77119900:2",
+          text: "/close",
+          userId: "77119900",
+        }),
+        trigger: "direct_message",
+      });
+      await service.processPendingPublications();
+      await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+        expect.objectContaining({ state: "completed" }),
+      ]);
+      await expect(
+        db
+          .select({ id: chatActions.id })
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.kind, "task_control_authorization"),
+              eq(chatActions.status, "processed"),
+            ),
+          ),
+      ).resolves.not.toEqual([]);
+
+      // A later message whose provider-stamped time is a few seconds ahead
+      // of our own receipt instant reproduces a slow host clock: the
+      // chronology guard's own sourceTime > receivedAt check returns
+      // "before_or_unproven" for it before any boundary is even compared.
+      const aheadSeconds = Math.floor(Date.now() / 1_000) + 5;
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: dm.thread,
+        message: makeMessage({
+          id: "77119900:3",
+          text: "/new",
+          userId: "77119900",
+          raw: {
+            message_id: 3,
+            date: aheadSeconds,
+            chat: { id: 77119900, type: "private" },
+          },
+        }),
+        trigger: "direct_message",
+      });
+
+      const [delivery] = await db
+        .select()
+        .from(chatDeliveries)
+        .where(
+          and(
+            eq(chatDeliveries.endpointId, endpoint.id),
+            like(chatDeliveries.providerEventId, "%77119900:3"),
+          ),
+        );
+      // On current master this delivery is filtered: the /new escape only
+      // checks surfaceKind === "native_thread", which a Telegram DM can
+      // never be, so the user's own rescue command is discarded exactly
+      // like the message it was meant to recover from.
+      expect(delivery).toMatchObject({ state: "processed" });
+    } finally {
+      await service.shutdown();
+    }
+  });
+
   it("holds a delayed Slack thread reply until its older root mention arrives", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service, wakeup } =

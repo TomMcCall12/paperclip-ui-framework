@@ -256,6 +256,9 @@ export interface ChatEndpoint {
   lastError?: string | null;
   lastActivityAt?: string | null;
   lastPublicationAt?: string | null;
+  /** Inbound messages/mentions dropped as state='filtered' since this endpoint's last successfully processed one. Zero means nothing is currently being silently discarded. */
+  inboundFilteredCount: number;
+  lastInboundFilteredAt?: string | null;
   activatedAt?: string | null;
   createdAt: string;
   updatedAt: string;

@@ -323,9 +323,16 @@ export async function readChatControlChronology(
           : endpoint.provider === "slack" && !slackControlOrigin
             ? "slack_message_ts"
             : null;
+    // Telegram's message.date is whole-second granularity, so a message
+    // received at :39.996 is stamped :40.000 and reads as up to ~1s "in the
+    // future" of its own millisecond receipt instant even on a perfectly
+    // synced clock. Tolerate exactly that rounding, not more, so this still
+    // catches a genuinely slow host clock (seconds, not milliseconds, of
+    // drift) instead of masking it.
+    const clockToleranceMs = endpoint.provider === "telegram" ? 999 : 0;
     if (
       !Number.isFinite(sourceTime) ||
-      sourceTime > delivery.receivedAt.getTime() ||
+      sourceTime > delivery.receivedAt.getTime() + clockToleranceMs ||
       (endpoint.provider === "discord" && discordSource === null) ||
       (clockMarker && source.providerSentAtSource !== clockMarker)
     )
@@ -337,7 +344,7 @@ export async function readChatControlChronology(
       const originalHasProviderClock =
         original &&
         Number.isFinite(originalTime) &&
-        originalTime <= original.receivedAt.getTime() &&
+        originalTime <= original.receivedAt.getTime() + clockToleranceMs &&
         (endpoint.provider === "slack"
           ? originalMessage.providerSentAtSource === "slack_message_ts"
           : clockMarker
