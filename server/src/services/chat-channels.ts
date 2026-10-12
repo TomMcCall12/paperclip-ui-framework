@@ -15875,22 +15875,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const filterPreControlSource = async (database: DbOrTransaction) => {
         if (
           controlCommand === "status" ||
-          // /new discards this surface's prior conversation binding rather
-          // than acting on it, so an attacker who replays an old /new can
-          // only re-arm a fresh task, never retroactively authorize or read
-          // one. That holds for every Telegram surface, not just forum
-          // topics (native_thread): the exemption is about the command, not
-          // where it arrived. Gating it on surfaceKind left Telegram DMs,
-          // the provider's primary surface, with no escape from this guard
-          // at all once a thread had any proven control boundary.
-          (controlCommand === "new" && endpoint.provider === "telegram") ||
           guidanceCommand ||
-          (await readChatControlChronology(
-            database,
-            endpoint,
-            thread,
-            activeDelivery,
-          )) !== "before_or_unproven"
+          (await readChatControlChronology(database, endpoint, thread, activeDelivery, {
+            // A host clock running seconds behind Telegram's lets a
+            // legitimate /new read as "in the future" of our own receipt
+            // instant, which used to disqualify it before the per-boundary
+            // ordering comparison below even ran. /new only discards this
+            // surface's prior conversation binding rather than acting on
+            // it, so letting a future-clock /new past *that* early check
+            // is safe for every Telegram surface (not just forum topics;
+            // gating on surfaceKind left Telegram DMs, the provider's
+            // primary surface, with no escape at all). The ordering
+            // comparison itself is untouched, so a /new that is actually
+            // behind an already-proven boundary still comes back
+            // "before_or_unproven" and stays filtered.
+            allowFutureProviderClock:
+              controlCommand === "new" && endpoint.provider === "telegram",
+          })) !== "before_or_unproven"
         )
           return false;
         const filteredAt = new Date();

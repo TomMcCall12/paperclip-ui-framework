@@ -84,7 +84,21 @@ export async function readChatControlChronology(
     typeof chatDeliveries.$inferSelect,
     "normalizedEvent" | "receivedAt"
   >,
-  options: { requirePublishedControlProofForConversationId?: string } = {},
+  options: {
+    requirePublishedControlProofForConversationId?: string;
+    /**
+     * A host clock running seconds behind the provider's can make a
+     * perfectly legitimate message's own timestamp read as "in the future"
+     * of our receipt instant, which would otherwise disqualify it before
+     * the per-boundary ordering comparison even runs. Set this only for a
+     * command, like Telegram `/new`, whose own worst case from being
+     * incorrectly let through is re-arming a fresh task — never
+     * retroactively authorizing or reading one. This does not relax the
+     * per-boundary comparison below: a message genuinely behind an already
+     * proven boundary is still "before_or_unproven" regardless.
+     */
+    allowFutureProviderClock?: boolean;
+  } = {},
 ): Promise<ChatControlChronology> {
   // This proves only source chronology, never current task/provider authority.
   // Intake ignores unproved control candidates. Presentation's stricter mode
@@ -332,7 +346,8 @@ export async function readChatControlChronology(
     const clockToleranceMs = endpoint.provider === "telegram" ? 999 : 0;
     if (
       !Number.isFinite(sourceTime) ||
-      sourceTime > delivery.receivedAt.getTime() + clockToleranceMs ||
+      (sourceTime > delivery.receivedAt.getTime() + clockToleranceMs &&
+        !options.allowFutureProviderClock) ||
       (endpoint.provider === "discord" && discordSource === null) ||
       (clockMarker && source.providerSentAtSource !== clockMarker)
     )
