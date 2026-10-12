@@ -451,6 +451,13 @@ function publicationTransportOrderKey(table: PublicationOrderTable) {
   return sql<string>`coalesce(${table.payload}->'transportPart'->>'orderKey', ${table.id}::text)`;
 }
 
+// Idempotency-key prefixes the system itself always controls: ephemeral
+// run-milestone notices like "<agent> is working…" (`run:<runId>:<milestone>:
+// <endpointId>`, see chat-run-publications.ts). Nothing with one of these
+// prefixes is ever genuine authored content, so an agent resolving one risks
+// no duplicate send and no loss of a human-authored message.
+const SYSTEM_GENERATED_PUBLICATION_KEY_PREFIXES = ["run:"] as const;
+
 function publicationPrecedes(
   earlier: PublicationOrderTable,
   later: PublicationOrderTable,
@@ -5859,8 +5866,77 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
+  // A conversation's head publication blocks every later publication in
+  // that same conversation forever once it stops making progress: attempts
+  // stays frozen, no error fires anywhere, and /api/health stays "ok". This
+  // surfaces that silently-wedged state per endpoint without a database
+  // query, mirroring inboundFilteredHealth above.
+  const WEDGED_PUBLICATION_THRESHOLD_MS = 5 * 60_000;
+
+  async function wedgedPublicationHealth(
+    endpointIds: string[],
+  ): Promise<Map<string, { count: number; oldestCreatedAt: Date }>> {
+    const result = new Map<string, { count: number; oldestCreatedAt: Date }>();
+    if (endpointIds.length === 0) return result;
+    const earlierPublication = alias(
+      chatPublications,
+      "wedged_earlier_chat_publications",
+    );
+    const staleBefore = new Date(Date.now() - WEDGED_PUBLICATION_THRESHOLD_MS);
+    const rows = await db
+      .select({
+        endpointId: chatPublications.endpointId,
+        createdAt: chatPublications.createdAt,
+      })
+      .from(chatPublications)
+      .where(
+        and(
+          inArray(chatPublications.endpointId, endpointIds),
+          inArray(chatPublications.state, [
+            "pending",
+            "retry",
+            "streaming",
+            "delivery_unknown",
+          ]),
+          lte(chatPublications.createdAt, staleBefore),
+          notExists(
+            db
+              .select({ id: earlierPublication.id })
+              .from(earlierPublication)
+              .where(
+                and(
+                  eq(
+                    earlierPublication.conversationId,
+                    chatPublications.conversationId,
+                  ),
+                  publicationPrecedes(earlierPublication, chatPublications),
+                  inArray(earlierPublication.state, [
+                    "pending",
+                    "retry",
+                    "streaming",
+                    "delivery_unknown",
+                  ]),
+                ),
+              ),
+          ),
+        ),
+      );
+    for (const row of rows) {
+      const current = result.get(row.endpointId) ?? {
+        count: 0,
+        oldestCreatedAt: row.createdAt,
+      };
+      current.count += 1;
+      if (row.createdAt < current.oldestCreatedAt)
+        current.oldestCreatedAt = row.createdAt;
+      result.set(row.endpointId, current);
+    }
+    return result;
+  }
+
   function serializeEndpoint(
     row: Awaited<ReturnType<typeof endpointRecord>>,
+    wedgedHealth?: { count: number; oldestCreatedAt: Date } | null,
   ): ChatEndpoint {
     if (!row) throw notFound("Chat endpoint not found");
     const endpoint = row.endpoint;
@@ -5906,6 +5982,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       },
       healthMessage: endpoint.healthMessage,
       lastError: endpoint.lastError,
+      wedgedPublicationCount: wedgedHealth?.count ?? 0,
+      oldestWedgedPublicationAt: iso(wedgedHealth?.oldestCreatedAt ?? null),
       lastActivityAt: iso(endpoint.lastEventAt),
       lastPublicationAt: iso(endpoint.lastPublicationAt),
       activatedAt: iso(endpoint.activatedAt),
@@ -5945,11 +6023,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .orderBy(desc(chatEndpoints.updatedAt));
-    return rows.map((row) => serializeEndpoint(row));
+    const endpointIds = rows.map((row) => row.endpoint.id);
+    const wedgedHealth = await wedgedPublicationHealth(endpointIds);
+    return rows.map((row) =>
+      serializeEndpoint(row, wedgedHealth.get(row.endpoint.id)),
+    );
   }
 
   async function get(endpointId: string) {
-    return serializeEndpoint(await endpointRecord(endpointId));
+    const row = await endpointRecord(endpointId);
+    const wedgedHealth = row
+      ? await wedgedPublicationHealth([row.endpoint.id])
+      : new Map<string, { count: number; oldestCreatedAt: Date }>();
+    return serializeEndpoint(row, row && wedgedHealth.get(row.endpoint.id));
   }
 
   async function create(
@@ -29271,6 +29357,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       phase: import("@paperclipai/shared").ChatFileTransferPhase;
       version: number;
     },
+    actor: { actorType: "user" | "agent" } = { actorType: "user" },
   ) {
     const initialRecord = await endpointRecord(endpointId);
     if (!initialRecord) throw notFound("Chat endpoint not found");
@@ -29291,6 +29378,25 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             .for("update")
             .then((rows) => rows[0] ?? null);
           if (!publication) throw notFound("Publication not found");
+          if (actor.actorType === "agent") {
+            // An agent never has board access, so it can only reach this at
+            // all through the system-generated path below. Re-check here
+            // too: a human's `retry_anyway` risks a duplicate send, and only
+            // a publication the system generated for itself (never genuine
+            // authored content) is safe for an agent to clear unattended.
+            if (action === "retry_anyway")
+              throw forbidden(
+                "An agent cannot retry a publication; a board user is required",
+              );
+            if (
+              !SYSTEM_GENERATED_PUBLICATION_KEY_PREFIXES.some((prefix) =>
+                publication.idempotencyKey.startsWith(prefix),
+              )
+            )
+              throw forbidden(
+                "An agent may only resolve a publication the system generated for itself",
+              );
+          }
           const transfer = await tx
             .select({
               id: chatTeamsFileTransfers.id,
@@ -29580,7 +29686,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           }
           await logActivity(tx as unknown as Db, {
             companyId: publication.companyId,
-            actorType: "user",
+            actorType: actor.actorType,
             actorId: userId,
             action: `chat.publication_${action}`,
             entityType: "chat_publication",

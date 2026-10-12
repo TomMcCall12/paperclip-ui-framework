@@ -831,6 +831,8 @@ const chatEndpointResponseSchema = z
     setup: chatEndpointSetupResponseSchema,
     healthMessage: z.string().nullable(),
     lastError: z.string().nullable(),
+    wedgedPublicationCount: z.number().int().nonnegative(),
+    oldestWedgedPublicationAt: z.string().datetime().nullable(),
     lastActivityAt: z.string().datetime().nullable(),
     lastPublicationAt: z.string().datetime().nullable(),
     activatedAt: z.string().datetime().nullable(),

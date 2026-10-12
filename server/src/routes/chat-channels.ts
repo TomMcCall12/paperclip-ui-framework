@@ -399,6 +399,33 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/chat-endpoints/:endpointId/publications/:publicationId/resolve",
     validate(resolveChatPublicationSchema),
     async (req, res) => {
+      const actor = getActorInfo(req);
+      if (actor.actorType === "agent") {
+        // No board access required here: this path only ever reaches a
+        // publication the system generated for itself (checked again,
+        // authoritatively, inside the service), so an agent stuck behind its
+        // own ephemeral "working…" notice can clear it without a human.
+        const endpoint = await getAccessibleResource(
+          req,
+          res,
+          service.get(endpointId(req)).catch((error) => {
+            if (error instanceof HttpError && error.status === 404) return null;
+            throw error;
+          }),
+          "Chat endpoint not found",
+        );
+        if (!endpoint) return;
+        await service.resolvePublication(
+          endpointId(req),
+          req.params.publicationId as string,
+          req.body.action,
+          actor.actorId,
+          undefined,
+          { actorType: "agent" },
+        );
+        res.status(204).end();
+        return;
+      }
       if (!(await assertEndpointManagementAccess(req, res))) return;
       const userId = actorUserId(req);
       if (!userId) throw badRequest("A board user is required");

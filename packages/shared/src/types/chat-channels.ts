@@ -256,6 +256,9 @@ export interface ChatEndpoint {
   lastError?: string | null;
   lastActivityAt?: string | null;
   lastPublicationAt?: string | null;
+  /** Conversations whose head outbound publication has been non-terminal (pending/retry/streaming/delivery_unknown) for more than a few minutes, blocking every later publication in that conversation. Zero means nothing is currently wedged. */
+  wedgedPublicationCount: number;
+  oldestWedgedPublicationAt?: string | null;
   activatedAt?: string | null;
   createdAt: string;
   updatedAt: string;
