@@ -410,8 +410,16 @@ export function toolAccessRoutes(
   }
 
   function oauthRedirectUri(req: Request) {
-    const baseUrl = configuredPublicBaseUrl()
-      ?? trustedBrowserBaseUrl(req)
+    // Prefer the browser's own proven origin (validated the same way the
+    // board-mutation CSRF guard trusts it: Origin/Referer matched against the
+    // real request Host) over the operator-configured public URL. The
+    // configured value is a fixed env var that can go stale relative to
+    // however the operator is actually reaching this Paperclip today (for
+    // example over a Tailscale HTTPS address while the env var still points
+    // at a plain-HTTP LAN address), which would otherwise fail the
+    // HTTPS-or-loopback redirect check for an already-secure connection.
+    const baseUrl = trustedBrowserBaseUrl(req)
+      ?? configuredPublicBaseUrl()
       ?? enrolledConnectorBaseUrl(req)
       ?? requestLoopbackBaseUrl(req);
     if (!baseUrl) {

@@ -10478,6 +10478,40 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toBe("https://paperclip.tail123.ts.net/api/tools/oauth/callback");
   });
 
+  it("prefers a proven browser HTTPS origin over a stale plain-HTTP configured public URL", async () => {
+    // Regression for TOM-416: the operator's PAPERCLIP_PUBLIC_URL can go
+    // stale (for example a plain-HTTP LAN address) while the browser is
+    // actually reaching Paperclip over a different, already-secure origin
+    // (for example a Tailscale HTTPS address). The proven browser origin
+    // must win so the redirect still satisfies the HTTPS-or-loopback check.
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://192.168.0.163:3101");
+    vi.stubEnv("BETTER_AUTH_URL", "http://192.168.0.163:3101");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    const company = await createCompany(db);
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "owner"),
+      undefined,
+      {
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+      },
+    );
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", "zima-paperclip.tail702864.ts.net:3100")
+      .set("Origin", "https://zima-paperclip.tail702864.ts.net:3100")
+      .send({ galleryKey: "slack", name: "Tailscale over stale env Slack workspace" });
+
+    expect(connectRes.status).toBe(201);
+    expect(
+      new URL(connectRes.body.auth.startUrl).searchParams.get("redirect_uri"),
+    ).toBe(
+      "https://zima-paperclip.tail702864.ts.net:3100/api/tools/oauth/callback",
+    );
+  });
+
   it("rejects a browser HTTPS origin that does not match the routed request host", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
