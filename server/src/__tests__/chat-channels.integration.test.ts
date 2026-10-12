@@ -4227,6 +4227,128 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(runtime.endpoints.get(endpoint.id)!.posts.map(post => post.text)).toEqual(["**Owner User (via Paperclip)**\n\nSmall pool work"]);
   }, 15_000);
 
+  it("surfaces a stuck head publication as wedged and lets only an agent-generated one be cleared without a board user", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, runtime } = await configuredSlackEndpoint(fixture);
+    const testThread = makeThread({ channelId: "C-WEDGE", id: "slack:C-WEDGE:9500.1", name: "wedge" });
+    await deliverMessage({
+      callbacks, endpointId: endpoint.id, thread: testThread.thread,
+      message: makeMessage({ id: "9500.1", text: "@maya start here", mentioned: true }),
+      trigger: "mention",
+    });
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected wedge conversation");
+    runtime.endpoints.get(endpoint.id)!.posts.length = 0;
+
+    // A system-generated ephemeral progress notice ("Maya is working…") left
+    // delivery_unknown by a network error during a deploy cutover, exactly
+    // as happened in production. Its idempotencyKey carries the `run:`
+    // prefix every milestone notice uses (chat-run-publications.ts).
+    const staleRunId = randomUUID();
+    const stuckAt = new Date(Date.now() - 10 * 60_000);
+    const [stuckHead] = await db
+      .insert(chatPublications)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        issueId: conversation.issueId,
+        idempotencyKey: `run:${staleRunId}:working:${endpoint.id}`,
+        payload: { text: "Maya is working…" },
+        state: "delivery_unknown",
+        createdAt: stuckAt,
+        updatedAt: stuckAt,
+      })
+      .returning();
+    const [laterReply] = await db
+      .insert(chatPublications)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        issueId: conversation.issueId,
+        idempotencyKey: `authored-reply:${randomUUID()}:${endpoint.id}`,
+        payload: { text: "A later reply that must wait its turn." },
+        state: "pending",
+      })
+      .returning();
+
+    // Reproduce the wedge: the later reply never reaches the provider while
+    // the unresolved head sits in front of it in the same conversation.
+    await service.processPendingPublications();
+    expect(runtime.endpoints.get(endpoint.id)!.posts).toEqual([]);
+    expect(
+      (
+        await db
+          .select()
+          .from(chatPublications)
+          .where(eq(chatPublications.id, laterReply.id))
+      )[0]?.state,
+    ).toBe("pending");
+
+    // Visibility: the endpoint payload surfaces the wedge without a database
+    // query, mirroring inboundFilteredCount's shape.
+    const wedgedEndpoint = await service.get(endpoint.id);
+    expect(wedgedEndpoint.wedgedPublicationCount).toBe(1);
+    expect(wedgedEndpoint.oldestWedgedPublicationAt).toBe(
+      stuckAt.toISOString(),
+    );
+
+    // An agent cannot resolve genuine authored content (only a board user
+    // can) ...
+    await expect(
+      service.resolvePublication(
+        endpoint.id,
+        laterReply.id,
+        "mark_delivered",
+        fixture.assignedAgentId,
+        undefined,
+        { actorType: "agent" },
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    // ... nor retry any publication, even a system-generated one, since a
+    // retry risks a duplicate provider send.
+    await expect(
+      service.resolvePublication(
+        endpoint.id,
+        stuckHead.id,
+        "retry_anyway",
+        fixture.assignedAgentId,
+        undefined,
+        { actorType: "agent" },
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+
+    // The agent can clear the system-generated stuck head itself.
+    await service.resolvePublication(
+      endpoint.id,
+      stuckHead.id,
+      "mark_delivered",
+      fixture.assignedAgentId,
+      undefined,
+      { actorType: "agent" },
+    );
+    expect(
+      (
+        await db
+          .select()
+          .from(chatPublications)
+          .where(eq(chatPublications.id, stuckHead.id))
+      )[0]?.state,
+    ).toBe("published");
+
+    // Clearing the head unwedges every later publication in the conversation.
+    await service.processPendingPublications();
+    expect(
+      runtime.endpoints.get(endpoint.id)!.posts.map((post) => post.text),
+    ).toEqual(["A later reply that must wait its turn."]);
+    expect((await service.get(endpoint.id)).wedgedPublicationCount).toBe(0);
+  });
+
   it("provides assigned Slack tools to routine tasks and can DM only their linked responsible user", async () => {
     const { resolveConnectorAssignments, executeConnectorTool } = await import("../services/connector-runtime.js");
     const { resolveSlackTaskAuthority } = await import("../services/connectors/slack-authority.js");

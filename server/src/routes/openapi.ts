@@ -833,6 +833,8 @@ const chatEndpointResponseSchema = z
     lastError: z.string().nullable(),
     inboundFilteredCount: z.number().int().nonnegative(),
     lastInboundFilteredAt: z.string().datetime().nullable(),
+    wedgedPublicationCount: z.number().int().nonnegative(),
+    oldestWedgedPublicationAt: z.string().datetime().nullable(),
     lastActivityAt: z.string().datetime().nullable(),
     lastPublicationAt: z.string().datetime().nullable(),
     activatedAt: z.string().datetime().nullable(),
