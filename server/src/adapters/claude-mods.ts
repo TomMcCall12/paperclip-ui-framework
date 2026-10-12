@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { resolvePaperclipHomeDir } from "../home-paths.js";
 import type { ServerAdapterModule } from "./types.js";
 
 type ClaudeExecute = ServerAdapterModule["execute"];
@@ -12,15 +13,20 @@ type ClaudeExecute = ServerAdapterModule["execute"];
  * `token-budget` warns a run at 70/85/95% of its context window so it wraps up
  * instead of losing work mid-job; the mod owns those thresholds.
  *
- * Override with `PAPERCLIP_CLAUDE_MOD_DIRS` (path-list separated by `:`).
+ * Derived from the install's own data root (`PAPERCLIP_HOME`, e.g.
+ * `<root>/mods/audit-trail`) rather than a fixed path, since that root moves
+ * between a Docker container and a native host. Override with
+ * `PAPERCLIP_CLAUDE_MOD_DIRS` (path-list separated by `:`).
  */
-export const DEFAULT_MOD_DIRS = [
-  "/paperclip/mods/audit-trail",
-  "/paperclip/mods/token-budget",
-];
+export function defaultModDirs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const home = resolvePaperclipHomeDir(env.PAPERCLIP_HOME);
+  return [join(home, "mods", "audit-trail"), join(home, "mods", "token-budget")];
+}
 
-/** Where the audit-trail mod writes its JSONL logs. */
-const DEFAULT_AUDIT_TRAIL_DIR = "/paperclip/storage/audit-trail";
+/** Where the audit-trail mod writes its JSONL logs, absent an override. */
+function defaultAuditTrailDir(env: NodeJS.ProcessEnv): string {
+  return join(resolvePaperclipHomeDir(env.PAPERCLIP_HOME), "storage", "audit-trail");
+}
 
 /** Days an audit-trail log is kept before the sweep deletes it. */
 const DEFAULT_AUDIT_TRAIL_RETENTION_DAYS = 14;
@@ -90,7 +96,7 @@ export function stampClaudeMods(
   env: NodeJS.ProcessEnv = process.env,
 ): ClaudeExecute {
   return (ctx) => {
-    const modDirs = readPathList(env.PAPERCLIP_CLAUDE_MOD_DIRS, DEFAULT_MOD_DIRS).filter((dir) =>
+    const modDirs = readPathList(env.PAPERCLIP_CLAUDE_MOD_DIRS, defaultModDirs(env)).filter((dir) =>
       existsSync(dir),
     );
     if (modDirs.length === 0) return inner(ctx);
@@ -111,7 +117,7 @@ export function stampClaudeMods(
     ]);
     configEnv.CLAUDE_CODE_PLUGIN_DIRS = [...dirs].join(":");
 
-    const auditTrailDir = env.PAPERCLIP_CLAUDE_AUDIT_TRAIL_DIR ?? DEFAULT_AUDIT_TRAIL_DIR;
+    const auditTrailDir = env.PAPERCLIP_CLAUDE_AUDIT_TRAIL_DIR ?? defaultAuditTrailDir(env);
     // A per-agent override wins: the operator asked for a different folder.
     if (typeof configEnv.CLAUDE_AUDIT_TRAIL_DIR !== "string") {
       configEnv.CLAUDE_AUDIT_TRAIL_DIR = auditTrailDir;
