@@ -2,6 +2,14 @@ import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractio
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import {
+  listIssueScheduledChecks,
+  createIssueScheduledCheck,
+  updateIssueScheduledCheck,
+  cancelIssueScheduledCheck,
+  runIssueScheduledCheckNow,
+  syncPrimaryScheduledCheckFromExecutionPolicy,
+} from "../services/issue-scheduled-checks.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
@@ -84,6 +92,8 @@ import {
   feedbackVoteValueSchema,
   upsertIssueFeedbackVoteSchema,
   upsertIssueWatchdogSchema,
+  createIssueScheduledCheckSchema,
+  updateIssueScheduledCheckSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -9172,6 +9182,183 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  router.get("/issues/:id/scheduled-checks", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const checks = await listIssueScheduledChecks(db, issue.id);
+    res.json({ scheduledChecks: checks });
+  });
+
+  router.post(
+    "/issues/:id/scheduled-checks",
+    validate(createIssueScheduledCheckSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await getAccessibleResource(
+        req,
+        res,
+        getIssueById(req, id),
+        "Issue not found",
+      );
+      if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (
+        await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
+      )
+        return;
+
+      const actor = getActorInfo(req);
+      const created = await createIssueScheduledCheck(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        input: req.body,
+      });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.scheduled_check_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          scheduledCheckId: created.id,
+          nextCheckAt: created.nextCheckAt,
+          recurrenceCron: created.recurrenceCron,
+        },
+      });
+      res.status(201).json(created);
+    },
+  );
+
+  router.patch(
+    "/issues/:id/scheduled-checks/:checkId",
+    validate(updateIssueScheduledCheckSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const checkId = req.params.checkId as string;
+      const issue = await getAccessibleResource(
+        req,
+        res,
+        getIssueById(req, id),
+        "Issue not found",
+      );
+      if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (
+        await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
+      )
+        return;
+
+      const actor = getActorInfo(req);
+      const updated = await updateIssueScheduledCheck(db, {
+        issueId: issue.id,
+        checkId,
+        input: req.body,
+      });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.scheduled_check_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          scheduledCheckId: updated.id,
+          changes: req.body,
+        },
+      });
+      res.json(updated);
+    },
+  );
+
+  router.delete("/issues/:id/scheduled-checks/:checkId", async (req, res) => {
+    const id = req.params.id as string;
+    const checkId = req.params.checkId as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (
+      await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
+    )
+      return;
+
+    const actor = getActorInfo(req);
+    const cancelled = await cancelIssueScheduledCheck(db, {
+      issueId: issue.id,
+      checkId,
+      reason: "deleted",
+    });
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.scheduled_check_cancelled",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        scheduledCheckId: cancelled.id,
+      },
+    });
+    res.json({ ok: true });
+  });
+
+  router.post(
+    "/issues/:id/scheduled-checks/:checkId/run-now",
+    async (req, res) => {
+      const id = req.params.id as string;
+      const checkId = req.params.checkId as string;
+      const issue = await getAccessibleResource(
+        req,
+        res,
+        getIssueById(req, id),
+        "Issue not found",
+      );
+      if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (
+        await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
+      )
+        return;
+
+      const result = await runIssueScheduledCheckNow(
+        db,
+        { wakeup: heartbeat.wakeup, logActivity },
+        { issueId: issue.id, checkId },
+      );
+      res.json(result);
+    },
+  );
+
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(
@@ -13974,6 +14161,23 @@ export function issueRoutes(
               ),
             );
           issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
+        }
+      }
+
+      if (monitorChanged) {
+        try {
+          await syncPrimaryScheduledCheckFromExecutionPolicy(db, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            monitor: nextExecutionPolicy?.monitor ?? null,
+            createdByAgentId: actor.agentId ?? null,
+            createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          });
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id },
+            "failed to sync primary issue_scheduled_checks row from executionPolicy.monitor",
+          );
         }
       }
 
