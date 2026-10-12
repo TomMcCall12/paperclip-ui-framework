@@ -524,6 +524,16 @@ export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[numbe
 export const ISSUE_MONITOR_SCHEDULED_BY = ["assignee", "board"] as const;
 export type IssueMonitorScheduledBy = (typeof ISSUE_MONITOR_SCHEDULED_BY)[number];
 
+/**
+ * Max length for a scheduled check-in / monitor note, enforced in the Zod
+ * validators below, the `issue_scheduled_checks` route handlers, and the UI
+ * textarea maxlength/counter (TOM-413). Raised from 500 to 2000.
+ */
+export const ISSUE_SCHEDULED_CHECK_NOTES_MAX_LENGTH = 2000;
+
+export const ISSUE_SCHEDULED_CHECK_STATUSES = ["scheduled", "fired", "cancelled"] as const;
+export type IssueScheduledCheckStatus = (typeof ISSUE_SCHEDULED_CHECK_STATUSES)[number];
+
 export const ISSUE_EXECUTION_MONITOR_KINDS = ["external_service"] as const;
 export type IssueExecutionMonitorKind = (typeof ISSUE_EXECUTION_MONITOR_KINDS)[number];
 

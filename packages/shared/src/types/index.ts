@@ -791,6 +791,10 @@ export type {
   IssueWatchdog,
   IssueWatchdogStatus,
   IssueWatchdogSummary,
+  IssueScheduledCheck,
+  CreateIssueScheduledCheckInput,
+  UpdateIssueScheduledCheckInput,
+  IssueScheduledCheckRunNowResponse,
 } from "./issue.js";
 export type {
   IssueTreeControlPreview,

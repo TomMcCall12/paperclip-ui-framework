@@ -11,6 +11,7 @@ import type {
   IssueExecutionMonitorStateStatus,
   IssueExecutionDecisionOutcome,
   IssueMonitorScheduledBy,
+  IssueScheduledCheckStatus,
   IssueExecutionPolicyMode,
   IssueReferenceSourceKind,
   IssueExecutionStageType,
@@ -617,8 +618,6 @@ export interface IssueRetryNowResponse {
  * creator mirrors the back-compat `executionPolicy.monitor` PATCH path so
  * agents/skills that only know about that field keep working.
  */
-export type IssueScheduledCheckStatus = "scheduled" | "fired" | "cancelled";
-
 export interface IssueScheduledCheck {
   id: string;
   companyId: string;
