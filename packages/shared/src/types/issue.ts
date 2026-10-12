@@ -610,6 +610,60 @@ export interface IssueRetryNowResponse {
   scheduledRetry: IssueScheduledRetry | null;
 }
 
+/**
+ * One scheduled check-in on an issue (TOM-413). Unlike the legacy single
+ * `executionPolicy.monitor` / `issues.monitor_*` fields, an issue can have
+ * any number of these rows. The row with `isPrimary: true` for a given
+ * creator mirrors the back-compat `executionPolicy.monitor` PATCH path so
+ * agents/skills that only know about that field keep working.
+ */
+export type IssueScheduledCheckStatus = "scheduled" | "fired" | "cancelled";
+
+export interface IssueScheduledCheck {
+  id: string;
+  companyId: string;
+  issueId: string;
+  nextCheckAt: string | null;
+  notes: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByAgentName?: string | null;
+  status: IssueScheduledCheckStatus;
+  attemptCount: number;
+  lastTriggeredAt: string | null;
+  recurrenceCron: string | null;
+  recurrenceTimezone: string | null;
+  cancelOnComment: boolean;
+  isPrimary: boolean;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateIssueScheduledCheckInput {
+  nextCheckAt: string;
+  notes?: string | null;
+  recurrenceCron?: string | null;
+  recurrenceTimezone?: string | null;
+  cancelOnComment?: boolean;
+}
+
+export interface UpdateIssueScheduledCheckInput {
+  nextCheckAt?: string;
+  notes?: string | null;
+  recurrenceCron?: string | null;
+  recurrenceTimezone?: string | null;
+  cancelOnComment?: boolean;
+  status?: "scheduled" | "cancelled";
+}
+
+export interface IssueScheduledCheckRunNowResponse {
+  outcome: "triggered" | "skipped";
+  reason?: string;
+  scheduledCheck: IssueScheduledCheck;
+}
+
 export interface IssueRelation {
   id: string;
   companyId: string;
