@@ -84,7 +84,21 @@ export async function readChatControlChronology(
     typeof chatDeliveries.$inferSelect,
     "normalizedEvent" | "receivedAt"
   >,
-  options: { requirePublishedControlProofForConversationId?: string } = {},
+  options: {
+    requirePublishedControlProofForConversationId?: string;
+    /**
+     * A host clock running seconds behind the provider's can make a
+     * perfectly legitimate message's own timestamp read as "in the future"
+     * of our receipt instant, which would otherwise disqualify it before
+     * the per-boundary ordering comparison even runs. Set this only for a
+     * command, like Telegram `/new`, whose own worst case from being
+     * incorrectly let through is re-arming a fresh task — never
+     * retroactively authorizing or reading one. This does not relax the
+     * per-boundary comparison below: a message genuinely behind an already
+     * proven boundary is still "before_or_unproven" regardless.
+     */
+    allowFutureProviderClock?: boolean;
+  } = {},
 ): Promise<ChatControlChronology> {
   // This proves only source chronology, never current task/provider authority.
   // Intake ignores unproved control candidates. Presentation's stricter mode
@@ -323,9 +337,17 @@ export async function readChatControlChronology(
           : endpoint.provider === "slack" && !slackControlOrigin
             ? "slack_message_ts"
             : null;
+    // Telegram's message.date is whole-second granularity, so a message
+    // received at :39.996 is stamped :40.000 and reads as up to ~1s "in the
+    // future" of its own millisecond receipt instant even on a perfectly
+    // synced clock. Tolerate exactly that rounding, not more, so this still
+    // catches a genuinely slow host clock (seconds, not milliseconds, of
+    // drift) instead of masking it.
+    const clockToleranceMs = endpoint.provider === "telegram" ? 999 : 0;
     if (
       !Number.isFinite(sourceTime) ||
-      sourceTime > delivery.receivedAt.getTime() ||
+      (sourceTime > delivery.receivedAt.getTime() + clockToleranceMs &&
+        !options.allowFutureProviderClock) ||
       (endpoint.provider === "discord" && discordSource === null) ||
       (clockMarker && source.providerSentAtSource !== clockMarker)
     )
@@ -337,7 +359,7 @@ export async function readChatControlChronology(
       const originalHasProviderClock =
         original &&
         Number.isFinite(originalTime) &&
-        originalTime <= original.receivedAt.getTime() &&
+        originalTime <= original.receivedAt.getTime() + clockToleranceMs &&
         (endpoint.provider === "slack"
           ? originalMessage.providerSentAtSource === "slack_message_ts"
           : clockMarker

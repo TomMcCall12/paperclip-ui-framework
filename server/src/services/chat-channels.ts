@@ -5866,6 +5866,68 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
+  // A filtered delivery raises no alert anywhere else. Reporting it here
+  // only while it is still unresolved (no later inbound message has been
+  // processed) distinguishes "this endpoint is actively dropping messages"
+  // from a stale count that would otherwise never clear once the underlying
+  // fault is fixed.
+  async function inboundFilteredHealth(
+    endpointIds: string[],
+  ): Promise<Map<string, { count: number; lastAt: Date }>> {
+    const result = new Map<string, { count: number; lastAt: Date }>();
+    if (endpointIds.length === 0) return result;
+    const inboundEventKinds = [
+      "message",
+      "direct_message",
+      "mention",
+    ] as const;
+    const [successRows, filteredRows] = await Promise.all([
+      db
+        .select({
+          endpointId: chatDeliveries.endpointId,
+          lastSuccessAt: sql<Date | null>`max(${chatDeliveries.processedAt})`,
+        })
+        .from(chatDeliveries)
+        .where(
+          and(
+            inArray(chatDeliveries.endpointId, endpointIds),
+            eq(chatDeliveries.state, "processed"),
+            inArray(chatDeliveries.eventKind, inboundEventKinds),
+          ),
+        )
+        .groupBy(chatDeliveries.endpointId),
+      db
+        .select({
+          endpointId: chatDeliveries.endpointId,
+          processedAt: chatDeliveries.processedAt,
+        })
+        .from(chatDeliveries)
+        .where(
+          and(
+            inArray(chatDeliveries.endpointId, endpointIds),
+            eq(chatDeliveries.state, "filtered"),
+            inArray(chatDeliveries.eventKind, inboundEventKinds),
+          ),
+        ),
+    ]);
+    const lastSuccessByEndpoint = new Map(
+      successRows.map((row) => [row.endpointId, row.lastSuccessAt]),
+    );
+    for (const row of filteredRows) {
+      if (!row.processedAt) continue;
+      const lastSuccessAt = lastSuccessByEndpoint.get(row.endpointId) ?? null;
+      if (lastSuccessAt && row.processedAt <= lastSuccessAt) continue;
+      const current = result.get(row.endpointId) ?? {
+        count: 0,
+        lastAt: row.processedAt,
+      };
+      current.count += 1;
+      if (row.processedAt > current.lastAt) current.lastAt = row.processedAt;
+      result.set(row.endpointId, current);
+    }
+    return result;
+  }
+
   // A conversation's head publication blocks every later publication in
   // that same conversation forever once it stops making progress: attempts
   // stays frozen, no error fires anywhere, and /api/health stays "ok". This
@@ -5936,6 +5998,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   function serializeEndpoint(
     row: Awaited<ReturnType<typeof endpointRecord>>,
+    filteredHealth?: { count: number; lastAt: Date } | null,
     wedgedHealth?: { count: number; oldestCreatedAt: Date } | null,
   ): ChatEndpoint {
     if (!row) throw notFound("Chat endpoint not found");
@@ -5982,6 +6045,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       },
       healthMessage: endpoint.healthMessage,
       lastError: endpoint.lastError,
+      inboundFilteredCount: filteredHealth?.count ?? 0,
+      lastInboundFilteredAt: iso(filteredHealth?.lastAt ?? null),
       wedgedPublicationCount: wedgedHealth?.count ?? 0,
       oldestWedgedPublicationAt: iso(wedgedHealth?.oldestCreatedAt ?? null),
       lastActivityAt: iso(endpoint.lastEventAt),
@@ -6024,18 +6089,35 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .orderBy(desc(chatEndpoints.updatedAt));
     const endpointIds = rows.map((row) => row.endpoint.id);
-    const wedgedHealth = await wedgedPublicationHealth(endpointIds);
+    const [filteredHealth, wedgedHealth] = await Promise.all([
+      inboundFilteredHealth(endpointIds),
+      wedgedPublicationHealth(endpointIds),
+    ]);
     return rows.map((row) =>
-      serializeEndpoint(row, wedgedHealth.get(row.endpoint.id)),
+      serializeEndpoint(
+        row,
+        filteredHealth.get(row.endpoint.id),
+        wedgedHealth.get(row.endpoint.id),
+      ),
     );
   }
 
   async function get(endpointId: string) {
     const row = await endpointRecord(endpointId);
-    const wedgedHealth = row
-      ? await wedgedPublicationHealth([row.endpoint.id])
-      : new Map<string, { count: number; oldestCreatedAt: Date }>();
-    return serializeEndpoint(row, row && wedgedHealth.get(row.endpoint.id));
+    const [filteredHealth, wedgedHealth] = row
+      ? await Promise.all([
+          inboundFilteredHealth([row.endpoint.id]),
+          wedgedPublicationHealth([row.endpoint.id]),
+        ])
+      : [
+          new Map<string, { count: number; lastAt: Date }>(),
+          new Map<string, { count: number; oldestCreatedAt: Date }>(),
+        ];
+    return serializeEndpoint(
+      row,
+      row && filteredHealth.get(row.endpoint.id),
+      row && wedgedHealth.get(row.endpoint.id),
+    );
   }
 
   async function create(
@@ -15793,16 +15875,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const filterPreControlSource = async (database: DbOrTransaction) => {
         if (
           controlCommand === "status" ||
-          (controlCommand === "new" &&
-            endpoint.provider === "telegram" &&
-            surfaceKind === "native_thread") ||
           guidanceCommand ||
-          (await readChatControlChronology(
-            database,
-            endpoint,
-            thread,
-            activeDelivery,
-          )) !== "before_or_unproven"
+          (await readChatControlChronology(database, endpoint, thread, activeDelivery, {
+            // A host clock running seconds behind Telegram's lets a
+            // legitimate /new read as "in the future" of our own receipt
+            // instant, which used to disqualify it before the per-boundary
+            // ordering comparison below even ran. /new only discards this
+            // surface's prior conversation binding rather than acting on
+            // it, so letting a future-clock /new past *that* early check
+            // is safe for every Telegram surface (not just forum topics;
+            // gating on surfaceKind left Telegram DMs, the provider's
+            // primary surface, with no escape at all). The ordering
+            // comparison itself is untouched, so a /new that is actually
+            // behind an already-proven boundary still comes back
+            // "before_or_unproven" and stays filtered.
+            allowFutureProviderClock:
+              controlCommand === "new" && endpoint.provider === "telegram",
+          })) !== "before_or_unproven"
         )
           return false;
         const filteredAt = new Date();
