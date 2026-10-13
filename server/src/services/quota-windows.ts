@@ -1,4 +1,5 @@
 import type { ProviderQuotaResult, ProviderQuotaSummary } from "@paperclipai/shared";
+import type { QuotaVaultCredentialResolver } from "@paperclipai/adapter-utils";
 import { listServerAdapters } from "../adapters/registry.js";
 
 const QUOTA_PROVIDER_TIMEOUT_MS = 20_000;
@@ -20,11 +21,16 @@ function providerSlugForAdapterType(type: string): string {
  * Individual adapter failures are caught and returned as error results rather than
  * letting one provider's outage block the entire response.
  */
-export async function fetchAllQuotaWindows(companyId?: string): Promise<ProviderQuotaResult[]> {
+export async function fetchAllQuotaWindows(
+  companyId?: string,
+  vault?: QuotaVaultCredentialResolver,
+): Promise<ProviderQuotaResult[]> {
   const adapters = listServerAdapters().filter((a) => a.getQuotaWindows != null);
 
   const settled = await Promise.allSettled(
-    adapters.map((adapter) => withQuotaTimeout(adapter.type, adapter.getQuotaWindows!(companyId))),
+    adapters.map((adapter) =>
+      withQuotaTimeout(adapter.type, adapter.getQuotaWindows!(companyId, vault)),
+    ),
   );
 
   return settled.map((result, i) => {
