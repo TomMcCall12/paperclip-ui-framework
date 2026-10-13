@@ -28,6 +28,7 @@ import {
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
   ensureAbsoluteDirectory,
+  shouldConfiguredCwdDisplaceAgentHome,
   ensurePathInEnv,
   joinPromptSections,
   materializePaperclipSkillCopy,
@@ -284,7 +285,12 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       )
     : [];
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const useConfiguredInsteadOfAgentHome = await shouldConfiguredCwdDisplaceAgentHome({
+    workspaceSource,
+    workspaceCwd,
+    configuredCwd,
+    onWarn: (message) => onLog("stderr", message),
+  });
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
