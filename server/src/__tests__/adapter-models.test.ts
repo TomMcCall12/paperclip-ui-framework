@@ -72,6 +72,7 @@ describe("adapter model listing", () => {
     // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
     expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
     expect(models).toContainEqual({ id: "claude-opus-5-5", label: "Claude Opus 5.5" });
+    expect(models).toContainEqual({ id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
