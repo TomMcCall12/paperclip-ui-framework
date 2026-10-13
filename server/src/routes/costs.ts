@@ -22,6 +22,7 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows, summarizeQuotaWindows } from "../services/quota-windows.js";
+import { createQuotaVaultCredentialResolver } from "../services/quota-vault-credential.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -63,6 +64,7 @@ export function costRoutes(
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
+  const quotaVault = createQuotaVaultCredentialResolver(db);
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -281,7 +283,7 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const results = await fetchAllQuotaWindows(companyId);
+    const results = await fetchAllQuotaWindows(companyId, quotaVault);
     res.json(results);
   });
 
@@ -298,7 +300,7 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const results = await fetchAllQuotaWindows(companyId);
+    const results = await fetchAllQuotaWindows(companyId, quotaVault);
     res.json(summarizeQuotaWindows(results));
   });
 

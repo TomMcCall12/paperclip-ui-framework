@@ -35,9 +35,12 @@ function cacheKeyForTarget(command: string, target: AdapterExecutionTarget | nul
   ].join(":");
 }
 
+export const CLAUDE_SONNET_5_5_MIN_CLI_VERSION = "2.1.284";
+
 export function minimumClaudeCliVersionForModel(model: string): string | null {
   const modelId = model.trim().replace(/\[1m\]$/, "").replace(/^(?:(?:us|eu|apac|global)\.)?anthropic\./, "");
   if (modelId === "claude-opus-5-5") return "2.1.280";
+  if (modelId === "claude-sonnet-5-5") return CLAUDE_SONNET_5_5_MIN_CLI_VERSION;
   return modelId === "claude-fable-5-1"
     ? CLAUDE_FABLE_5_1_MIN_CLI_VERSION
     : null;

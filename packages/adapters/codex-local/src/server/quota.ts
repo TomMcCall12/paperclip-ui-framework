@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import type { ProviderQuotaResult, QuotaVaultCredentialResolver, QuotaWindow } from "@paperclipai/adapter-utils";
 import { codexHomeHasUsableAuth, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import {
   classifyCodexAuthRefreshFailure,
@@ -121,6 +121,16 @@ export async function readCodexAuthInfo(codexHome?: string): Promise<CodexAuthIn
   } catch {
     return null;
   }
+  return parseCodexAuthInfo(raw);
+}
+
+/**
+ * Parses the same auth.json shape {@link readCodexAuthInfo} reads from disk,
+ * but from an in-memory string. Used to read the credential the vault stores
+ * for a company's OpenAI subscription connection (the same JSON Codex itself
+ * writes to auth.json) without ever writing it to disk.
+ */
+export function parseCodexAuthInfo(raw: string): CodexAuthInfo | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -190,6 +200,44 @@ export async function readCodexToken(
   const home = await resolveQuotaCodexHome(companyId);
   const auth = await readCodexAuthInfo(home);
   if (!auth) return null;
+  return { token: auth.accessToken, accountId: auth.accountId };
+}
+
+/** True once the access token's `exp` claim is at or past now, within a small skew. */
+function isCodexAccessTokenExpired(auth: CodexAuthInfo, skewSeconds = 60): boolean {
+  const payload = decodeJwtPayload(auth.accessToken) ?? decodeJwtPayload(auth.idToken);
+  const exp = typeof payload?.exp === "number" ? payload.exp : null;
+  if (exp == null) return false;
+  return Date.now() / 1000 >= exp - skewSeconds;
+}
+
+export const CODEX_QUOTA_EXPIRED_SIGN_IN_MESSAGE = "ChatGPT sign-in needs a run to refresh";
+
+type CodexQuotaAuthResolution =
+  | { token: string; accountId: string | null }
+  | "expired"
+  | null;
+
+/**
+ * Resolves the credential the quota probe reads: a usable on-disk Codex home
+ * first (same order as {@link resolveQuotaCodexHome}), then — only when no
+ * on-disk auth exists — the company's active OpenAI subscription connection
+ * saved through the vault. The vault credential is only ever read, never
+ * refreshed or written back: refresh tokens rotate, and a probe that
+ * refreshed one would invalidate the token an in-flight agent run is using.
+ */
+async function resolveCodexAuthForQuota(
+  companyId: string | undefined,
+  vault: QuotaVaultCredentialResolver | undefined,
+): Promise<CodexQuotaAuthResolution> {
+  const diskToken = await readCodexToken(companyId);
+  if (diskToken) return diskToken;
+  if (!companyId || !vault) return null;
+  const vaultCredential = await vault.resolveOpenAiSubscription(companyId);
+  if (!vaultCredential) return null;
+  const auth = parseCodexAuthInfo(vaultCredential.credential);
+  if (!auth) return null;
+  if (isCodexAccessTokenExpired(auth)) return "expired";
   return { token: auth.accessToken, accountId: auth.accountId };
 }
 
@@ -625,7 +673,10 @@ export function readCodexQuotaErrorFamily(error: unknown): CodexAuthRefreshFailu
   return classifyCodexAuthRefreshFailure({ errorMessage: message });
 }
 
-export async function getQuotaWindows(companyId?: string): Promise<ProviderQuotaResult> {
+export async function getQuotaWindows(
+  companyId?: string,
+  vault?: QuotaVaultCredentialResolver,
+): Promise<ProviderQuotaResult> {
   const errors: string[] = [];
   let rpcErrorFamily: CodexAuthRefreshFailureClass | null = null;
 
@@ -642,7 +693,15 @@ export async function getQuotaWindows(companyId?: string): Promise<ProviderQuota
     }
   }
 
-  const auth = await readCodexToken(companyId);
+  const auth = await resolveCodexAuthForQuota(companyId, vault);
+  if (auth === "expired") {
+    return {
+      provider: "openai",
+      ok: false,
+      error: CODEX_QUOTA_EXPIRED_SIGN_IN_MESSAGE,
+      windows: [],
+    };
+  }
   if (auth) {
     try {
       const windows = await fetchCodexQuota(auth.token, auth.accountId);

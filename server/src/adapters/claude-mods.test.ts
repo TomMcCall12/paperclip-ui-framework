@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_MOD_DIRS,
+  defaultModDirs,
   pruneAuditTrail,
   resetAuditTrailPruneClock,
   stampClaudeMods,
@@ -40,12 +40,18 @@ afterEach(() => {
   resetAuditTrailPruneClock();
 });
 
-describe("DEFAULT_MOD_DIRS", () => {
-  it("loads both the audit-trail and token-budget mods by default", () => {
-    expect(DEFAULT_MOD_DIRS).toEqual([
-      "/paperclip/mods/audit-trail",
-      "/paperclip/mods/token-budget",
+describe("defaultModDirs", () => {
+  it("derives both mod paths from the configured PAPERCLIP_HOME, not a fixed container path", () => {
+    expect(defaultModDirs({ PAPERCLIP_HOME: "/data/root" } as NodeJS.ProcessEnv)).toEqual([
+      join("/data/root", "mods", "audit-trail"),
+      join("/data/root", "mods", "token-budget"),
     ]);
+  });
+
+  it("falls back to the user's home dir when PAPERCLIP_HOME is unset", () => {
+    const dirs = defaultModDirs({} as NodeJS.ProcessEnv);
+    expect(dirs[0]).toMatch(/[/\\]\.paperclip[/\\]mods[/\\]audit-trail$/);
+    expect(dirs[1]).toMatch(/[/\\]\.paperclip[/\\]mods[/\\]token-budget$/);
   });
 });
 

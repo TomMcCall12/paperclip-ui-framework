@@ -3771,6 +3771,50 @@ export async function ensureAbsoluteDirectory(
   }
 }
 
+/**
+ * Decide whether an agent's configured `adapterConfig.cwd` displaces the
+ * agent-home workspace run prep already resolved.
+ *
+ * A configured `cwd` is an absolute host path, so it does not survive moving an
+ * instance between hosts — a container-to-native migration, or a move between
+ * machines, leaves every agent pointing at a directory that no longer exists.
+ * Honouring it blindly discards a workspace run prep has already materialized
+ * and the run then dies on ENOENT in startup step 1, before it does any work.
+ *
+ * So the configured path only wins when it is usable on this host. The probe
+ * uses `createIfMissing` to keep the create-on-first-use contract: a configured
+ * path that does not exist yet but can be created still wins. It falls back only
+ * when creation itself fails, and only when there is a resolved workspace to
+ * fall back to.
+ */
+export async function shouldConfiguredCwdDisplaceAgentHome(input: {
+  workspaceSource: string;
+  workspaceCwd: string;
+  configuredCwd: string;
+  onWarn?: (message: string) => void | Promise<void>;
+  ensureDirectory?: (cwd: string) => Promise<void>;
+}): Promise<boolean> {
+  if (input.workspaceSource !== "agent_home") return false;
+  if (input.configuredCwd.length === 0) return false;
+  // Nothing to fall back to, so the configured path is the only candidate and
+  // startup step 1 reports its own failure as before.
+  if (input.workspaceCwd.length === 0) return true;
+
+  const ensureDirectory = input.ensureDirectory
+    ?? ((cwd: string) => ensureAbsoluteDirectory(cwd, { createIfMissing: true }));
+  try {
+    await ensureDirectory(input.configuredCwd);
+    return true;
+  } catch (err) {
+    await input.onWarn?.(
+      `[paperclip] Configured adapterConfig.cwd "${input.configuredCwd}" is unusable on this host `
+        + `(${err instanceof Error ? err.message : String(err)}); falling back to the resolved `
+        + `workspace "${input.workspaceCwd}".\n`,
+    );
+    return false;
+  }
+}
+
 export async function resolvePaperclipSkillsDir(
   moduleDir: string,
   additionalCandidates: string[] = [],

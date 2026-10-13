@@ -35,6 +35,7 @@ export type {
   ServerAdapterModule,
   QuotaWindow,
   ProviderQuotaResult,
+  QuotaVaultCredentialResolver,
   TranscriptEntry,
   PaperclipQuestion,
   PaperclipQuestionOption,

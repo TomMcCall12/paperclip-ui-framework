@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { shouldConfiguredCwdDisplaceAgentHome } from "./execute.js";
+import { shouldConfiguredCwdDisplaceAgentHome } from "../server-utils.js";
 
 describe("shouldConfiguredCwdDisplaceAgentHome", () => {
   let tmpRoot = "";

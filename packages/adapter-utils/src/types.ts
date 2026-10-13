@@ -396,6 +396,17 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
+/**
+ * Server-supplied lookup so a quota probe can read a provider credential
+ * saved through the vault (AI connections) without the adapter package
+ * depending on the database. The server builds this from the company's
+ * saved connections/grants; the adapter only ever reads through it.
+ */
+export interface QuotaVaultCredentialResolver {
+  /** Returns the raw subscription credential for the company's active OpenAI connection, or null when none is usable. */
+  resolveOpenAiSubscription(companyId: string): Promise<{ credential: string } | null>;
+}
+
 // ---------------------------------------------------------------------------
 // Adapter config schema — declarative UI config for external adapters
 // ---------------------------------------------------------------------------
@@ -485,7 +496,10 @@ export interface ServerAdapterModule {
    * Returns a ProviderQuotaResult so the server can aggregate across adapters
    * without knowing provider-specific credential paths or API shapes.
    */
-  getQuotaWindows?: (companyId?: string) => Promise<ProviderQuotaResult>;
+  getQuotaWindows?: (
+    companyId?: string,
+    vault?: QuotaVaultCredentialResolver,
+  ) => Promise<ProviderQuotaResult>;
   /**
    * Optional: detect the currently configured model from local config files.
    * Returns the detected model/provider and the config source, or null if

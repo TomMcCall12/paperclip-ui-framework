@@ -373,7 +373,7 @@ export function aiConnectionService(db: Db) {
       } satisfies AiConnectionAttribution,
     };
   }
-  async function credential(row: Awaited<ReturnType<typeof select>>) {
+  async function credential(row: Awaited<ReturnType<typeof rows>>[number]) {
     const ref = row.grant.credentialSecretRefs.find(
       (r) => r.configPath === "ai.credential",
     );
@@ -775,5 +775,5 @@ export function aiConnectionService(db: Db) {
       return { connectionId: id, grantId };
     });
   }
-  return { list, select, credential, save, setDefault, membership };
+  return { list, select, credential, save, setDefault, membership, rows };
 }

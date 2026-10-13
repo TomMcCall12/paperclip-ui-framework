@@ -5005,6 +5005,79 @@ function resolveWorkspaceCommandExecution(input: {
   };
 }
 
+/**
+ * Default ceiling for an operator-authored workspace job's own virtual address space.
+ *
+ * On 2026-10-12 a `tsc` workspace job ballooned to 4.5-6.5GB and was OOM-killed twice;
+ * because it ran unbounded as a direct child of paperclip-native.service, each kill took
+ * the whole service's cgroup down with it (`paperclip-native.service: Failed with result
+ * 'oom-kill'`) (TOM-426). This host has no cgroup delegation for the service (`Delegate=no`,
+ * and `NoNewPrivileges=yes` blocks `sudo`/`systemd-run` from inside the process), so a
+ * dedicated systemd scope is not reachable from here. `ulimit -v` is: the job's own shell
+ * sets its RLIMIT_AS before running the real command, so the kernel fails the job's own
+ * allocation (ENOMEM / a V8 "Fatal process out of memory") once it crosses the bound,
+ * well before the host-wide OOM killer would ever need to pick a victim out of the
+ * service's cgroup. 4GB comfortably covers a real typecheck/build while staying far below
+ * the 4.5-6.5GB that took the service down, and above the ~1.6-3.2GB of virtual address
+ * space a bare Node process reserves just to start under pointer compression.
+ */
+const DEFAULT_WORKSPACE_JOB_MEMORY_MAX_MB = 4096;
+
+export function resolveWorkspaceJobMemoryMaxMb(): number {
+  const raw = process.env.PAPERCLIP_WORKSPACE_JOB_MEMORY_MAX_MB;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WORKSPACE_JOB_MEMORY_MAX_MB;
+}
+
+/**
+ * Wrap an operator-authored job command with a virtual-memory ceiling for the shell (and
+ * everything it spawns, since rlimits are inherited across fork/exec). `ulimit` is a POSIX
+ * shell builtin available in sh/bash/zsh/dash, so this is safe regardless of which shell
+ * `resolveShell()` picked. Deliberately not `exec`-ing the wrapped command: the command may
+ * be a compound shell expression (e.g. `pnpm install && pnpm build`), and `exec` only binds
+ * to the first simple command in that chain.
+ */
+export function wrapCommandWithMemoryBound(command: string, maxMemoryMb: number): string {
+  const maxMemoryKb = Math.max(1, Math.trunc(maxMemoryMb)) * 1024;
+  return `ulimit -v ${maxMemoryKb}; ${command}`;
+}
+
+const DEFAULT_RESOURCE_PRESSURE_CHECK_SCRIPT_PATH =
+  "/DATA/fastdrive/paperclip-native/recovery/scripts/check-resource-pressure.sh";
+
+function resolveResourcePressureCheckScriptPath(): string {
+  return process.env.PAPERCLIP_RESOURCE_PRESSURE_CHECK_SCRIPT?.trim() || DEFAULT_RESOURCE_PRESSURE_CHECK_SCRIPT_PATH;
+}
+
+/**
+ * Cheap, best-effort guard run before a heavy workspace job: ask the host's resource-
+ * pressure check whether it is already critical (load, memory or swap exhausted, or a
+ * crash-looping container burning a core) and, if so, defer the job instead of stacking
+ * more heavy work on top. Missing or unreadable script, or a non-critical verdict, never
+ * blocks the job — this is a defense-in-depth signal, not the job's only safeguard (see
+ * `wrapCommandWithMemoryBound`).
+ */
+export async function assertResourcePressureNotCritical(): Promise<void> {
+  const scriptPath = resolveResourcePressureCheckScriptPath();
+  if (!existsSync(scriptPath)) return;
+
+  let result: { code: number | null; stdout: string };
+  try {
+    result = await executeProcess({ command: scriptPath, args: [], cwd: os.tmpdir() });
+  } catch {
+    return;
+  }
+  if (result.code !== 2) return;
+
+  const verdictLine = result.stdout
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("VERDICT=")) ?? "VERDICT=critical";
+  throw new Error(
+    `Workspace job deferred: host resource pressure is critical (${verdictLine}). ` +
+      "Retry once the board is no longer under critical load.",
+  );
+}
+
 export async function runWorkspaceJobForControl(input: {
   actor: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
@@ -5025,10 +5098,13 @@ export async function runWorkspaceJobForControl(input: {
     throw new Error(`Workspace job "${resolved.name}" is missing command`);
   }
 
+  await assertResourcePressureNotCritical();
+
   await ensureServerWorkspaceLinksCurrent(resolved.cwd);
   return await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
     command: resolved.command,
+    resolvedCommand: wrapCommandWithMemoryBound(resolved.command, resolveWorkspaceJobMemoryMaxMb()),
     cwd: resolved.cwd,
     env: resolved.env,
     label: `Workspace job "${resolved.name}"`,
