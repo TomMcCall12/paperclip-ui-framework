@@ -355,6 +355,15 @@ describe("decideQueuedRunStaleness", () => {
     expect(decision).toMatchObject({ errorCode });
   });
 
+  it("keeps a resolved-interaction continuation on a blocked issue", () => {
+    expect(
+      decideQueuedRunStaleness(
+        { ...baseStalenessFacts(), isResolvedInteractionContinuation: true, issueStatus: "blocked" },
+        NOW,
+      ),
+    ).toEqual({ stale: false });
+  });
+
   describe.each([
     { name: "resolved connection", isResolvedInteractionContinuation: true, wakeReason: "issue_interaction_resolved" },
     { name: "tool snapshot refresh", isResolvedInteractionContinuation: false, wakeReason: "connection_tools_updated" },

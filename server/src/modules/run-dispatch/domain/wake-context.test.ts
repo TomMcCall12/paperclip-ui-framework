@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  allowsDependencyBlockedWake,
   allowsIssueInteractionWake,
   deriveCommentId,
   extractWakeCommentIds,
@@ -59,6 +60,28 @@ describe("wake context", () => {
       wakeCommentId: "comment-1",
     }, allowed)).toBe(false);
     expect(allowsIssueInteractionWake({ wakeReason: "issue_commented" }, allowed)).toBe(false);
+  });
+
+  it("lets a resolved interaction continuation through the dependency gate without a comment id", () => {
+    const allowed = new Set(["issue_commented"]);
+    expect(allowsDependencyBlockedWake({
+      wakeReason: "issue_commented",
+      mutation: "interaction",
+      interactionId: "interaction-1",
+      interactionStatus: "accepted",
+      sourceCommentId: null,
+    }, allowed)).toBe(true);
+    expect(allowsDependencyBlockedWake({
+      wakeReason: "issue_commented",
+      wakeCommentId: "comment-1",
+    }, allowed)).toBe(true);
+    expect(allowsDependencyBlockedWake({
+      wakeReason: "issue_commented",
+      mutation: "interaction",
+      interactionId: "interaction-1",
+      interactionStatus: "pending",
+    }, allowed)).toBe(false);
+    expect(allowsDependencyBlockedWake({ wakeReason: "issue_assigned" }, allowed)).toBe(false);
   });
 
   it.each(["accepted", "answered", "cancelled", "rejected"])(

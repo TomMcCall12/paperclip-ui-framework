@@ -531,7 +531,7 @@ import {
   isNonAssigneeWorkspaceBusyRetry,
   extractWakeCommentIds,
   deriveCommentId,
-  allowsIssueInteractionWake,
+  allowsDependencyBlockedWake,
   isResolvedInteractionContinuationWakeContext,
 } from "../modules/run-dispatch/index.js";
 import {
@@ -6982,9 +6982,10 @@ export function shouldAutoCheckoutIssueForWake(input: {
 
 export function resolvedInteractionCheckoutExpectedStatuses() {
   // A resolved interaction authorizes a new provider turn. Review describes
-  // the idle handoff state; once this turn acquires execution it must become
-  // in_progress in the same guarded checkout update.
-  return ["in_progress", "in_review"] as const;
+  // the idle handoff state, and blocked is the state of an issue waiting on
+  // the very decision just made; once this turn acquires execution it must
+  // become in_progress in the same guarded checkout update.
+  return ["in_progress", "in_review", "blocked"] as const;
 }
 
 export function shouldQueueFollowupForRunningIssueWake(input: {
@@ -17322,7 +17323,7 @@ export function heartbeatService(
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (
         unresolvedBlockerCount > 0 &&
-        !allowsIssueInteractionWake(
+        !allowsDependencyBlockedWake(
           context,
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
         )
@@ -20380,10 +20381,17 @@ export function heartbeatService(
             .listDependencyReadiness(agent.companyId, [issueId])
             .then((rows) => rows.get(issueId) ?? null)
         : null;
+      // A continuation on an issue whose blocker issues are still open runs in
+      // bounded interaction mode (like a comment wake) without claiming it;
+      // checkout would refuse it and the decision would be lost.
+      const continuationDependencyBlocked =
+        issueContext?.status === "blocked" &&
+        issueDependencyReadiness?.isDependencyReady === false;
       if (
         issueId &&
         issueContext &&
-        isResolvedInteractionContinuationWakeContext(context)
+        isResolvedInteractionContinuationWakeContext(context) &&
+        !continuationDependencyBlocked
       ) {
         try {
           // Claim the issue under the same active-status predicate used by the
@@ -27824,12 +27832,13 @@ export function heartbeatService(
             .then((rows) => rows.get(issue.id) ?? null);
 
           // Blocked descendants should stay idle until the final blocker resolves.
-          // Human comment/mention wakes are the exception: they may run in a
-          // bounded interaction mode so the assignee can answer or triage.
+          // Human comment/mention wakes and resolved-interaction continuations
+          // are the exception: they may run in a bounded interaction mode so
+          // the assignee can answer, triage, or act on the decision.
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            allowsIssueInteractionWake(
+            allowsDependencyBlockedWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
             );
