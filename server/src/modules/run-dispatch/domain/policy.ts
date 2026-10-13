@@ -506,9 +506,15 @@ export function decideQueuedRunStaleness(
   }
 
   if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
+    // A blocked issue is usually waiting on exactly this kind of human
+    // decision, so a resolved interaction must still continue it rather than
+    // go stale. Connection continuations keep the stricter rule.
+    const blockedAwaitingDecision =
+      facts.issueStatus === "blocked" && !facts.isConnectionContinuation;
     const earlyStatus = decideIssueStatus({
       status: facts.issueStatus,
-      requiresInProgress: facts.issueStatus !== "in_review",
+      requiresInProgress:
+        facts.issueStatus !== "in_review" && !blockedAwaitingDecision,
       terminalBypass: true,
     });
     if (earlyStatus === "not_in_progress") {

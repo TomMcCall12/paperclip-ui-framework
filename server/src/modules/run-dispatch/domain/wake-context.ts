@@ -89,6 +89,23 @@ export function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot));
 }
 
+/**
+ * A dependency-blocked issue stays idle except for wakes that carry a human
+ * decision: a comment or mention, and the continuation of a resolved
+ * interaction (an accepted or rejected confirmation, an answered question).
+ * Resolution wakes carry no comment id, so without the second clause an
+ * approval accepted on a blocked issue was skipped and never reached anyone.
+ */
+export function allowsDependencyBlockedWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  allowedWakeReasons: ReadonlySet<string>,
+): boolean {
+  return (
+    allowsIssueInteractionWake(contextSnapshot, allowedWakeReasons) ||
+    isResolvedInteractionContinuationWakeContext(contextSnapshot)
+  );
+}
+
 export function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown): boolean {
   const context = parseObject(contextSnapshot);
   const interactionId = readNonEmptyString(context.interactionId);

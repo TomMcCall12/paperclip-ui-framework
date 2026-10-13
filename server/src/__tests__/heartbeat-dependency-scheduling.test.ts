@@ -617,6 +617,123 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("wakes a dependency-blocked assignee when a resolved interaction continues", async () => {
+    // An approval accepted on a blocked issue carries no comment id. It used
+    // to be skipped as issue_dependencies_blocked, so the approved work never ran.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const interactionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "QueueOwner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Child waiting on the queue",
+        status: "blocked",
+        priority: "high",
+        responsibleUserId: "responsible-user",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Rebuild queue",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const continuationWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: blockedIssueId,
+        interactionId,
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        sourceCommentId: null,
+        mutation: "interaction",
+      },
+      idempotencyKey: `interaction:${interactionId}:accepted`,
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        taskId: blockedIssueId,
+        interactionId,
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        sourceCommentId: null,
+        mutation: "interaction",
+        wakeReason: "issue_commented",
+        source: "issue.interaction.accept",
+      },
+    });
+    expect(continuationWake).not.toBeNull();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, continuationWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, continuationWake!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.contextSnapshot).toMatchObject({
+      dependencyBlockedInteraction: true,
+      unresolvedBlockerIssueIds: [blockerId],
+      interactionId,
+      interactionStatus: "accepted",
+    });
+
+    const skipped = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(skipped).toBe(0);
+  });
+
   it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
