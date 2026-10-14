@@ -858,5 +858,24 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect((await service.setupOptions(request.interactionId!)).aiConnection).toMatchObject({ provider: "openai", mode: "responsible_user" });
   });
 
+  it("offers the user's healthy personal default as ready when it is only missing an install on the agent", async () => {
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const aiRunId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Claude Agent 2", adapterType: "claude_local", runtimeConfig: { aiConnection: { provider: "anthropic", method: "subscription", mode: "responsible_user" } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Run on OpenAI 2", status: "in_progress", assigneeAgentId: agentId, assigneeAdapterOverrides: { adapterType: "codex_local", adapterConfig: { model: "gpt-6-luna" } } });
+    await db.insert(heartbeatRuns).values({ id: aiRunId, companyId, agentId, status: "running", responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId } });
+    const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: `openai-fixture-${randomUUID()}`, name: "OpenAI fixture", type: "mcp_http", metadata: { sourceTemplateKey: "openai" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: app!.id, name: "Personal OpenAI", uid: `ai-${randomUUID()}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "oauth", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "openai", aiIsolatedSubscription: true, ai: { provider: "openai", method: "subscription" } } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: claims.responsible_user_id, createdByUserId: claims.responsible_user_id }).returning();
+    await db.insert(aiProviderDefaults).values({ companyId, userId: claims.responsible_user_id!, provider: "openai", grantId: grant!.id });
+    const service = connectionIntentService(db);
+    const request = await service.request({ ...claims, sub: agentId, run_id: aiRunId }, "openai", { purpose: "ai" });
+    const options = await service.setupOptions(request.interactionId!);
+    expect(options.existingConnections.map((c) => c.id)).toEqual([connection!.id]);
+    await expect(service.complete(request.interactionId!, connection!.id, claims.responsible_user_id!)).resolves.toMatchObject({ status: "accepted" });
+  });
+
 
 });

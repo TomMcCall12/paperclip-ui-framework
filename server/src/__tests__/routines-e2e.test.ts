@@ -328,6 +328,72 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     },
   );
 
+  it("proves an isolated Watch request receipt and simulated bound reply", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    await db.update(agents).set({ name: "Jarvis (test fixture)" }).where(eq(agents.id, agentId));
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({
+      projectId, assigneeAgentId: agentId, title: "Watch request",
+      description: "Watch transcript (user data): {{text}}",
+      variables: [{ name: "text", type: "text", required: true }],
+      concurrencyPolicy: "always_enqueue",
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const configured = await request(board).post(`/api/routines/${created.body.id}/triggers`)
+      .send({ kind: "webhook", signingMode: "bearer" });
+    expect(configured.status, JSON.stringify(configured.body)).toBe(201);
+    const path = new URL(configured.body.secretMaterial.webhookUrl).pathname;
+    const [{ actorMiddleware }, { boardMutationGuard }, { routineRoutes }, { errorHandler }] = await Promise.all([
+      import("../middleware/auth.js"), import("../middleware/board-mutation-guard.js"),
+      import("../routes/routines.js"), import("../middleware/error-handler.js"),
+    ]);
+    const ingress = express();
+    ingress.use(express.json());
+    ingress.use(actorMiddleware(db, {
+      deploymentMode: "authenticated",
+      resolveSession: async () => { throw new Error("No ambient board session allowed"); },
+    }));
+    ingress.use("/api", boardMutationGuard(), routineRoutes(db));
+    ingress.use(errorHandler);
+    const requestId = `watch-proof:${randomUUID()}`;
+    const send = (key: string, text: string) => request(ingress).post(path)
+      .set("Authorization", `Bearer ${configured.body.secretMaterial.webhookSecret}`)
+      .set("Idempotency-Key", key).send({ text });
+    const first = await send(requestId, "Please draft a short checklist.");
+    const retry = await send(requestId, "Please draft a short checklist.");
+    const distinct = await send(`watch-proof:${randomUUID()}`, "Please draft another checklist.");
+    expect(first.status).toBe(202);
+    expect(retry.status).toBe(202);
+    expect(distinct.status).toBe(202);
+    expect(first.body).toMatchObject({ status: "issue_created", source: "webhook" });
+    expect(retry.body.id).toBe(first.body.id);
+    expect(retry.body.linkedIssueId).toBe(first.body.linkedIssueId);
+    expect(distinct.body.linkedIssueId).not.toBe(first.body.linkedIssueId);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, first.body.linkedIssueId));
+    expect(issue).toMatchObject({
+      companyId, assigneeAgentId: agentId,
+      description: "Watch transcript (user data): Please draft a short checklist.",
+    });
+    const boundDestination = "fake://verified-tom-destination";
+    const fakeSends: Array<{ destination: string; issueId: string; text: string }> = [];
+    const fakeReply = (issueId: string, destination: string, text: string) => {
+      if (issueId !== first.body.linkedIssueId || destination !== boundDestination) {
+        throw new Error("Reply destination does not match the accepted request binding");
+      }
+      fakeSends.push({ destination, issueId, text });
+    };
+    fakeReply(first.body.linkedIssueId, boundDestination, "Checklist ready.");
+    expect(() => fakeReply(first.body.linkedIssueId, "fake://other-destination", "wrong target"))
+      .toThrow("Reply destination does not match");
+    expect(fakeSends).toEqual([{ destination: boundDestination, issueId: first.body.linkedIssueId, text: "Checklist ready." }]);
+    process.stdout.write(`WATCH_PROOF ${JSON.stringify({ requestId, firstRunId: first.body.id,
+      retryRunId: retry.body.id, issueId: first.body.linkedIssueId,
+      distinctIssueId: distinct.body.linkedIssueId, fakeReplyDestination: boundDestination,
+      fakeReplyCount: fakeSends.length })}\n`);
+  });
+
   it("keeps setup deliveries out of runs, persists test receipts, and restores removed triggers", async () => {
     vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
     vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");

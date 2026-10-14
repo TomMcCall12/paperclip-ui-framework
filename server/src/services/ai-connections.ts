@@ -1,6 +1,6 @@
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, ne, or } from "drizzle-orm";
 import {
   type Db,
   authUsers,
@@ -262,17 +262,51 @@ export function aiConnectionService(db: Db) {
       binding.mode === "responsible_user"
         ? defaultRow?.grantId
         : binding.grantId;
-    if (!grantId)
+    const allRows = await rows(companyId);
+    let row = grantId
+      ? allRows.find(
+          (r) =>
+            r.grant.id === grantId &&
+            (binding.mode === "responsible_user" ||
+              r.connection.id === binding.connectionId),
+        )
+      : undefined;
+    // A person's own default wins, and a default that needs reconnecting is
+    // reported as such. Only when they have none, or removed it, do we use the
+    // company's shared account, so choosing a model still runs.
+    let sharedFallback = false;
+    if (
+      binding.mode === "responsible_user" &&
+      (!row || row.connection.status === "archived")
+    ) {
+      const shared = allRows
+        .filter(
+          (r) =>
+            r.grant.kind === "organization" &&
+            r.grant.status === "active" &&
+            r.connection.enabled &&
+            r.connection.status === "active" &&
+            r.connection.healthStatus === "ok" &&
+            aiConnectionMetadataSchema.safeParse(r.connection.config.ai).data?.provider === binding.provider &&
+            isAiConnectionCompatible(
+              aiConnectionMetadataSchema.parse(r.connection.config.ai),
+              input.adapterType,
+              input.model,
+              input.runnerProvider,
+              input.acpxAgent,
+            ),
+        )
+        .sort((a, b) => b.connection.createdAt.getTime() - a.connection.createdAt.getTime())[0];
+      if (shared) {
+        row = shared;
+        sharedFallback = true;
+      }
+    }
+    if (!row && !grantId)
       throw unprocessable(
         "Connect an account and choose your personal default",
         { code: "ai_connection_default_missing" },
       );
-    const row = (await rows(companyId)).find(
-      (r) =>
-        r.grant.id === grantId &&
-        (binding.mode === "responsible_user" ||
-          r.connection.id === binding.connectionId),
-    );
     if (!row)
       throw unprocessable("The selected AI connection is unavailable", {
         code: "ai_connection_missing",
@@ -315,6 +349,7 @@ export function aiConnectionService(db: Db) {
       );
     if (
       binding.mode === "responsible_user" &&
+      !sharedFallback &&
       (grant.kind !== "user" || grant.subjectUserId !== userId)
     )
       throw forbidden("The default must belong to the responsible user");
@@ -548,22 +583,57 @@ export function aiConnectionService(db: Db) {
           { userId },
         );
       else if (input.ownership === "personal") {
-        const definition = await secrets.createUserSecretDefinition(
-          companyId,
-          {
-            key: `ai_${grantId.replaceAll("-", "_")}`,
-            name: input.name,
-            provider: "local_encrypted",
-          },
-          { userId },
-        );
-        const secret = await secrets.createCurrentUserSecretValue(
-          companyId,
-          userId,
-          { definitionId: definition.id, value: verifiedCredential },
-          { userId },
-        );
-        secretId = secret.id;
+        const privateKey = `ai_${grantId.replaceAll("-", "_")}`;
+        // Removing a connection clears the grant's secret link but leaves this
+        // private definition and value behind, so a reconnect must reuse them.
+        const [leftover] = await tx
+          .select({ definitionId: userSecretDefinitions.id, valueId: companySecrets.id })
+          .from(userSecretDefinitions)
+          .leftJoin(
+            companySecrets,
+            and(
+              eq(companySecrets.userSecretDefinitionId, userSecretDefinitions.id),
+              eq(companySecrets.scope, "user"),
+              eq(companySecrets.ownerUserId, userId),
+              ne(companySecrets.status, "deleted"),
+            ),
+          )
+          .where(
+            and(
+              eq(userSecretDefinitions.companyId, companyId),
+              eq(userSecretDefinitions.key, privateKey),
+              ne(userSecretDefinitions.status, "deleted"),
+            ),
+          );
+        if (leftover?.valueId) {
+          await secrets.rotate(
+            leftover.valueId,
+            { value: verifiedCredential },
+            { userId },
+          );
+          secretId = leftover.valueId;
+        } else {
+          const definitionId =
+            leftover?.definitionId ??
+            (
+              await secrets.createUserSecretDefinition(
+                companyId,
+                {
+                  key: privateKey,
+                  name: input.name,
+                  provider: "local_encrypted",
+                },
+                { userId },
+              )
+            ).id;
+          const secret = await secrets.createCurrentUserSecretValue(
+            companyId,
+            userId,
+            { definitionId, value: verifiedCredential },
+            { userId },
+          );
+          secretId = secret.id;
+        }
       } else
         secretId = (
           await secrets.create(
