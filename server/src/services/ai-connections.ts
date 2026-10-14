@@ -1,6 +1,6 @@
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, ne, or } from "drizzle-orm";
 import {
   type Db,
   authUsers,
@@ -548,22 +548,57 @@ export function aiConnectionService(db: Db) {
           { userId },
         );
       else if (input.ownership === "personal") {
-        const definition = await secrets.createUserSecretDefinition(
-          companyId,
-          {
-            key: `ai_${grantId.replaceAll("-", "_")}`,
-            name: input.name,
-            provider: "local_encrypted",
-          },
-          { userId },
-        );
-        const secret = await secrets.createCurrentUserSecretValue(
-          companyId,
-          userId,
-          { definitionId: definition.id, value: verifiedCredential },
-          { userId },
-        );
-        secretId = secret.id;
+        const privateKey = `ai_${grantId.replaceAll("-", "_")}`;
+        // Removing a connection clears the grant's secret link but leaves this
+        // private definition and value behind, so a reconnect must reuse them.
+        const [leftover] = await tx
+          .select({ definitionId: userSecretDefinitions.id, valueId: companySecrets.id })
+          .from(userSecretDefinitions)
+          .leftJoin(
+            companySecrets,
+            and(
+              eq(companySecrets.userSecretDefinitionId, userSecretDefinitions.id),
+              eq(companySecrets.scope, "user"),
+              eq(companySecrets.ownerUserId, userId),
+              ne(companySecrets.status, "deleted"),
+            ),
+          )
+          .where(
+            and(
+              eq(userSecretDefinitions.companyId, companyId),
+              eq(userSecretDefinitions.key, privateKey),
+              ne(userSecretDefinitions.status, "deleted"),
+            ),
+          );
+        if (leftover?.valueId) {
+          await secrets.rotate(
+            leftover.valueId,
+            { value: verifiedCredential },
+            { userId },
+          );
+          secretId = leftover.valueId;
+        } else {
+          const definitionId =
+            leftover?.definitionId ??
+            (
+              await secrets.createUserSecretDefinition(
+                companyId,
+                {
+                  key: privateKey,
+                  name: input.name,
+                  provider: "local_encrypted",
+                },
+                { userId },
+              )
+            ).id;
+          const secret = await secrets.createCurrentUserSecretValue(
+            companyId,
+            userId,
+            { definitionId, value: verifiedCredential },
+            { userId },
+          );
+          secretId = secret.id;
+        }
       } else
         secretId = (
           await secrets.create(

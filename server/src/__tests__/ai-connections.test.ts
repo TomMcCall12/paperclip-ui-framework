@@ -256,6 +256,19 @@ describe("managed AI connections", () => {
     expect(app.archivedAt).toBeNull();
   });
 
+  it("reconnects a removed personal account by reusing its leftover secret instead of failing on a duplicate", async () => {
+    const saved = await create("alice", "Removed then reconnected");
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
+    const oldSecretId = grant.credentialSecretRefs[0].secretId;
+    await db.update(connectionGrants).set({ status: "revoked", credentialSecretRefs: [], revokedAt: new Date(), updatedAt: new Date(Date.now() - 5000) }).where(eq(connectionGrants.id, saved.grantId));
+    await db.update(toolConnections).set({ status: "archived", enabled: false }).where(eq(toolConnections.id, saved.connectionId));
+    const result = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "personal", name: "Removed then reconnected", apiKey: "fixture", agentIds: [], allAgents: true, connectionId: saved.connectionId }, "fixture-after-removal");
+    expect(result.grantId).toBe(saved.grantId);
+    const [after] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
+    expect(after.status).toBe("active");
+    expect(after.credentialSecretRefs[0].secretId).toBe(oldSecretId);
+  });
+
   it("rejects invalid purpose/transport combinations in the database", async () => {
     const selected = await service.select({ ...input, userId: "alice" });
     await expect(db.update(toolConnections).set({ transport: "mcp_remote" }).where(eq(toolConnections.id, selected.connection.id))).rejects.toThrow();
