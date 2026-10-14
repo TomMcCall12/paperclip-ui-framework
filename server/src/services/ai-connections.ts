@@ -262,17 +262,51 @@ export function aiConnectionService(db: Db) {
       binding.mode === "responsible_user"
         ? defaultRow?.grantId
         : binding.grantId;
-    if (!grantId)
+    const allRows = await rows(companyId);
+    let row = grantId
+      ? allRows.find(
+          (r) =>
+            r.grant.id === grantId &&
+            (binding.mode === "responsible_user" ||
+              r.connection.id === binding.connectionId),
+        )
+      : undefined;
+    // A person's own default wins, and a default that needs reconnecting is
+    // reported as such. Only when they have none, or removed it, do we use the
+    // company's shared account, so choosing a model still runs.
+    let sharedFallback = false;
+    if (
+      binding.mode === "responsible_user" &&
+      (!row || row.connection.status === "archived")
+    ) {
+      const shared = allRows
+        .filter(
+          (r) =>
+            r.grant.kind === "organization" &&
+            r.grant.status === "active" &&
+            r.connection.enabled &&
+            r.connection.status === "active" &&
+            r.connection.healthStatus === "ok" &&
+            aiConnectionMetadataSchema.safeParse(r.connection.config.ai).data?.provider === binding.provider &&
+            isAiConnectionCompatible(
+              aiConnectionMetadataSchema.parse(r.connection.config.ai),
+              input.adapterType,
+              input.model,
+              input.runnerProvider,
+              input.acpxAgent,
+            ),
+        )
+        .sort((a, b) => b.connection.createdAt.getTime() - a.connection.createdAt.getTime())[0];
+      if (shared) {
+        row = shared;
+        sharedFallback = true;
+      }
+    }
+    if (!row && !grantId)
       throw unprocessable(
         "Connect an account and choose your personal default",
         { code: "ai_connection_default_missing" },
       );
-    const row = (await rows(companyId)).find(
-      (r) =>
-        r.grant.id === grantId &&
-        (binding.mode === "responsible_user" ||
-          r.connection.id === binding.connectionId),
-    );
     if (!row)
       throw unprocessable("The selected AI connection is unavailable", {
         code: "ai_connection_missing",
@@ -315,6 +349,7 @@ export function aiConnectionService(db: Db) {
       );
     if (
       binding.mode === "responsible_user" &&
+      !sharedFallback &&
       (grant.kind !== "user" || grant.subjectUserId !== userId)
     )
       throw forbidden("The default must belong to the responsible user");

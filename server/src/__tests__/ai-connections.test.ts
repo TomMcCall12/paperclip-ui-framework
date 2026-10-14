@@ -269,6 +269,25 @@ describe("managed AI connections", () => {
     expect(after.credentialSecretRefs[0].secretId).toBe(oldSecretId);
   });
 
+  it("runs a model-picked OpenAI task on the company's shared account when the person's own default is gone", async () => {
+    const userId = "shared-fallback-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const token = JSON.stringify({ tokens: { access_token: "fixture-access", refresh_token: "fixture-refresh", id_token: "fixture-id", account_id: "fixture-account" } });
+    const save = (ownership: "personal" | "shared", name: string) => service.save(companyId, userId, { provider: "openai", method: "subscription", ownership, name, loginSessionId: "fixture", allAgents: true, agentIds: [] }, token);
+    const openai = { companyId, agentId, adapterType: "codex_local", userId, binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const };
+    await expect(service.select(openai)).rejects.toThrow("Connect an account");
+    const personal = await save("personal", "Own OpenAI");
+    const shared = await save("shared", "Shared OpenAI");
+    expect((await service.select(openai)).grant.id).toBe(personal.grantId);
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, personal.grantId));
+    await db.update(toolConnections).set({ status: "archived", enabled: false }).where(eq(toolConnections.id, personal.connectionId));
+    const picked = await service.select(openai);
+    expect(picked.grant.id).toBe(shared.grantId);
+    expect(picked.attribution).toMatchObject({ mode: "responsible_user", responsibleUserId: userId, provider: "openai" });
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, shared.grantId));
+    await expect(service.select(openai)).rejects.toThrow();
+  });
+
   it("rejects invalid purpose/transport combinations in the database", async () => {
     const selected = await service.select({ ...input, userId: "alice" });
     await expect(db.update(toolConnections).set({ transport: "mcp_remote" }).where(eq(toolConnections.id, selected.connection.id))).rejects.toThrow();
