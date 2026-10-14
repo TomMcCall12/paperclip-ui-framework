@@ -231,12 +231,13 @@ export function connectionIntentService(db: Db) {
     serviceSlug: string;
     purpose?: "ai";
     taskOverrides?: unknown;
+    allowUninstalledPersonal?: boolean;
     inventory?: Awaited<ReturnType<typeof connectionInventory>>;
   }) {
     const managed = input.purpose === "ai" ? await managedAgent(input.companyId, input.agentId, input.serviceSlug, input.taskOverrides) : null;
     if (managed) {
       try {
-        const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.responsibleUserId, adapterType: managed.agent.adapterType, model: managed.agent.adapterConfig.model, runnerProvider: managed.agent.adapterConfig.provider, acpxAgent: managed.agent.adapterConfig.acpxAgent, binding: managed.binding });
+        const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.responsibleUserId, adapterType: managed.agent.adapterType, model: managed.agent.adapterConfig.model, runnerProvider: managed.agent.adapterConfig.provider, acpxAgent: managed.agent.adapterConfig.acpxAgent, binding: managed.binding, allowUninstalledPersonal: input.allowUninstalledPersonal });
         return access.getConnection(selected.connection.id, input.companyId);
       } catch (error) { if ([403, 404, 422].includes((error as { status?: number }).status ?? 0)) return null; throw error; }
     }
@@ -658,6 +659,7 @@ export function connectionIntentService(db: Db) {
       companyId: loaded.issue.companyId, agentId: payload.requestingAgentId,
       responsibleUserId: loaded.interaction.addresseeUserId!, serviceSlug: app.slug, purpose: "ai",
       taskOverrides: loaded.issue.assigneeAdapterOverrides,
+      allowUninstalledPersonal: true,
     }) : null;
     const aiAccounts = managed ? await aiConnectionService(db).list(loaded.issue.companyId, loaded.interaction.addresseeUserId!) : [];
     const selectedAiAccount = managed ? aiAccounts.find((account) =>
