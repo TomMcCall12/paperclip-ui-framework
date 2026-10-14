@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { agentInstructionsService } from "../services/agent-instructions.js";
+import { agentInstructionsBundleMode, agentInstructionsService } from "../services/agent-instructions.js";
 
 type TestAgent = {
   id: string;
@@ -297,6 +297,59 @@ describe("agent instructions service", () => {
       instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
     });
     await expect(fs.readFile(path.join(managedRoot, "docs", "TOOLS.md"), "utf8")).resolves.toBe("## Tools\n");
+  });
+
+  it("treats this agent's managed root under a previous instance root as managed and heals it on write", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-relocated-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "AGENTS.md"), "# Managed Agent\n", "utf8");
+
+    const previousRoot = "/paperclip/instances/default/companies/company-1/agents/agent-1/instructions";
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: previousRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: `${previousRoot}/AGENTS.md`,
+    });
+
+    expect(agentInstructionsBundleMode(agent)).toBe("managed");
+    const bundle = await svc.getBundle(agent);
+    expect(bundle.mode).toBe("managed");
+    expect(bundle.rootPath).toBe(managedRoot);
+    expect(bundle.files.map((file) => file.path)).toEqual(["AGENTS.md"]);
+
+    const result = await svc.writeFile(agent, "AGENTS.md", "# Updated\n");
+    expect(result.adapterConfig).toMatchObject({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: managedRoot,
+      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+    });
+    await expect(fs.readFile(path.join(managedRoot, "AGENTS.md"), "utf8")).resolves.toBe("# Updated\n");
+  });
+
+  it("keeps another agent's managed root external", () => {
+    const agent = makeAgent({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: "/paperclip/instances/default/companies/company-1/agents/agent-2/instructions",
+      instructionsEntryFile: "AGENTS.md",
+    });
+
+    expect(agentInstructionsBundleMode(agent)).toBe("external");
   });
 
   it("heals stale managed metadata when deleting bundle files", async () => {

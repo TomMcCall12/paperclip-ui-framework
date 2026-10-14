@@ -74,6 +74,8 @@ type BundleState = {
   warnings: string[];
   legacyPromptTemplateActive: boolean;
   legacyBootstrapPromptTemplateActive: boolean;
+  /** Stored root was this agent's managed root under a previous instance root. */
+  relocatedManagedRoot: boolean;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -139,6 +141,20 @@ function resolveManagedInstructionsRoot(agent: AgentLike): string {
     agent.id,
     "instructions",
   );
+}
+
+/**
+ * When an instance moves to a new root (for example from a Docker mount to a
+ * native install), stored managed roots keep the old prefix. A root that ends
+ * in this agent's own managed layout is the same managed bundle, so map it to
+ * the current managed root instead of treating it as an external host path.
+ */
+function relocatedManagedInstructionsRoot(agent: AgentLike, rootPath: string): string | null {
+  const managedRoot = resolveManagedInstructionsRoot(agent);
+  const resolvedRoot = path.resolve(rootPath);
+  if (resolvedRoot === managedRoot) return null;
+  const managedSuffix = path.join("companies", agent.companyId, "agents", agent.id, "instructions");
+  return resolvedRoot.endsWith(`${path.sep}${managedSuffix}`) ? managedRoot : null;
 }
 
 function resolveLegacyInstructionsPath(candidatePath: string, config: Record<string, unknown>): string {
@@ -268,6 +284,15 @@ function deriveBundleState(agent: AgentLike): BundleState {
     }
   }
 
+  const relocatedRoot = rootPath ? relocatedManagedInstructionsRoot(agent, rootPath) : null;
+  if (relocatedRoot) {
+    warnings.push(
+      `Managed instructions root ${rootPath} is from a previous instance root; using ${relocatedRoot}.`,
+    );
+    rootPath = relocatedRoot;
+    mode = "managed";
+  }
+
   const resolvedEntryPath = rootPath ? path.resolve(rootPath, entryFile) : null;
 
   return {
@@ -279,6 +304,7 @@ function deriveBundleState(agent: AgentLike): BundleState {
     warnings,
     legacyPromptTemplateActive: Boolean(asString(config[PROMPT_KEY])),
     legacyBootstrapPromptTemplateActive: Boolean(asString(config[BOOTSTRAP_PROMPT_KEY])),
+    relocatedManagedRoot: relocatedRoot !== null,
   };
 }
 
@@ -418,7 +444,8 @@ function buildPersistedBundleConfig(
     && derivedRootPath !== null
     && currentRootPath !== null
     && derivedRootPath === currentRootPath
-    && derived.entryFile === current.entryFile;
+    && derived.entryFile === current.entryFile
+    && !derived.relocatedManagedRoot;
 
   if (configMatchesRecoveredState && !options?.clearLegacyPromptTemplate) {
     return current.config;
