@@ -13,6 +13,15 @@ import { queryKeys } from "@/lib/queryKeys";
 import { resolveAdapterTestEnvironmentId, resolveLocalDefaultEnvironmentId, resolveManagedSandboxEnvironmentId } from "@/lib/adapter-test-environment";
 import { resolveForcedKubernetesEnvironment } from "@/lib/forced-kubernetes-environment";
 
+/** Connecting creates the application row the Connectors page lists, so refresh those caches too. */
+function invalidateAfterConnect(client: ReturnType<typeof useQueryClient>, companyId: string) {
+  void client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+  void client.invalidateQueries({ queryKey: queryKeys.tools.applications(companyId) });
+  void client.invalidateQueries({ queryKey: queryKeys.tools.connections(companyId) });
+  void client.invalidateQueries({ queryKey: queryKeys.apps.gallery(companyId) });
+  void client.invalidateQueries({ queryKey: queryKeys.apps.attention(companyId) });
+}
+
 type Props = {
   companyId: string;
   provider: AiProvider;
@@ -90,7 +99,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
       onBack={onCancel}
       onConnected={() => {}}
       testConnection={async () => false}
-      managedAccount={{ intent, initialMethod, fixedMethod: fixedMethod || Boolean(connectionId), disabled: loading || Boolean(error) || !name.trim(), onComplete: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete(result); } }}
+      managedAccount={{ intent, initialMethod, fixedMethod: fixedMethod || Boolean(connectionId), disabled: loading || Boolean(error) || !name.trim(), onComplete: (result) => { invalidateAfterConnect(client, companyId); onComplete(result); } }}
     />}
   </div>;
 }
@@ -101,7 +110,7 @@ function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initial
   const client = useQueryClient();
   const save = useMutation({
     mutationFn: () => aiConnectionsApi.create(companyId, { provider, method: "api_key", name, ownership, agentIds, allAgents, connectionId, apiKey }),
-    onSuccess: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete({ ...result, method: "api_key" }); },
+    onSuccess: (result) => { invalidateAfterConnect(client, companyId); onComplete({ ...result, method: "api_key" }); },
     onSettled: () => setApiKey(""),
   });
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-4">
