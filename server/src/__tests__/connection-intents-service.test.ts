@@ -844,5 +844,19 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect((await service.search(aiClaims, "openrouter")).results.some(result => result.service === "openrouter")).toBe(false);
   });
 
+  it("builds the AI connection card from the task's provider override, not the agent's saved provider", async () => {
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const aiRunId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Claude Agent", adapterType: "claude_local", runtimeConfig: { aiConnection: { provider: "anthropic", method: "subscription", mode: "responsible_user" } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Run on OpenAI", status: "in_progress", assigneeAgentId: agentId, assigneeAdapterOverrides: { adapterType: "codex_local", adapterConfig: { model: "gpt-6-luna" } } });
+    await db.insert(heartbeatRuns).values({ id: aiRunId, companyId, agentId, status: "running", responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId } });
+    const service = connectionIntentService(db);
+    const request = await service.request({ ...claims, sub: agentId, run_id: aiRunId }, "openai", { purpose: "ai" });
+    expect(request.state).toBe("needs_user_action");
+    expect((await service.setupOptions(request.interactionId!)).aiConnection).toMatchObject({ provider: "openai", mode: "responsible_user" });
+  });
+
 
 });

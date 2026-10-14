@@ -136,7 +136,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     }
     if (interaction.status === "accepted") {
       const ready = await connectionIntentService(db).usableConnectionForAgent({ companyId: claimed.companyId,
-        agentId: payload!.requestingAgentId!, responsibleUserId: userId!, serviceSlug: payload!.serviceSlug!, purpose: payload!.purpose });
+        agentId: payload!.requestingAgentId!, responsibleUserId: userId!, serviceSlug: payload!.serviceSlug!, purpose: payload!.purpose, taskOverrides: loaded.issue.assigneeAdapterOverrides });
       if (!ready) return;
     }
     if (interaction.status === "accepted" && payload?.purpose === "ai" && loaded.issue.status === "blocked") {

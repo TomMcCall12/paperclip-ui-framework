@@ -1,6 +1,7 @@
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { agentForTaskProvider } from "./task-model-provider.js";
 import { and, eq, desc, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -172,6 +173,7 @@ export function connectionIntentService(db: Db) {
         companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
       }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).then((rows) => rows[0] ?? null),
       db.select({ id: agents.id, companyId: agents.companyId, name: agents.name })
         .from(agents)
@@ -214,8 +216,10 @@ export function connectionIntentService(db: Db) {
     };
   }
 
-  async function managedAgent(companyId: string, agentId: string, serviceSlug: string) {
-    const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+  async function managedAgent(companyId: string, agentId: string, serviceSlug: string, taskOverrides?: unknown) {
+    const [saved] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    // A task can run on the other model provider; the card must use the same binding the run used.
+    const agent = saved ? agentForTaskProvider(saved, taskOverrides) ?? saved : saved;
     const binding = aiConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
     return agent && binding?.provider === serviceSlug ? { agent, binding } : null;
   }
@@ -226,9 +230,10 @@ export function connectionIntentService(db: Db) {
     responsibleUserId: string;
     serviceSlug: string;
     purpose?: "ai";
+    taskOverrides?: unknown;
     inventory?: Awaited<ReturnType<typeof connectionInventory>>;
   }) {
-    const managed = input.purpose === "ai" ? await managedAgent(input.companyId, input.agentId, input.serviceSlug) : null;
+    const managed = input.purpose === "ai" ? await managedAgent(input.companyId, input.agentId, input.serviceSlug, input.taskOverrides) : null;
     if (managed) {
       try {
         const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.responsibleUserId, adapterType: managed.agent.adapterType, model: managed.agent.adapterConfig.model, runnerProvider: managed.agent.adapterConfig.provider, acpxAgent: managed.agent.adapterConfig.acpxAgent, binding: managed.binding });
@@ -570,6 +575,7 @@ export function connectionIntentService(db: Db) {
       responsibleUserId: context.run.responsibleUserId!,
       serviceSlug: app.slug,
       purpose: options.purpose,
+      taskOverrides: context.issue.assigneeAdapterOverrides,
     });
     if (ready) {
       return {
@@ -645,12 +651,13 @@ export function connectionIntentService(db: Db) {
     const loaded = await loadIntent(interactionId);
     const payload = connectionIntentPayloadSchema.parse(loaded.interaction.payload);
     const app = await resolveService(payload.serviceSlug, loaded.issue.companyId, loaded.interaction.addresseeUserId!, payload.requestingAgentId, payload.purpose);
-    const managed = payload.purpose === "ai" ? await managedAgent(loaded.issue.companyId, payload.requestingAgentId, app.slug) : null;
+    const managed = payload.purpose === "ai" ? await managedAgent(loaded.issue.companyId, payload.requestingAgentId, app.slug, loaded.issue.assigneeAdapterOverrides) : null;
     if (payload.purpose === "ai" && !managed) throw conflict("The agent’s AI configuration changed. Start a new execution.");
     const inventory = await connectionInventory(loaded.issue.companyId);
     const usableAiConnection = managed ? await usableConnectionForAgent({
       companyId: loaded.issue.companyId, agentId: payload.requestingAgentId,
       responsibleUserId: loaded.interaction.addresseeUserId!, serviceSlug: app.slug, purpose: "ai",
+      taskOverrides: loaded.issue.assigneeAdapterOverrides,
     }) : null;
     const aiAccounts = managed ? await aiConnectionService(db).list(loaded.issue.companyId, loaded.interaction.addresseeUserId!) : [];
     const selectedAiAccount = managed ? aiAccounts.find((account) =>
@@ -760,7 +767,7 @@ export function connectionIntentService(db: Db) {
       if (payload.purpose === "ai" && selectedConnection.connectionPurpose !== "ai") throw conflict("Select an AI account for this authentication request");
       if (selectedConnection.connectionPurpose === "ai") {
         if (payload.purpose !== "ai") throw conflict("AI authentication cannot satisfy a tool connection request");
-        const managed = await managedAgent(loaded.issue.companyId, payload.requestingAgentId, payload.serviceSlug);
+        const managed = await managedAgent(loaded.issue.companyId, payload.requestingAgentId, payload.serviceSlug, loaded.issue.assigneeAdapterOverrides);
         if (!managed) throw conflict("Configure the agent’s AI connection before using this account");
         const service = aiConnectionService(txDb);
         if (managed.binding.mode === "responsible_user") {
