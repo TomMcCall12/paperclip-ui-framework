@@ -71,7 +71,8 @@ export function skillNameFromRuntimeName(value: string): string {
 
 /** Tools whose input can open a skill's SKILL.md: a file read or a shell command such as `cat`. */
 const SKILL_FILE_READ_TOOL_NAMES = new Set(["Read", "Bash", "read_file", "terminal"]);
-const SKILL_FILE_PATTERN = /([A-Za-z0-9][A-Za-z0-9._-]*)\/SKILL\.md\b/g;
+// The directory right before /SKILL.md, not a shell variable such as `$D/SKILL.md`.
+const SKILL_FILE_PATTERN = /(?<![$A-Za-z0-9._-])([A-Za-z0-9][A-Za-z0-9._-]*)\/SKILL\.md\b/g;
 
 /**
  * Agents often load a skill by reading its SKILL.md (Paperclip's own prompts
@@ -114,8 +115,9 @@ function skillNameFromInput(input: unknown): string | null {
  * skill loads. Best effort and adapter-aware: Claude stream-json `tool_use`
  * blocks (the `Skill` tool names the skill), Codex tool items, and Hermes
  * gateway `tool.started` events (`skill_view` names the skill in its preview).
- * Reading a skill's SKILL.md (Claude `Read` or `Bash`, a Codex command) also
- * counts as loading that skill.
+ * ACP engine `acpx.tool_call` events are counted once per tool call id.
+ * Reading a skill's SKILL.md (Claude `Read` or `Bash`, a Codex command, an
+ * ACP tool call) also counts as loading that skill.
  * Lines split across chunks are reassembled; malformed lines are ignored.
  */
 export function createRunToolTracker() {
@@ -142,6 +144,21 @@ export function createRunToolTracker() {
         } else if (SKILL_FILE_READ_TOOL_NAMES.has(record.name)) {
           for (const skill of skillFileReadsFromInput(record.input)) skills.add(skill);
         }
+      }
+      return;
+    }
+    // ACP engine events: one call streams several updates under one toolCallId.
+    // The update's name is the call's title (the command or "Read <path>"); its
+    // text carries tool output, so only the name is read for skill loads.
+    if (record.type === "acpx.tool_call") {
+      const id = typeof record.toolCallId === "string" ? record.toolCallId : null;
+      if (id && !seenToolIds.has(id)) {
+        seenToolIds.add(id);
+        toolCalls += 1;
+      }
+      const name = typeof record.name === "string" ? record.name : "";
+      if (!/^(?:Write|Edit)\b/.test(name)) {
+        for (const skill of skillNamesFromSkillFileReads(name)) skills.add(skill);
       }
       return;
     }

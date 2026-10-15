@@ -89,12 +89,26 @@ describe("createRunToolTracker", () => {
     tracker.observe(toolUse("r2", "Bash", { command: `R=${root}; cat $R/notes-vault--531c6516f6/SKILL.md | head -80` }));
     tracker.observe(toolUse("r3", "Read", { file_path: `${root}/notes-vault--531c6516f6/references/api.md` }));
     tracker.observe(toolUse("r4", "Read", { file_path: "/repo/skills/SKILL.md" }));
+    tracker.observe(toolUse("r6", "Bash", { command: "D=$(ls -d /x/skills/notes*); cat $D/SKILL.md ${D}/SKILL.md" }));
     tracker.observe(toolUse("r5", "Edit", { file_path: `${root}/design-critique/SKILL.md` }));
     tracker.observe(line({ type: "item.started", item: { type: "command_execution", command: "sed -n 1,80p ~/.codex/skills/plated-release-operations/SKILL.md" } }));
     expect(tracker.result()).toEqual({
-      toolCalls: 6,
+      toolCalls: 7,
       skillsUsed: ["notes-vault", "plated-release-operations", "toms-lab-self-update"],
     });
+  });
+
+  it("counts ACP engine tool calls once per id and skill reads from their titles", () => {
+    const tracker = createRunToolTracker();
+    const acpx = (value: Record<string, unknown>) => line({ type: "acpx.tool_call", ...value });
+    tracker.observe(acpx({ name: "Terminal", toolCallId: "a1", status: "pending", tag: "tool_call" }));
+    tracker.observe(acpx({ name: "cat /x/.claude/skills/notes-vault--531c6516f6/SKILL.md", toolCallId: "a1", tag: "tool_call_update" }));
+    tracker.observe(acpx({ name: "Terminal", toolCallId: "a1", status: "completed", text: "see other-skill/SKILL.md", tag: "tool_call_update" }));
+    tracker.observe(acpx({ name: "Read File", toolCallId: "a2", status: "pending", tag: "tool_call" }));
+    tracker.observe(acpx({ name: "Read /x/.claude/skills/assembly-line--471cf86947/SKILL.md", toolCallId: "a2", tag: "tool_call_update" }));
+    tracker.observe(acpx({ name: "Write /x/skills/draft-skill/SKILL.md", toolCallId: "a3", tag: "tool_call" }));
+    tracker.observe(line({ type: "acpx.status", text: "usage updated" }));
+    expect(tracker.result()).toEqual({ toolCalls: 3, skillsUsed: ["assembly-line", "notes-vault"] });
   });
 
   it("parses a final line that has no trailing newline", () => {
