@@ -48,6 +48,7 @@ import {
 } from "@/hooks/useSharedPolling";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
+import { LineChip } from "../components/LineChip";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
@@ -6893,6 +6894,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         shellSectionClass,
       )}
     >
+      {issue.lineId ? <LineChip companyId={issue.companyId} lineId={issue.lineId} returnHref={resolvedIssueDetailState?.issueDetailSource === "lines" ? resolvedIssueDetailState.issueDetailBreadcrumb?.href : undefined} /> : null}
       {streamlinedTaskDetailEnabled ? (
         <div className="flex min-w-0 items-start gap-2 md:items-center md:pr-8">
           <div className="hidden md:block">{issueStatusControl}</div>

@@ -1,5 +1,6 @@
 import {
   Inbox,
+  GitMerge,
   ListChecks,
   CircleCheck,
   Target,
@@ -175,6 +176,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
+          <SidebarNavItem to="/lines" label="Lines" icon={GitMerge} />
           {showDecisions ? (
             <SidebarNavItem
               to="/decisions"

@@ -338,6 +338,9 @@ describe("Sidebar", () => {
 
     const primaryNavText = container.querySelector("nav > div:first-child")?.textContent ?? "";
     expect(primaryNavText).toContain("Inbox");
+    const primaryLinks = [...container.querySelectorAll("nav > div:first-child a")];
+    expect(primaryLinks.findIndex((link) => link.getAttribute("href") === "/lines"))
+      .toBe(primaryLinks.findIndex((link) => link.getAttribute("href") === "/inbox") + 1);
     expect(primaryNavText).not.toContain("Plugin slot outlet");
 
     flushSync(() => {

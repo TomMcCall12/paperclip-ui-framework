@@ -34,6 +34,7 @@ import { ProjectDetail } from "./pages/ProjectDetail";
 import { ProjectWorkspaceDetail } from "./pages/ProjectWorkspaceDetail";
 import { Workspaces } from "./pages/Workspaces";
 import { Issues } from "./pages/Issues";
+import { Lines, LineDetail } from "./pages/Lines";
 import { Search } from "./pages/Search";
 import { IssueDetail } from "./pages/IssueDetail";
 import { AgentChat } from "./pages/AgentChat";
@@ -297,6 +298,8 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <Route path="workspaces" element={<Workspaces />} />
       </Route>
       <Route path="issues" element={<Issues />} />
+      <Route path="lines" element={<Lines />} />
+      <Route path="lines/:lineId" element={<LineDetail />} />
       <Route path="tasks" element={<Navigate to="/issues" replace />} />
       <Route path="search" element={<Search />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />

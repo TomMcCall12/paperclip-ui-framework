@@ -141,6 +141,11 @@ describe("issueDetailBreadcrumb", () => {
     });
   });
 
+  it("restores a Line return path with filters after opening a task directly", () => {
+    expect(readIssueDetailBreadcrumb("PAP-465", null, "?from=lines&fromHref=%2FPAP%2Flines%2Fline-1%3Fstatus%3Ddone%26assignee%3Dagent-1"))
+      .toEqual({ label: "Lines", href: "/PAP/lines/line-1?status=done&assignee=agent-1" });
+  });
+
   it("can detect legacy query-based breadcrumb links", () => {
     expect(hasLegacyIssueDetailQuery("?from=inbox&fromHref=%2Finbox%2Fmine")).toBe(true);
     expect(hasLegacyIssueDetailQuery("?q=test")).toBe(false);

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
-import { useLocation, useSearchParams } from "@/lib/router";
+import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { linesApi } from "../api/lines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -15,6 +16,7 @@ import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
+import { Button } from "@/components/ui/button";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
@@ -71,6 +73,7 @@ export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const fetchNextPageInFlightRef = useRef(false);
@@ -84,6 +87,7 @@ export function Issues() {
     return urlSearch;
   }, [searchOverride, urlSearch, location.search]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
+  const lineId = searchParams.get("lineId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
   const handleSearchChange = useCallback((search: string) => {
@@ -95,6 +99,20 @@ export function Issues() {
     window.history.replaceState(window.history.state, "", nextUrl);
     setSearchOverride({ search, locationSearch: window.location.search });
   }, []);
+
+  const lineOptions = useInfiniteQuery({
+    queryKey: [...queryKeys.lines.list(selectedCompanyId ?? "", "all", ""), "filter-options"],
+    queryFn: ({ pageParam, signal }) => linesApi.list(selectedCompanyId!, { status: "all", cursor: pageParam || undefined, limit: 100 }, { signal }),
+    initialPageParam: "",
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+    enabled: !!selectedCompanyId,
+  });
+  const availableLines = lineOptions.data?.pages.flatMap((page) => page.items) ?? [];
+  function changeLineFilter(next: string) {
+    const params = new URLSearchParams(window.location.search);
+    next ? params.set("lineId", next) : params.delete("lineId");
+    navigate(`${location.pathname}${params.size ? `?${params}` : ""}`);
+  }
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -154,6 +172,8 @@ export function Issues() {
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
       participantAgentId ?? "__all__",
+      "line",
+      lineId ?? "__all__",
       "workspace",
       workspaceIdFilter ?? "__all__",
       "compact",
@@ -163,6 +183,7 @@ export function Issues() {
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       participantAgentId,
+      lineId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
       limit: issuePageSize,
@@ -174,7 +195,6 @@ export function Issues() {
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
       getNextIssuesPageOffset(lastPage.length, lastPageParam, issuePageSize),
     enabled: !!selectedCompanyId,
-    placeholderData: (previousData) => previousData,
   });
 
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
@@ -209,6 +229,17 @@ export function Issues() {
   }
 
   return (
+    <>
+    <div className="flex flex-wrap items-center gap-2 px-4 pt-4">
+      <label htmlFor="all-tasks-line-filter" className="text-sm text-muted-foreground">Line</label>
+      <select id="all-tasks-line-filter" name="lineId" value={lineId ?? ""} onChange={(event) => changeLineFilter(event.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-ring">
+        <option value="">All tasks</option><option value="ungrouped">Ungrouped</option>
+        {lineId && lineId !== "ungrouped" && !availableLines.some((line) => line.id === lineId) ? <option value={lineId}>Selected Line</option> : null}
+        {availableLines.map((line) => <option key={line.id} value={line.id}>{line.displayName} · {line.rootIdentifier}</option>)}
+      </select>
+      {lineOptions.hasNextPage ? <Button variant="outline" size="sm" disabled={lineOptions.isFetchingNextPage} onClick={() => void lineOptions.fetchNextPage()}>{lineOptions.isFetchingNextPage ? "Loading…" : "More Lines"}</Button> : null}
+      {lineOptions.isError ? <span role="alert" className="text-sm text-destructive">Line choices could not be loaded.</span> : null}
+    </div>
     <IssuesList
       issues={issues ?? []}
       isLoading={isLoading}
@@ -231,5 +262,6 @@ export function Issues() {
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
       searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
     />
+    </>
   );
 }

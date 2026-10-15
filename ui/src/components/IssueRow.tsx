@@ -23,6 +23,7 @@ import { StatusIcon } from "./StatusIcon";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
 import { Badge } from "@/components/ui/badge";
+import { LineChip } from "./LineChip";
 
 export type IssueRowUnreadState = "hidden" | "visible" | "fading";
 export type IssueRowPresentation = "legacy" | "task";
@@ -307,6 +308,7 @@ export function IssueRow({
               {issue.title}{titleSuffix}
             </span>
             {recoveryIndicator}
+            <LineChip companyId={issue.companyId} lineId={issue.lineId} />
             {mobileTitleMeta ? (
               <span className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden">
                 {mobileTitleMeta}
@@ -397,6 +399,7 @@ export function IssueRow({
             {issue.title}{titleSuffix}
           </span>
           {recoveryIndicator}
+          <LineChip companyId={issue.companyId} lineId={issue.lineId} />
         </span>
         {checklistDependencyChips ? (
           <span className="flex flex-wrap gap-1 sm:order-3 sm:ml-(--sz-calc-13)">
