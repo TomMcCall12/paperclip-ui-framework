@@ -183,7 +183,7 @@ describe("PendingLabChangesDashboardCard", () => {
         found = container.querySelector('[data-testid="pending-lab-changes-rebuild-button"]');
         expect(found).not.toBeNull();
       });
-      return found as Element;
+      return found as unknown as Element;
     })();
 
     await act(async () => {
