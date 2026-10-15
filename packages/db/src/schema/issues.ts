@@ -37,6 +37,9 @@ export const issues = pgTable(
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
+    // Composite company FK is added in the Line migration after both tables exist.
+    // Declaring it here would create a circular Drizzle table initializer.
+    lineId: uuid("line_id"),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
@@ -101,6 +104,7 @@ export const issues = pgTable(
       and ${table.status} not in ('done', 'cancelled')
     )`),
     companyIdUq: unique("issues_company_id_uq").on(table.companyId, table.id),
+    companyLineIdx: index("issues_company_line_idx").on(table.companyId, table.lineId),
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(

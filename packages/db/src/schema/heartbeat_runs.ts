@@ -98,6 +98,7 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    companyIdUq: unique("heartbeat_runs_company_id_uq").on(table.companyId, table.id),
     executionStatusDeliveryIdx: index("heartbeat_runs_execution_status_delivery_idx")
       .on(table.executionStatusDeliveryId).where(sql`${table.executionStatusDeliveryId} is not null`),
     executionControlDeadlineIdx: index("heartbeat_runs_execution_control_deadline_idx")

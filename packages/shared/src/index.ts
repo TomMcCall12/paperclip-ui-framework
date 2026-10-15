@@ -2532,6 +2532,13 @@ export {
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
+export {
+  lineNamingStatusSchema, lineListStatusSchema, lineCompletionStatusSchema,
+  lineNameSchema, listLinesQuerySchema, createLineSchema, updateLineSchema,
+  retryLineNamingSchema, lineNamingResultSchema, issueLineFilterSchema,
+  type ListLinesQuery, type CreateLine, type UpdateLine, type LineNamingResult,
+} from "./validators/line.js";
+export type { Line, PaginatedLines, LineNamingStatus, LineListStatus, LineCompletionStatus } from "./types/line.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
 export {

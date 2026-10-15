@@ -41,6 +41,7 @@ export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { folders } from "./folders.js";
 export { issues } from "./issues.js";
+export { lines } from "./lines.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
 export { issueScheduledChecks } from "./issue_scheduled_checks.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";

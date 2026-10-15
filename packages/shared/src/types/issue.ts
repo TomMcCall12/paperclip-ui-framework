@@ -839,6 +839,8 @@ export interface Issue {
   projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
+  /** Server-owned membership. Optional until all Line readers and writers deploy. */
+  lineId?: string | null;
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
@@ -931,6 +933,7 @@ export type CompactIssue = Pick<
   | "projectWorkspaceId"
   | "goalId"
   | "parentId"
+  | "lineId"
   | "title"
   | "description"
   | "status"
