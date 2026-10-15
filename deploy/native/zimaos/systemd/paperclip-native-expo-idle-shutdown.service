@@ -1,0 +1,22 @@
+[Unit]
+Description=Stop idle Expo dev servers in paperclip-native.service's cgroup (triggered by paperclip-native-expo-idle-shutdown.timer)
+After=paperclip-native.service
+
+[Service]
+Type=oneshot
+User=paperclip
+Group=paperclip
+# The script needs the real install root (for logs/, the `current` release
+# symlink and the bundled node/pg toolchain) and must not guess it from its
+# own script path: that path depends on whether /usr/local/lib/paperclip or
+# <root>/recovery ended up as the recovery base (see the ExecStart comment
+# below), and only one of those two actually sits under the real root.
+Environment="PAPERCLIP_NATIVE_ROOT=/DATA/.media/External SSD/paperclip-native"
+# Fixed location outside the release tree, same reasoning as
+# paperclip-native-watchdog.service -- install-native-zimaos.sh retargets
+# this path to <root>/recovery/scripts if /usr/local/lib is not writable on
+# this ZimaOS.
+ExecStart=/usr/local/lib/paperclip/scripts/paperclip-expo-idle-shutdown.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-expo-idle-shutdown

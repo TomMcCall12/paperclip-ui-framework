@@ -312,7 +312,7 @@ log "== Recovery-path scripts: fixed location outside the release tree =="
 # ZimaOS; fall back to <root>/recovery if not. Either way, never current/.
 RECOVERY_BASE="/usr/local/lib/paperclip"
 if [[ "$DRY_RUN" == "1" ]]; then
-  log "[dry-run] would use /usr/local/lib/paperclip if writable, else $ROOT/recovery, for paperclip-watchdog.sh + telegram-alert.sh + lib/common.sh"
+  log "[dry-run] would use /usr/local/lib/paperclip if writable, else $ROOT/recovery, for paperclip-watchdog.sh + telegram-alert.sh + paperclip-expo-idle-shutdown.sh + lib/common.sh"
   RECOVERY_BASE="<either /usr/local/lib/paperclip or $ROOT/recovery>"
 else
   RECOVERY_BASE="$(resolve_recovery_base "/usr/local/lib/paperclip" "$ROOT/recovery")"
@@ -322,7 +322,7 @@ else
     log "/usr/local/lib/paperclip is not writable on this ZimaOS; using $RECOVERY_BASE instead."
   fi
   mkdir -p "$RECOVERY_BASE/scripts" "$RECOVERY_BASE/lib"
-  for f in paperclip-watchdog.sh telegram-alert.sh; do
+  for f in paperclip-watchdog.sh telegram-alert.sh paperclip-expo-idle-shutdown.sh; do
     install -m 755 "$NATIVE_DIR/scripts/$f" "$RECOVERY_BASE/scripts/$f"
   done
   install -m 644 "$NATIVE_DIR/lib/common.sh" "$RECOVERY_BASE/lib/common.sh"
