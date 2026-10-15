@@ -1,5 +1,5 @@
 {
-  "id": "c38d4c7b-318e-4559-a4ab-e7fb9dbf5354",
+  "id": "3a79fc15-609f-4a4d-9351-240a227059ed",
   "prevId": "e4bdc850-f9d5-45d1-ad44-658baf506653",
   "version": "7",
   "dialect": "postgresql",
@@ -31094,6 +31094,21 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issues_line_company_fk": {
+          "name": "issues_line_company_fk",
+          "tableFrom": "issues",
+          "tableTo": "lines",
+          "columnsFrom": [
+            "company_id",
+            "line_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },

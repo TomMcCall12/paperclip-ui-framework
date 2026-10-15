@@ -27,7 +27,7 @@ CREATE TABLE "lines" (
 );
 --> statement-breakpoint
 ALTER TABLE "issues" ADD COLUMN "line_id" uuid;--> statement-breakpoint
--- A referenced composite key must exist before Line run-provenance FKs are added.
+-- Create the referenced composite key before adding run-provenance FKs.
 ALTER TABLE "heartbeat_runs" ADD CONSTRAINT "heartbeat_runs_company_id_uq" UNIQUE("company_id","id");--> statement-breakpoint
 ALTER TABLE "lines" ADD CONSTRAINT "lines_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "lines" ADD CONSTRAINT "lines_root_company_fk" FOREIGN KEY ("company_id","root_issue_id") REFERENCES "public"."issues"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -37,6 +37,5 @@ ALTER TABLE "lines" ADD CONSTRAINT "lines_creator_run_company_fk" FOREIGN KEY ("
 ALTER TABLE "lines" ADD CONSTRAINT "lines_naming_run_company_fk" FOREIGN KEY ("company_id","naming_run_id") REFERENCES "public"."heartbeat_runs"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "lines_company_root_uq" ON "lines" USING btree ("company_id","root_issue_id");--> statement-breakpoint
 CREATE INDEX "lines_company_archive_updated_idx" ON "lines" USING btree ("company_id","archived_at","updated_at","id");--> statement-breakpoint
-CREATE INDEX "issues_company_line_idx" ON "issues" USING btree ("company_id","line_id");--> statement-breakpoint
--- This closes the issues/lines schema cycle after both tables exist.
-ALTER TABLE "issues" ADD CONSTRAINT "issues_line_company_fk" FOREIGN KEY ("company_id","line_id") REFERENCES "public"."lines"("company_id","id") ON DELETE no action ON UPDATE no action;
+ALTER TABLE "issues" ADD CONSTRAINT "issues_line_company_fk" FOREIGN KEY ("company_id","line_id") REFERENCES "public"."lines"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "issues_company_line_idx" ON "issues" USING btree ("company_id","line_id");

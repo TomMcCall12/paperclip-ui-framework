@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { applyPendingMigrations } from "./client.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const migration = await readFile(new URL("./migrations/0286_wandering_firedrake.sql", import.meta.url), "utf8");
+const migration = await readFile(new URL("./migrations/0286_happy_johnny_blaze.sql", import.meta.url), "utf8");
 const hash = createHash("sha256").update(migration).digest("hex");
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;

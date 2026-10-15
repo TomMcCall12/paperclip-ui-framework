@@ -12,6 +12,7 @@ import {
   unique,
   bigint,
   check,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
@@ -20,7 +21,18 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
+import { lines } from "./lines.js";
 import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata } from "@paperclipai/shared";
+
+// The explicit return type breaks the TypeScript initializer cycle between
+// issues.lineId and lines.rootIssueId while keeping both FKs in the snapshot.
+function lineCompanyForeignKey(table: { companyId: AnyPgColumn; lineId: AnyPgColumn }): ReturnType<typeof foreignKey> {
+  return foreignKey({
+    columns: [table.companyId, table.lineId],
+    foreignColumns: [lines.companyId, lines.id],
+    name: "issues_line_company_fk",
+  });
+}
 
 export const issues = pgTable(
   "issues",
@@ -37,8 +49,6 @@ export const issues = pgTable(
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
-    // Composite company FK is added in the Line migration after both tables exist.
-    // Declaring it here would create a circular Drizzle table initializer.
     lineId: uuid("line_id"),
     title: text("title").notNull(),
     description: text("description"),
@@ -104,6 +114,7 @@ export const issues = pgTable(
       and ${table.status} not in ('done', 'cancelled')
     )`),
     companyIdUq: unique("issues_company_id_uq").on(table.companyId, table.id),
+    lineCompanyFk: lineCompanyForeignKey(table),
     companyLineIdx: index("issues_company_line_idx").on(table.companyId, table.lineId),
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),
