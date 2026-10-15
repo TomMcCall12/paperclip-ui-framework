@@ -251,4 +251,40 @@ describe("notes vault routes with a real bridge", () => {
     const res = await fetch(`${bridgeUrl}/read`, { method: "POST", body: JSON.stringify({ path: "03 Projects/Plan.md" }) });
     expect(res.status).toBe(401);
   });
+
+  it("checks whether a file contains a string without reading it whole, readable to readers too", async () => {
+    const found = await request(app(agent(READER))).get(`/api/companies/${COMPANY}/notes-vault/contains`)
+      .query({ path: "03 Projects/Plan.md", needle: "Plan" });
+    expect(found.body).toEqual({ path: "03 Projects/Plan.md", found: true });
+    const notFound = await request(app(agent(READER))).get(`/api/companies/${COMPANY}/notes-vault/contains`)
+      .query({ path: "03 Projects/Plan.md", needle: "nope" });
+    expect(notFound.body.found).toBe(false);
+    expect((await request(app(agent(READER))).get(`/api/companies/${COMPANY}/notes-vault/contains`).query({ path: "03 Projects/Plan.md" })).status).toBe(400);
+    expect((await request(app(agent(STRANGER))).get(`/api/companies/${COMPANY}/notes-vault/contains`).query({ path: "03 Projects/Plan.md", needle: "x" })).status).toBe(404);
+  });
+
+  it("appends to a file already larger than the bridge's read limit, where a full read or replace is still refused", async () => {
+    const big = "x".repeat(600_000) + "\n"; // Over the bridge's default 512 KiB read/replace limit.
+    await writeFile(path.join(root, "03 Projects", "(C) Big log.md"), big, "utf8");
+
+    const tooLarge = await request(app(agent(WRITER))).get(`/api/companies/${COMPANY}/notes-vault/file`).query({ path: "03 Projects/(C) Big log.md" });
+    expect(tooLarge.status).toBe(413);
+    expect(tooLarge.body.code).toBe("vault_file_too_large");
+
+    const appended = await request(app(agent(WRITER))).post(`/api/companies/${COMPANY}/notes-vault/file`)
+      .send({ path: "03 Projects/(C) Big log.md", mode: "append", content: "new entry\n", summary: "append to the big log" });
+    expect(appended.status).toBe(200);
+    expect(appended.body.previousSha256).toBe(bridgeModule.sha256(big));
+    const onDisk = await readFile(path.join(root, "03 Projects", "(C) Big log.md"), "utf8");
+    expect(onDisk).toBe(big + "new entry\n");
+    expect(appended.body.sha256).toBe(bridgeModule.sha256(onDisk));
+
+    const foundMarker = await request(app(agent(READER))).get(`/api/companies/${COMPANY}/notes-vault/contains`)
+      .query({ path: "03 Projects/(C) Big log.md", needle: "new entry" });
+    expect(foundMarker.body.found).toBe(true);
+
+    const replaceDenied = await request(app(agent(WRITER))).post(`/api/companies/${COMPANY}/notes-vault/file`)
+      .send({ path: "03 Projects/(C) Big log.md", mode: "replace", content: "short", baseSha256: appended.body.sha256, summary: "replace" });
+    expect(replaceDenied.status).toBe(413);
+  });
 });

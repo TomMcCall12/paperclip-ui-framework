@@ -9735,6 +9735,7 @@ for (const route of [
   ["get", "/api/companies/{companyId}/notes-vault/list", "List a notes vault folder"],
   ["get", "/api/companies/{companyId}/notes-vault/file", "Read a notes vault file"],
   ["post", "/api/companies/{companyId}/notes-vault/file", "Create, append to or replace a notes vault file"],
+  ["get", "/api/companies/{companyId}/notes-vault/contains", "Cheaply check whether a notes vault file contains a string, without the full-read size limit"],
   ["get", "/api/companies/{companyId}/notes-vault/sync", "Status of the notes vault's two-way sync with its cloud copy"],
   ["post", "/api/companies/{companyId}/notes-vault/sync", "Sync the notes vault with its cloud copy now"],
   ["get", "/api/companies/{companyId}/skills/learning-candidates", "Complex finished tasks that captured no skill, for the learning sweep"],
