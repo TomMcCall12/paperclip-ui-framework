@@ -1565,6 +1565,81 @@ describe("claude execute", () => {
     }
   });
 
+  it("reports a clean exit when terminal-result cleanup stops lingering background tasks after a successful turn", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-terminal-cleanup-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    // Mirrors the Claude CLI with a run_in_background task still alive: it
+    // emits a successful result, stays up, and exits 143 when SIGTERM'd.
+    const resultEvent = {
+      type: "result",
+      subtype: "success",
+      session_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      is_error: false,
+      result: "The build is still running in the background.",
+      usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+    };
+    await fs.writeFile(
+      commandPath,
+      `#!/usr/bin/env node
+console.log(${JSON.stringify(JSON.stringify(resultEvent))});
+process.on("SIGTERM", () => process.exit(143));
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+    await fs.chmod(commandPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-terminal-cleanup",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+          terminalResultCleanupGraceMs: 50,
+          graceSec: 5,
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.signal).toBeNull();
+      expect(result.errorMessage).toBeNull();
+      expect(result.resultJson?.unmanagedBackgroundTask).toMatchObject({
+        kind: "terminal_result_cleanup",
+        stopped: true,
+        terminalResultSeen: true,
+        signal: "SIGTERM",
+        processExitCode: 143,
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies rate-limit / overloaded failures without reset metadata as transient", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
     const workspace = path.join(root, "workspace");
