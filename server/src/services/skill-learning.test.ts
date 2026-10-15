@@ -82,6 +82,21 @@ describe("createRunToolTracker", () => {
     expect(tracker.result()).toEqual({ toolCalls: 3, skillsUsed: ["paperclip-disposition-repair"] });
   });
 
+  it("counts reading a skill's SKILL.md as loading the skill", () => {
+    const tracker = createRunToolTracker();
+    const root = "/data/runtime-skills/claude/abc/.claude/skills";
+    tracker.observe(toolUse("r1", "Read", { file_path: `${root}/toms-lab-self-update--8cae93c08c/SKILL.md` }));
+    tracker.observe(toolUse("r2", "Bash", { command: `R=${root}; cat $R/notes-vault--531c6516f6/SKILL.md | head -80` }));
+    tracker.observe(toolUse("r3", "Read", { file_path: `${root}/notes-vault--531c6516f6/references/api.md` }));
+    tracker.observe(toolUse("r4", "Read", { file_path: "/repo/skills/SKILL.md" }));
+    tracker.observe(toolUse("r5", "Edit", { file_path: `${root}/design-critique/SKILL.md` }));
+    tracker.observe(line({ type: "item.started", item: { type: "command_execution", command: "sed -n 1,80p ~/.codex/skills/plated-release-operations/SKILL.md" } }));
+    expect(tracker.result()).toEqual({
+      toolCalls: 6,
+      skillsUsed: ["notes-vault", "plated-release-operations", "toms-lab-self-update"],
+    });
+  });
+
   it("parses a final line that has no trailing newline", () => {
     const tracker = createRunToolTracker();
     tracker.observe(toolUse("z", "Skill", { skill: "notes-vault" }).trimEnd());
