@@ -32,6 +32,11 @@ import {
   builtInAgentProvisionSchema,
   generateSummarySlotSchema,
   writeSummarySlotSchema,
+  createLineSchema,
+  updateLineSchema,
+  retryLineNamingSchema,
+  lineNamingResultSchema,
+  listLinesQuerySchema,
   createStatusCardSchema,
   patchStatusCardSchema,
   refreshStatusCardSchema,
@@ -2976,6 +2981,29 @@ const summarySlotParams = z.object({
   scopeKind: z.string(),
   slotKey: z.string(),
 });
+
+const lineParams = z.object({ lineId: z.string().uuid() });
+for (const [method, path, summary, body] of [
+  ["get", "/api/companies/{companyId}/lines", "List company Lines with derived progress", null],
+  ["post", "/api/companies/{companyId}/lines", "Ensure a Line for an existing root issue", createLineSchema],
+  ["get", "/api/lines/{lineId}", "Get a Line with derived progress", null],
+  ["patch", "/api/lines/{lineId}", "Archive or unarchive a Line", updateLineSchema],
+  ["post", "/api/lines/{lineId}/naming/retry", "Retry GPT Line naming", retryLineNamingSchema],
+  ["post", "/api/lines/{lineId}/naming/result", "Submit a run-bound GPT Line name", lineNamingResultSchema],
+] as const) {
+  registry.registerPath({
+    method,
+    path,
+    tags: ["lines"],
+    summary,
+    request: {
+      params: path.startsWith("/api/companies/") ? z.object({ companyId: z.string().uuid() }) : lineParams,
+      ...(path.endsWith("/lines") && method === "get" ? { query: listLinesQuerySchema } : {}),
+      ...(body ? { body: jsonBody(body) } : {}),
+    },
+    responses: { 200: r.ok(), 201: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+  });
+}
 
 registry.registerPath({
   method: "get",

@@ -213,7 +213,7 @@ const FALLBACK_SUMMARIZER_INSTRUCTIONS = [
   "",
   "Turn the current state of a Paperclip scope (project, workspaces overview, project workspace, or execution workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
   "",
-  "Read-and-report only: never change issues, workspaces, or code. Cite issue identifiers, never fabricate status, keep every read company-scoped, and run on the low-cost model profile lane by default.",
+  "Read-and-report only: never change issues, workspaces, or code. Cite issue identifiers, never fabricate status, and keep every read company-scoped. A hidden Line naming task may submit only its bounded name to the Line naming result endpoint; it must run on codex_local with gpt-5.4-mini and read no thread, attachments, other issues, credentials, or secrets.",
   "",
 ].join("\n");
 

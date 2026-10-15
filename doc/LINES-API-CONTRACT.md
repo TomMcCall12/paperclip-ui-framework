@@ -1,6 +1,6 @@
 # Lines V1: data and API contract
 
-This document is the contract for the Line server and UI work. The foundation migration adds an empty `lines` table and nullable `issues.line_id`. It does not group historical tasks, call a model, or change old issue responses. The endpoints below are **specified, not implemented by this foundation change**.
+This document is the contract for the Line server and UI work. The foundation migration adds an empty `lines` table and nullable `issues.line_id`. It does not group historical tasks or call a model. The server implementation is in the repository but requires a separate governed release; see [the rollout and historical adoption procedure](./LINES-ROLLOUT.md).
 
 ## Identity and membership
 
@@ -26,7 +26,7 @@ Completion is derived at read time: the root is `done` and every visible member 
 
 Naming uses GPT/OpenAI only. The server creates a hidden naming issue in the same company and binds `namingIssueId`; it does not count toward progress. A claim changes `pending|failed` to `generating`, increments `namingVersion` and `namingAttempts`, and records any retry schedule. A successful result is plain text with 2–6 words, normalized to single spaces, at most 80 characters, and no markup. Invalid output fails the attempt with a safe error code; never persist raw model output or secrets. `namingModel`, `namingRunId`, and `namedAt` come only from the trusted runtime record. They are null until a successful naming result. Failed attempts set `lastNamingErrorCode`, `nextNamingAttemptAt` for bounded backoff, and `namingStatus: "failed"`; they retain a prior valid name if one exists.
 
-`POST /api/lines/:lineId/naming/retry` accepts `{}`. It returns `202` with the Line when retry is queued; `409` if a run is already generating or the retry is not eligible; `429` or `422` for a budget or policy denial as appropriate. It does not accept a name, model, or run. Automatic and manual retries increment the version only on a successful claim, so stale results cannot overwrite a later attempt.
+`POST /api/lines/:lineId/naming/retry` accepts `{}`. It returns `202` with the Line; repeated requests while one generation is active coalesce onto that attempt. It does not accept a name, model, or run. Automatic and manual retries increment the version only on a successful claim, so stale results cannot overwrite a later attempt. Budget and pause policy continue to apply to the hidden task's dispatch.
 
 `POST /api/lines/:lineId/naming/result` is run-bound. It accepts `{ "namingVersion": 1, "namingIssueId": "<UUID>", "runId": "<UUID>", "name": "Customer Intake Flow" }`. The server requires an authenticated run matching the body `runId`, the Line's company, current `namingIssueId`, and claimed `namingVersion`; it reads the model from that run's trusted provider metadata and requires OpenAI/GPT. A stale version, wrong run, or wrong naming issue returns 409 (or 404 across companies). Duplicate delivery of the identical accepted result returns 200 with the current Line. A conflicting replay returns 409. Invalid name returns 422. Successful transition to `ready` clears retry/error fields, writes activity, and returns 200 with the Line. This endpoint is inaccessible to ordinary board and agent keys without matching run authority.
 

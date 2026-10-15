@@ -58,6 +58,7 @@ import {
   issueRecoveryActions,
   issueThreadInteractions,
   issues as issueRows,
+  lines,
   issueWorkProducts,
   pipelineCaseIssueLinks,
   pipelineCases,
@@ -8171,8 +8172,18 @@ export function issueRoutes(
       return;
     }
     const offset = parsedOffset ?? 0;
+    const lineFilter = req.query.lineId;
+    if (lineFilter !== undefined && (typeof lineFilter !== "string" || (lineFilter !== "ungrouped" && !isUuidLike(lineFilter)))) {
+      res.status(400).json({ error: "lineId must be a UUID or 'ungrouped'" });
+      return;
+    }
+    if (typeof lineFilter === "string" && lineFilter !== "ungrouped") {
+      const [line] = await db.select({ id: lines.id }).from(lines).where(and(eq(lines.companyId, companyId), eq(lines.id, lineFilter)));
+      if (!line) { res.status(404).json({ error: "Line not found" }); return; }
+    }
 
     const listFilters: IssueFilters = {
+      lineId: lineFilter as string | undefined,
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
@@ -8719,7 +8730,15 @@ export function issueRoutes(
       includeForIssueComment: wakeCommentId !== null,
     });
 
+    const lineContext = issue.lineId
+      ? await db.select({ id: lines.id, name: lines.name, rootIssueId: lines.rootIssueId, namingStatus: lines.namingStatus, rootIdentifier: issueRows.identifier })
+          .from(lines).innerJoin(issueRows, and(eq(issueRows.companyId, lines.companyId), eq(issueRows.id, lines.rootIssueId)))
+          .where(and(eq(lines.companyId, issue.companyId), eq(lines.id, issue.lineId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+
     const response = {
+      line: lineContext ? { id: lineContext.id, rootIssueId: lineContext.rootIssueId, displayName: lineContext.name ?? `Line ${lineContext.rootIdentifier ?? lineContext.rootIssueId}`, namingStatus: lineContext.namingStatus } : null,
       issue: {
         id: issue.id,
         identifier: issue.identifier,
@@ -8735,6 +8754,7 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
+        lineId: issue.lineId ?? null,
         blockedBy: relationsWithRecoveryActions.blockedBy,
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,

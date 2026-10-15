@@ -69,6 +69,7 @@ import {
   toolActionDeliveries,
   toolInvocations,
   issues,
+  lines,
   labels,
   projectWorkspaces,
   projects,
@@ -103,6 +104,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { lineDescendantIds, lockLineTree } from "./lines.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -1794,6 +1796,7 @@ export function parseStatusFilter(
 }
 
 export interface IssueFilters {
+  lineId?: string | "ungrouped";
   attention?: "blocked";
   status?: string | readonly string[];
   /**
@@ -1931,7 +1934,7 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
 }
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
+type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "lineId"> & {
   initialPlan?: string | null;
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -4860,6 +4863,7 @@ const issueListSelect = {
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
   parentId: issues.parentId,
+  lineId: issues.lineId,
   title: issues.title,
   description: sql<string | null>`
     CASE
@@ -6277,6 +6281,7 @@ async function blockedInboxIssueConditions(
       eq(issues.executionWorkspaceId, filters.executionWorkspaceId),
     );
   if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
+  if (filters?.lineId) conditions.push(filters.lineId === "ungrouped" ? isNull(issues.lineId) : eq(issues.lineId, filters.lineId));
   if (filters?.originKind)
     conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix)
@@ -7987,6 +7992,7 @@ export function issueService(db: Db) {
       }
       if (filters?.parentId)
         conditions.push(eq(issues.parentId, filters.parentId));
+      if (filters?.lineId) conditions.push(filters.lineId === "ungrouped" ? isNull(issues.lineId) : eq(issues.lineId, filters.lineId));
       if (filters?.originKind)
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
@@ -8253,6 +8259,7 @@ export function issueService(db: Db) {
         );
       if (filters?.parentId)
         conditions.push(eq(issues.parentId, filters.parentId));
+      if (filters?.lineId) conditions.push(filters.lineId === "ungrouped" ? isNull(issues.lineId) : eq(issues.lineId, filters.lineId));
       if (filters?.originKind)
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
@@ -9743,6 +9750,7 @@ export function issueService(db: Db) {
       data: IssueCreateInput,
       dbOrTx: Db | DbTransaction = db,
     ) => {
+      if ("lineId" in data) throw unprocessable("Line membership is server-managed");
       const {
         initialPlan,
         labelIds: inputLabelIds,
@@ -9792,7 +9800,12 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       const persist = async (tx: DbTransaction) => {
+        if (issueData.parentId) await lockLineTree(tx, companyId);
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
+        const [lineParent] = issueData.parentId
+          ? await tx.select({ lineId: issues.lineId }).from(issues)
+              .where(and(eq(issues.companyId, companyId), eq(issues.id, issueData.parentId)))
+          : [];
         if (issueData.conversationAgentId && issueData.conversationUserId) {
           const identity = `conversation:${companyId}:${issueData.conversationAgentId}:${issueData.conversationUserId}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identity}, 0))`);
@@ -10137,6 +10150,7 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          lineId: lineParent?.lineId ?? null,
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
@@ -10179,6 +10193,29 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (issue.lineId) {
+          const [unarchived] = await tx.update(lines).set({ archivedAt: null, updatedAt: new Date() })
+            .where(and(eq(lines.companyId, companyId), eq(lines.id, issue.lineId), sql`${lines.archivedAt} is not null`))
+            .returning({ id: lines.id });
+          await logActivity(tx as unknown as Db, {
+            companyId,
+            actorType: issueData.createdByAgentId ? "agent" : issueData.createdByUserId ? "user" : "system",
+            actorId: issueData.createdByAgentId ?? issueData.createdByUserId ?? "issue_service",
+            agentId: issueData.createdByAgentId ?? null,
+            runId: actorRunId ?? null,
+            action: "line.member_added", entityType: "line", entityId: issue.lineId,
+            details: { issueId: issue.id, parentIssueId: issue.parentId },
+          });
+          if (unarchived) await logActivity(tx as unknown as Db, {
+            companyId,
+            actorType: issueData.createdByAgentId ? "agent" : issueData.createdByUserId ? "user" : "system",
+            actorId: issueData.createdByAgentId ?? issueData.createdByUserId ?? "issue_service",
+            agentId: issueData.createdByAgentId ?? null,
+            runId: actorRunId ?? null,
+            action: "line.unarchived", entityType: "line", entityId: issue.lineId,
+            details: { issueId: issue.id, reason: "member_added" },
+          });
+        }
         if (idempotencyKey) {
           await tx.insert(issueCreateIdempotencyKeys).values({
             companyId,
@@ -10576,7 +10613,7 @@ export function issueService(db: Db) {
 
     update: async (
       id: string,
-      data: Partial<typeof issues.$inferInsert> & {
+      data: Partial<Omit<typeof issues.$inferInsert, "lineId">> & {
         labelIds?: string[];
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
@@ -10590,6 +10627,7 @@ export function issueService(db: Db) {
       postCommitActions?: IssuePostCommitAction[],
       options: { bindRuntimeSharedWorkspace?: boolean; deferOverrideCheckToDispatch?: boolean } = {},
     ) => {
+      if ("lineId" in data) throw unprocessable("Line membership is server-managed");
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications =
         postCommitActivityPublications ?? ownedActivityPublications;
@@ -10910,6 +10948,8 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        if ((issueData.parentId !== undefined && issueData.parentId !== existing.parentId) || (existing.lineId && issueData.status))
+          await lockLineTree(tx, existing.companyId);
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
@@ -10920,6 +10960,44 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (issueData.parentId !== undefined && issueData.parentId !== receiptExisting.parentId) {
+          const [parent] = issueData.parentId
+            ? await tx.select({ id: issues.id, lineId: issues.lineId }).from(issues)
+                .where(and(eq(issues.companyId, receiptExisting.companyId), eq(issues.id, issueData.parentId)))
+            : [];
+          if (issueData.parentId && !parent) throw notFound("Parent issue not found");
+          const [lineRoot] = receiptExisting.lineId
+            ? await tx.select({ rootIssueId: lines.rootIssueId }).from(lines)
+                .where(and(eq(lines.companyId, receiptExisting.companyId), eq(lines.id, receiptExisting.lineId)))
+            : [];
+          if (receiptExisting.lineId && parent?.lineId !== receiptExisting.lineId && lineRoot?.rootIssueId !== id)
+            throw conflict("Grouped task cannot leave its Line");
+          if (lineRoot?.rootIssueId === id && parent?.lineId && parent.lineId !== receiptExisting.lineId)
+            throw conflict("A Line root cannot be nested in another Line");
+          if (!receiptExisting.lineId && parent?.lineId)
+            throw conflict("Adopt ungrouped tasks through an explicit Line transaction");
+          if (receiptExisting.lineId && parent?.lineId && parent.lineId !== receiptExisting.lineId)
+            throw conflict("Cannot move tasks across Lines");
+          const descendants = await lineDescendantIds(tx, receiptExisting.companyId, id);
+          if (issueData.parentId && descendants.includes(issueData.parentId))
+            throw conflict("Cannot move a task below its descendant");
+          const groupedDescendants = await tx.select({ id: issues.id, lineId: issues.lineId }).from(issues)
+            .where(and(eq(issues.companyId, receiptExisting.companyId), inArray(issues.id, descendants)));
+          if (groupedDescendants.some((child: { id: string; lineId: string | null }) => child.lineId !== receiptExisting.lineId))
+            throw conflict("Subtree contains a different Line");
+        }
+        if (receiptExisting.lineId && issueData.status && issueData.status !== "done" && issueData.status !== "cancelled" && issueData.status !== receiptExisting.status) {
+          const [unarchived] = await tx.update(lines).set({ archivedAt: null, updatedAt: new Date() })
+            .where(and(eq(lines.companyId, receiptExisting.companyId), eq(lines.id, receiptExisting.lineId), sql`${lines.archivedAt} is not null`))
+            .returning({ id: lines.id });
+          if (unarchived) await logActivity(tx as unknown as Db, {
+            companyId: receiptExisting.companyId,
+            actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+            actorId: actorAgentId ?? actorUserId ?? "issue_service", agentId: actorAgentId ?? null,
+            runId: actorRunId ?? null, action: "line.unarchived", entityType: "line", entityId: receiptExisting.lineId,
+            details: { issueId: id, reason: "work_reopened" },
+          });
+        }
         if (actorAgentId && actorRunId) {
           // Recheck under a run lock: a request admitted before Stop must not
           // commit a late Done after cancellation revoked its credentials.
@@ -11320,6 +11398,8 @@ export function issueService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        const [lineMember] = await tx.select({ lineId: issues.lineId }).from(issues).where(eq(issues.id, id));
+        if (lineMember?.lineId) throw conflict("Line members cannot be deleted");
         const attachmentAssetIds = await tx
           .select({ assetId: issueAttachments.assetId })
           .from(issueAttachments)

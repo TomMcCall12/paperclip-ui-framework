@@ -21637,6 +21637,16 @@ export function heartbeatService(
         });
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
+      if (issueContext?.originKind === "line_naming") {
+        const resolvedNaming = {
+          lineNamingResolvedAdapterType: agent.adapterType,
+          lineNamingResolvedModel: configuredModel,
+        };
+        await db.update(heartbeatRuns).set({
+          contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify(resolvedNaming)}::jsonb`,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+        run = { ...run, contextSnapshot: { ...parseObject(run.contextSnapshot), ...resolvedNaming } };
+      }
       const wakeSessionResetReason = describeSessionResetReason(context);
       const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
         hasTaskSession: taskSession != null,

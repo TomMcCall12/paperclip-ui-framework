@@ -60,6 +60,9 @@ describe("isPrivateWebhookHttpRequest", () => {
 });
 
 describe("isSecretSensitiveHttpRequest", () => {
+  it("does not log raw Line naming results on validation failures", () => {
+    expect(isSecretSensitiveHttpRequest("POST", "/api/lines/line-1/naming/result")).toBe(true);
+  });
   it("identifies credential-bearing chat setup mutations", () => {
     expect(
       isSecretSensitiveHttpRequest(

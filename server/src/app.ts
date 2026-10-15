@@ -15,6 +15,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
+import { issues } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import {
   derivePaperclipViteHmrPort,
   type DeploymentExposure,
@@ -52,6 +54,9 @@ import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { folderRoutes } from "./routes/folders.js";
 import { summarySlotRoutes } from "./routes/summary-slots.js";
+import { lineRoutes } from "./routes/lines.js";
+import { lineNamingService } from "./services/line-naming.js";
+import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { commandRoutes } from "./routes/commands.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
@@ -671,6 +676,7 @@ export async function createApp(
   api.use(inboxAgentPolicyRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));
+  api.use(lineRoutes(db));
   api.use(statusCardRoutes(db));
   api.use(commandRoutes(db, commandDispatcher));
   api.use(teamsCatalogRoutes(db));
@@ -1208,6 +1214,24 @@ export async function createApp(
   );
   chatPublicationTimer.unref?.();
   chatReconciliation.reconcile();
+  const naming = lineNamingService(db);
+  const namingHeartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+  let lineNamingReconciling = false;
+  const reconcileLineNaming = async () => {
+    if (lineNamingReconciling) return;
+    lineNamingReconciling = true;
+    try {
+      await naming.reconcile(async (companyId, issueId) => {
+        const [task] = await db.select({ assigneeAgentId: issues.assigneeAgentId, status: issues.status }).from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+        if (task) await queueIssueAssignmentWakeup({ heartbeat: namingHeartbeat, issue: { id: issueId, ...task }, reason: "line_naming_reconcile", mutation: "line.naming.reconcile", contextSource: "line.naming", requestedByActorType: "system", taskKey: `line-naming:${companyId}:${issueId}` });
+      });
+    } catch (err) { logger.error({ err }, "Line naming reconciliation failed"); }
+    finally { lineNamingReconciling = false; }
+  };
+  let lineNamingTimer: ReturnType<typeof setInterval> | null = setInterval(() => { void reconcileLineNaming(); }, 60_000);
+  lineNamingTimer.unref?.();
+  void reconcileLineNaming();
   // Abandoned chunked-import spool sweep: hourly (plus once at startup),
   // deleting spool dirs whose transfer saw no activity for 24h and cancelling
   // their still-open ledger runs. Same setInterval + unref + shutdown-clear
@@ -1334,6 +1358,10 @@ export async function createApp(
       if (chatPublicationTimer) {
         clearInterval(chatPublicationTimer);
         chatPublicationTimer = null;
+      }
+      if (lineNamingTimer) {
+        clearInterval(lineNamingTimer);
+        lineNamingTimer = null;
       }
       await chatReconciliation.drain();
       if (importTransferSweepTimer) {
