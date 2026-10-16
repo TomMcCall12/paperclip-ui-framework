@@ -47,9 +47,17 @@ POST /api/companies/{companyId}/notes-vault/file
 ```
 
 - **create** makes a new file and fails if the file already exists. The file name must start with `aiFilePrefix`, for example `03 Projects/(C) Weekly review — 2026-10-04.md`.
-- **append** adds to the end of an existing file. Use it for logs, journals and running notes.
+- **append** adds to the end of an existing file. Use it for logs, journals and running notes. A `create` or `replace` is refused once the file is too large to read whole; `append` is not — it streams onto the end, so a log that has grown past that limit can still be appended to even though it can no longer be read or replaced in one go.
 - **replace** rewrites a whole file. It needs `baseSha256` from your latest read and fails with 409 if the file changed since. If that happens, read the file again, merge your change, and retry.
 - `summary` is one line that goes into the vault changelog with your name, so make it say what changed. Don't write the changelog yourself.
+
+## Checking a large file without reading it whole
+
+```
+GET /api/companies/{companyId}/notes-vault/contains?path=<file>&needle=<string>
+```
+
+Returns `{ path, found }`. Use it to check for an idempotency marker (for example a commit hash you already append-tagged) in a file too large for a normal read, before you append again.
 
 ## Sync with the board's devices
 
