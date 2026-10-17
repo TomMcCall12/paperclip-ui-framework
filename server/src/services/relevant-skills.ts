@@ -160,6 +160,14 @@ export function rankRelevantSkills(input: {
   return ranked.slice(0, input.limit ?? RELEVANT_SKILLS_DEFAULT_LIMIT);
 }
 
+/**
+ * Hermes's skill index rule: load a matching skill even when the task looks
+ * easy, because skills hold the company's tested steps, pitfalls and
+ * preferences. Recommended skills that go unread were the norm without it.
+ */
+const LOAD_EVEN_IF_KNOWN =
+  "Use them even if you think you could do the task without them: they hold this company's tested steps, pitfalls and preferences. Skip one only if it clearly does not apply. If one turns out wrong or missing a step, fix it in the Learning step.";
+
 function stripFrontmatter(markdown: string): string {
   return markdown.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
 }
@@ -180,12 +188,12 @@ export function renderRelevantSkillInstructions(
   };
   if (options.delivery !== "inline") {
     return [
-      "These installed skills match this task. Before you start, load each one that applies (with your Skill tool, or by reading its SKILL.md) and follow its procedure unless the task says otherwise:",
+      `These installed skills match this task. Before you start, load each one that applies, even partly (with your Skill tool, or by reading its SKILL.md), and follow its procedure unless the task says otherwise. ${LOAD_EVEN_IF_KNOWN}`,
       ...skills.map(summary),
     ].join("\n");
   }
   const sections: string[] = [
-    "These skills from your Paperclip skill library match this task. Their instructions follow; before you start, follow each one that applies unless the task says otherwise:",
+    `These skills from your Paperclip skill library match this task. Their instructions follow; before you start, follow each one that applies, even partly, unless the task says otherwise. ${LOAD_EVEN_IF_KNOWN}`,
     ...skills.map(summary),
   ];
   let remaining = INLINE_SKILLS_TOTAL_MAX_CHARS;

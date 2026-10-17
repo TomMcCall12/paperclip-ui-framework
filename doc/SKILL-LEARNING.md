@@ -4,8 +4,8 @@ Agents learn the way Hermes agents do. They save what a task taught them as comp
 
 ## The loop
 
-1. **Recommend.** Before each run, Paperclip picks the skills that best match the task and names them in the wake prompt (`relevant-skills.ts`). Archived skills are never recommended.
-2. **Track.** While the run streams, Paperclip counts tool calls and notes which skills the agent loaded. It reads Claude `tool_use` blocks, Codex tool items and Hermes gateway `tool.started` events (`createRunToolTracker`). The run log gets "Run made N tool call(s)", and the task thread shows "used the skill X".
+1. **Recommend.** Before each run, Paperclip picks the skills that best match the task and names them in the wake prompt (`relevant-skills.ts`). As in Hermes's skill index, the prompt tells the agent to load a matching skill even when it could do the task without it. Archived skills are never recommended.
+2. **Track.** While the run streams, Paperclip counts tool calls and notes which skills the agent loaded. It reads Claude `tool_use` blocks, ACP engine `acpx.tool_call` events, Codex tool items and Hermes gateway `tool.started` events (`createRunToolTracker`). Reading a skill's `SKILL.md` counts as loading it, as Hermes counts `skill_view`, because most agents load skills that way. The run log gets "Run made N tool call(s)", and the task thread shows "used the skill X".
 3. **Learn in the task.** Every task's wake prompt ends with a "Learning" step adapted from Hermes's background review:
    - **When to save:** a board correction, a hard-won fix, or a skill that was wrong.
    - **Where to save it, in order:** update a skill the agent used; update a broader skill; add a support file; or create a new skill for the class of task.

@@ -1,5 +1,6 @@
 import type {
   NotesVaultAccessLevel,
+  NotesVaultContainsResult,
   NotesVaultFile,
   NotesVaultListing,
   NotesVaultStatus,
@@ -123,7 +124,7 @@ export function assertNotesVaultWriteAllowed(
 type BridgeErrorBody = { error?: string; code?: string };
 
 export function notesVaultBridgeClient(config: NotesVaultConfig, fetchImpl: typeof fetch = fetch) {
-  async function call<T>(route: "/list" | "/read" | "/write" | "/sync/status" | "/sync/run", body: Record<string, unknown>): Promise<T> {
+  async function call<T>(route: "/list" | "/read" | "/contains" | "/write" | "/sync/status" | "/sync/run", body: Record<string, unknown>): Promise<T> {
     let response: Response;
     try {
       response = await fetchImpl(`${config.bridgeUrl}${route}`, {
@@ -148,6 +149,7 @@ export function notesVaultBridgeClient(config: NotesVaultConfig, fetchImpl: type
   return {
     list: (path: string) => call<NotesVaultListing>("/list", { path }),
     read: (path: string) => call<NotesVaultFile>("/read", { path }),
+    contains: (path: string, needle: string) => call<NotesVaultContainsResult>("/contains", { path, needle }),
     write: (input: NotesVaultWrite, actorLabel: string) =>
       call<NotesVaultWriteResult>("/write", {
         path: input.path,

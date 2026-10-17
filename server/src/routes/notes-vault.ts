@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents } from "@paperclipai/db";
 import { notesVaultWriteSchema } from "@paperclipai/shared";
+import { badRequest } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { logActivity } from "../services/activity-log.js";
 import {
@@ -48,6 +49,18 @@ export function notesVaultRoutes(
     const companyId = req.params.companyId as string;
     assertNotesVaultAccess(accessFor(req, companyId), "read");
     res.json(await bridge!.read(queryPath(req.query.path)));
+  });
+
+  /**
+   * Whether a file contains a string, without the bridge limit a full read is held to —
+   * the cheap check for an idempotency marker in a file too large to read whole.
+   */
+  router.get("/companies/:companyId/notes-vault/contains", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertNotesVaultAccess(accessFor(req, companyId), "read");
+    const needle = queryPath(req.query.needle);
+    if (!needle) throw badRequest("needle is required.", { code: "notes_vault_needle_required" });
+    res.json(await bridge!.contains(queryPath(req.query.path), needle));
   });
 
   router.get("/companies/:companyId/notes-vault/sync", async (req, res) => {
