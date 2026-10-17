@@ -432,3 +432,10 @@ cleanup authority; it does not prove that remote inference has stopped. Recovery
 revokes the previous boot identity with a conditional update. Its own claim also
 expires so another sweep can finish cleanup after a restart. Historical rows keep
 null ownership fields and follow the previous recovery path.
+## Lines migration and rollback
+
+Migration `0286_happy_johnny_blaze.sql` adds the company-scoped `lines` table and nullable `issues.line_id`. The root, naming task, creator and naming run foreign keys include company IDs. The unique `(company_id, root_issue_id)` key enforces one Line per root. Migration does not backfill old issues; they keep `line_id = NULL`.
+
+Line adoption takes a company advisory transaction lock, recomputes the full descendant set under that lock, and compares it with the approved manifest before writing any membership. The approval must be an approved `request_board_approval` row with `payload.kind = "lines_adoption"` and the exact manifest SHA-256, decided by a board user. Activity stores the digest and approval ID. The adoption script checkpoints each root. See [Lines rollout](LINES-ROLLOUT.md) for the dry-run and apply commands.
+
+Application rollback retains the new table and nullable column. Older application SQL can continue to read and write issues without supplying `line_id`; forward recovery restores the same Line rows, names and memberships. Do not drop the new schema or erase memberships as an application rollback step.

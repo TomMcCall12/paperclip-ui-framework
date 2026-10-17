@@ -1720,3 +1720,10 @@ Agents cannot
 read or change these preferences. The legacy instance general setting is retained
 for API compatibility but no longer controls shortcut behavior in the app;
 users opt in individually after the upgrade.
+## Lines (assembly-line work groups)
+
+A Line is an explicitly started, company-scoped work group rooted at one issue. Its membership contains that root and descendants; normal issue creation inherits membership without changing parentage, assignee, checkout, blockers, or approval rules. A root cannot be nested in another Line. Historical tasks remain ungrouped until a separately approved adoption uses an exact member set. Archive requires terminal visible work and no active run; reopening work restores visibility.
+
+The Line list and detail APIs apply ordinary company access and issue-read policy. An agent cannot read a Line whose visible or hidden non-naming member is outside its issue authorization boundary; this prevents totals from revealing restricted work. The board sees full totals. Company export/import carries Line identity through portable root task slugs, along with names and archive state; older bundles import as ungrouped tasks. Imported names do not assert fresh model provenance.
+
+Naming uses a hidden task with a Codex/OpenAI model override. The model-facing prompt contains only redacted root title (300 characters), objective (500 characters), and minimal naming instructions. The server accepts a name only when a provider-observed assistant message from the same run matches it. Waiting for pause, budget, or dispatch does not consume a naming attempt. Failed setup parks the Line until configuration recovers or an operator retries. See [Lines rollout](LINES-ROLLOUT.md) for release gates and rollback.

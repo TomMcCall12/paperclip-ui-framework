@@ -14,6 +14,7 @@ import {
   issueRelations,
   issueWorkProducts,
   issues,
+  lines,
 } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import {
@@ -514,6 +515,35 @@ describeEmbeddedPostgres("company import batches inserts", () => {
     expect(child.updatedAt).toEqual(new Date("2026-03-05T00:00:00.000Z"));
     // ...while a newer imported comment still bumps recency forward.
     expect(parent.updatedAt).toEqual(new Date("2026-04-01T00:00:00.000Z"));
+  });
+
+  it("round-trips two Lines with portable roots, names, and archive state", async () => {
+    const files: Record<string, CompanyPortabilityFileEntry> = {
+      "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Lines Source"', '---', ''].join("\n"),
+    };
+    for (const slug of ["root-a", "child-a", "root-b", "child-b"])
+      files[`tasks/${slug}/TASK.md`] = ['---', `name: "${slug}"`, 'kind: task', '---', '', `${slug} objective.`, ''].join("\n");
+    files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 7, tasks: {
+      "root-a": { status: "done", line: { name: "Customer Intake Flow", archivedAt: "2026-03-01T00:00:00.000Z", namingModel: "gpt-5.4-mini" } },
+      "child-a": { status: "done", parent: "root-a" },
+      "root-b": { status: "todo", line: { name: "Quarterly Research Plan", archivedAt: null, namingModel: "gpt-5.4-mini" } },
+      "child-b": { status: "todo", parent: "root-b" },
+    } });
+    const portability = companyPortabilityService(db);
+    const source = await portability.importBundle({ source: { type: "inline", rootPath: "lines-source", files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Lines Source" }, collisionStrategy: "rename" }, "user-lines");
+    const exported = await portability.exportBundle(source.company.id, { include: { company: true, agents: false, projects: false, issues: true } });
+    const target = await portability.importBundle({ source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Lines Target" }, collisionStrategy: "rename" }, "user-lines");
+    const importedLines = await db.select().from(lines).where(eq(lines.companyId, target.company.id));
+    expect(importedLines.map((line) => line.name).sort()).toEqual(["Customer Intake Flow", "Quarterly Research Plan"]);
+    expect(importedLines.filter((line) => line.archivedAt !== null)).toHaveLength(1);
+    expect(importedLines.every((line) => line.namingModel === null)).toBe(true);
+    const members = await db.select({ title: issues.title, lineId: issues.lineId }).from(issues).where(eq(issues.companyId, target.company.id));
+    expect(members.find((issue) => issue.title === "child-a")?.lineId).toBe(importedLines.find((line) => line.name === "Customer Intake Flow")?.id);
+    expect(members.find((issue) => issue.title === "child-b")?.lineId).toBe(importedLines.find((line) => line.name === "Quarterly Research Plan")?.id);
   });
 
   it("imports a v6 bundle without the timestamp fields using import-time defaults", async () => {

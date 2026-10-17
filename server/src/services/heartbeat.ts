@@ -164,6 +164,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  lines,
   issueWorkProducts,
   nativeRunFinalizations,
   projects,
@@ -599,6 +600,7 @@ import {
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
+import { lineNamingPrompt } from "./line-naming-prompt.js";
 import {
   clearHeartbeatRunRuntimeStatus,
   getHeartbeatRunRuntimeStatus,
@@ -20783,6 +20785,19 @@ export function heartbeatService(
               issueContext.executionWorkspacePreference,
           }
         : null;
+      const isLineNamingRun = issueContext?.originKind === "line_naming";
+      const namingLineId = isLineNamingRun ? issueContext?.originId : null;
+      const isolatedLineNamingPrompt = namingLineId && issueRef
+        ? await (async () => {
+            const [line] = await db.select({ rootIssueId: lines.rootIssueId, namingVersion: lines.namingVersion, namingIssueId: lines.namingIssueId })
+              .from(lines).where(and(eq(lines.companyId, agent.companyId), eq(lines.id, namingLineId)));
+            if (!line || line.namingIssueId !== issueRef.id) throw new Error("Line naming generation is no longer current");
+            const [root] = await db.select({ title: issues.title, description: issues.description }).from(issues)
+              .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, line.rootIssueId)));
+            if (!root) throw new Error("Line naming root is missing");
+            return lineNamingPrompt(namingLineId, line.namingVersion, root, issueRef.id);
+          })()
+        : null;
       const continuationSummary = issueRef && !isConversation(issueContext)
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
@@ -22951,7 +22966,10 @@ export function heartbeatService(
             startedAt,
             sessionIdBefore:
               runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
-            contextSnapshot: context,
+            contextSnapshot: isolatedLineNamingPrompt
+              ? { issueId: issueRef!.id, lineNamingResolvedAdapterType: agent.adapterType,
+                  lineNamingResolvedModel: readConfiguredModelFromAdapterConfig(runtimeConfig) }
+              : context,
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id))
@@ -23040,7 +23058,28 @@ export function heartbeatService(
         // Counts tool calls and records skill loads from the agent's own output,
         // so the thread shows which skills were actually used (not just suggested).
         const runToolTracker = createRunToolTracker();
+        let namingJsonlBuffer = "";
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+          if (isolatedLineNamingPrompt) {
+            // Codex JSONL is observed at the adapter boundary. Persist only a
+            // digest of assistant output, never tool output or unrelated data.
+            if (stream === "stdout") {
+              namingJsonlBuffer = (namingJsonlBuffer + chunk).slice(-65_536);
+              const records = namingJsonlBuffer.split("\n");
+              namingJsonlBuffer = records.pop() ?? "";
+              for (const raw of records) {
+                let event: Record<string, unknown>;
+                try { event = JSON.parse(raw) as Record<string, unknown>; } catch { continue; }
+                const item = parseObject(event.item);
+                if (event.type !== "item.completed" || item.type !== "agent_message" || typeof item.text !== "string") continue;
+                const name = item.text.trim();
+                if (!name || name.length > 80) continue;
+                await appendRunEvent(currentRun, { eventType: "line.naming.provider_message", stream: "system", level: "info",
+                  payload: { textSha256: createHash("sha256").update(name).digest("hex"), source: "codex_jsonl" } });
+              }
+            }
+            return;
+          }
           if (stream === "stdout") runToolTracker.observe(chunk);
           const sanitizedChunk = compactRunLogChunk(
             redactCurrentUserText(chunk, currentUserRedactionOptions),
@@ -24517,7 +24556,9 @@ export function heartbeatService(
             // remain on the interaction instead of being duplicated in the
             // heartbeat run snapshot.
             const adapterContext: Record<string, unknown> = {
-              ...context,
+              ...(isolatedLineNamingPrompt
+                ? { issueId: issueRef!.id, companyId: agent.companyId, lineNamingPrompt: isolatedLineNamingPrompt }
+                : context),
               ...(legacyQuestionResponse
                 ? {
                     [PAPERCLIP_WAKE_PAYLOAD_KEY]: {
@@ -24563,7 +24604,7 @@ export function heartbeatService(
                 token: authToken, connectionId: "paperclip-project-tools" });
             }
             const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
-            if (runtimeTools && runtimeToolDelivery === "invocation_context") {
+            if (!isolatedLineNamingPrompt && runtimeTools && runtimeToolDelivery === "invocation_context") {
               adapterContext.paperclipRuntimeTools = runtimeTools;
             }
             const managedMcpConfig = await createManagedMcpRunConfig({
@@ -24574,7 +24615,7 @@ export function heartbeatService(
               projectId: issueRef?.projectId ?? null,
               issueId: issueRef?.id ?? null,
             });
-            if (managedMcpConfig) {
+            if (managedMcpConfig && !isolatedLineNamingPrompt) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
             const guardedDispatch =

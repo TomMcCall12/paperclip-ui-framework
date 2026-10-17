@@ -1206,7 +1206,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? ""
       : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-    const prompt = joinPromptSections([
+    const ordinaryPrompt = joinPromptSections([
       promptInstructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
@@ -1215,6 +1215,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       taskContextNote,
       renderedPrompt,
     ]);
+    // Line naming runs receive a server-built, bounded prompt. Neither agent
+    // instructions nor ordinary task/ancestor context enter this invocation.
+    const prompt = asString(context.lineNamingPrompt, "").trim() || ordinaryPrompt;
     const promptMetrics = {
       promptChars: prompt.length,
       instructionsChars,

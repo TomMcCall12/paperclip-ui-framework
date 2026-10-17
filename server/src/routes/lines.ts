@@ -31,6 +31,21 @@ export function lineRoutes(db: Db) {
     }
     return root;
   }
+  async function canReadLineMembers(req: Parameters<typeof getActorInfo>[0], companyId: string,
+    root: typeof issues.$inferSelect, members: Array<typeof issues.$inferSelect>) {
+    if (req.actor.type !== "agent") return true;
+    if (members.some((member) => member.hiddenAt && member.originKind !== "line_naming")) return false;
+    for (const member of [root, ...members.filter((item) => item.id !== root.id && !item.hiddenAt)]) {
+      const decision = await access.decide({ actor: req.actor, action: "issue:read",
+        resource: { type: "issue", companyId, issueId: member.id, projectId: member.projectId,
+          parentIssueId: member.parentId, assigneeAgentId: member.assigneeAgentId,
+          assigneeUserId: member.assigneeUserId, status: member.status },
+        scope: { issueId: member.id, projectId: member.projectId, parentIssueId: member.parentId,
+          assigneeAgentId: member.assigneeAgentId, assigneeUserId: member.assigneeUserId } });
+      if (!decision.allowed) return false;
+    }
+    return true;
+  }
   const actorFor = (req: Parameters<typeof getActorInfo>[0]): LineActor => {
     const actor = getActorInfo(req);
     return { type: actor.actorType, agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null, runId: actor.runId };
@@ -39,9 +54,10 @@ export function lineRoutes(db: Db) {
   router.get("/companies/:companyId/lines", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    if (req.actor.type !== "board") throw forbidden("Board access required to list Lines");
     const query = listLinesQuerySchema.parse(req.query);
-    res.json(await svc.list(companyId, query));
+    res.json(await svc.list(companyId, query, req.actor.type === "agent"
+      ? (root, members) => canReadLineMembers(req, companyId, root, members)
+      : undefined));
   });
 
   router.post("/companies/:companyId/lines", validate(createLineSchema), async (req, res) => {
@@ -56,8 +72,7 @@ export function lineRoutes(db: Db) {
       try {
         const generation = await naming.start(companyId, result.line.id, actorFor(req));
         if (generation.queued && generation.namingIssueId) {
-          const wake = await queueIssueAssignmentWakeup({ heartbeat, issue: { id: generation.namingIssueId, assigneeAgentId: (await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, generation.namingIssueId)))[0]?.assigneeAgentId ?? null, status: "todo" }, reason: "line_naming_requested", mutation: "line.naming.start", contextSource: "line.naming", requestedByActorType: actorFor(req).type, requestedByActorId: actorFor(req).agentId ?? actorFor(req).userId ?? null, taskKey: `line-naming:${result.line.id}:${generation.namingIssueId}` });
-          if (!wake) await naming.markFailure(companyId, result.line.id, (await svc.get(companyId, result.line.id))!.namingVersion, "dispatch_unavailable", actorFor(req));
+          await queueIssueAssignmentWakeup({ heartbeat, issue: { id: generation.namingIssueId, assigneeAgentId: (await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, generation.namingIssueId)))[0]?.assigneeAgentId ?? null, status: "todo" }, reason: "line_naming_requested", mutation: "line.naming.start", contextSource: "line.naming", requestedByActorType: actorFor(req).type, requestedByActorId: actorFor(req).agentId ?? actorFor(req).userId ?? null, taskKey: `line-naming:${result.line.id}:${generation.namingIssueId}` });
         }
       } catch {
         await naming.markFailure(companyId, result.line.id, (await svc.get(companyId, result.line.id))!.namingVersion, "naming_setup_failed", actorFor(req));
@@ -73,9 +88,14 @@ export function lineRoutes(db: Db) {
     const [stored] = await db.select({ rootIssueId: lines.rootIssueId }).from(lines).where(and(eq(lines.companyId, accessible.companyId), eq(lines.id, req.params.lineId as string)));
     if (!stored) throw notFound("Line not found");
     await assertRootAccess(req, accessible.companyId, stored.rootIssueId, "issue:read");
+    if (req.actor.type === "agent") {
+      const [root] = await db.select().from(issues).where(and(eq(issues.companyId, accessible.companyId), eq(issues.id, stored.rootIssueId)));
+      const members = await db.select().from(issues).where(and(eq(issues.companyId, accessible.companyId), eq(issues.lineId, req.params.lineId as string)));
+      if (!root || !await canReadLineMembers(req, accessible.companyId, root, members)) throw forbidden("Line contains inaccessible work");
+    }
     const line = await svc.get(accessible.companyId, req.params.lineId as string);
     if (!line) throw notFound("Line not found");
-    res.json(line);
+    res.json(req.actor.type === "agent" ? { ...line, pendingApprovals: [] } : line);
   });
 
   router.patch("/lines/:lineId", validate(updateLineSchema), async (req, res) => {
@@ -104,7 +124,7 @@ export function lineRoutes(db: Db) {
     let generation;
     try { generation = await naming.start(row.companyId, req.params.lineId as string, actorFor(req), true); }
     catch {
-      await naming.markFailure(row.companyId, req.params.lineId as string, (await svc.get(row.companyId, req.params.lineId as string))!.namingVersion, "naming_setup_failed", actorFor(req));
+      await naming.markFailure(row.companyId, req.params.lineId as string, (await svc.get(row.companyId, req.params.lineId as string))!.namingVersion, "naming_setup_failed", actorFor(req), true);
       res.status(202).json(await svc.get(row.companyId, req.params.lineId as string));
       return;
     }
