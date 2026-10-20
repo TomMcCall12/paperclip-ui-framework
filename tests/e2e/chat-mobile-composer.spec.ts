@@ -21,12 +21,7 @@ import {
 
 // Phone chat defect 2 (TOM-654): "the text box goes up about half the screen
 // when I scroll back through chat history", plus the composer height and
-// scroll-back behaviour around it. Cases that fail on the current UI are
-// marked test.fail() with the defect they reproduce; each fix step flips its
-// cases by deleting the marker.
-
-// CHAT_MOBILE_RAW=1 ignores the test.fail() markers to print raw results.
-const RAW = process.env.CHAT_MOBILE_RAW === "1";
+// scroll-back behaviour around it.
 
 let api: APIRequestContext;
 let seed: ChatSeed;
@@ -88,24 +83,20 @@ async function typeLines(page: import("@playwright/test").Page, count: number) {
 const dockLiftAboveVisibleBottom = (s: ChatMetrics) =>
   s.dock ? s.visibleTop + s.visibleHeight - s.dock.bottom : Number.NaN;
 
-const NAV_OVER_KEYBOARD =
-  "Defect 2: the bottom nav stays on screen (and re-shows on scroll-up) while the keyboard is open, so the dock rides 80px above the keyboard in a 480px visible area";
-
-const scrollCases: Array<{ keyboard: KeyboardMode; nav: "shown" | "hidden"; failing?: string }> = [
-  // Keyboard closed: the dock moves only with nav toggles (72px, H1).
+const scrollCases: Array<{ keyboard: KeyboardMode; nav: "shown" | "hidden" }> = [
+  // Keyboard closed: task chat keeps the nav hidden, so nothing moves the dock.
   { keyboard: "none", nav: "shown" },
   { keyboard: "none", nav: "hidden" },
   // Android resize (interactive-widget=resizes-content): layout viewport shrinks too.
-  { keyboard: "android", nav: "shown", failing: NAV_OVER_KEYBOARD },
-  { keyboard: "android", nav: "hidden", failing: NAV_OVER_KEYBOARD },
+  { keyboard: "android", nav: "shown" },
+  { keyboard: "android", nav: "hidden" },
   // iOS / Android Chrome default (resizes-visual): only visualViewport shrinks.
-  { keyboard: "ios", nav: "shown", failing: NAV_OVER_KEYBOARD },
-  { keyboard: "ios", nav: "hidden", failing: NAV_OVER_KEYBOARD },
+  { keyboard: "ios", nav: "shown" },
+  { keyboard: "ios", nav: "hidden" },
 ];
 
 for (const scenario of scrollCases) {
   test(`phone 390x844 scroll-up keeps the dock in place (keyboard=${scenario.keyboard}, nav=${scenario.nav})`, async ({ browser }, testInfo) => {
-    if (scenario.failing && !RAW) test.fail(true, scenario.failing);
     const { context, page } = await openPhoneContext(browser, testInfo, scenario.keyboard);
     try {
       await gotoTaskChat(page, seed);
@@ -132,6 +123,10 @@ for (const scenario of scrollCases) {
 
       expect(before.scrollY - after.scrollY, "the thread scrolled back through history").toBeGreaterThan(500);
       expect(drift, "dock top drift while the nav did not toggle").toBeLessThanOrEqual(THRESHOLDS.dockTopDriftPx);
+      expect(
+        Math.abs(after.dock!.top - before.dock!.top),
+        "dock top moved between the start and the end of the scroll-up",
+      ).toBeLessThanOrEqual(THRESHOLDS.dockTopDriftPx);
       expect(after.dock!.height / after.visibleHeight, "dock share of the visible viewport").toBeLessThanOrEqual(
         keyboardShare(scenario.keyboard),
       );
@@ -154,11 +149,6 @@ for (const scenario of scrollCases) {
 // re-shows the nav, which lifts it another 72px.
 for (const keyboard of ["none", "ios"] as const) {
   test(`phone 390x844 scroll-up with a long draft keeps the composer in the bottom 40% (keyboard=${keyboard})`, async ({ browser }, testInfo) => {
-    if (!RAW)
-      test.fail(
-        true,
-        "Defect 2: the unbounded dock (314px with a 15-line draft) plus the nav that scroll-up re-shows put the composer top near the middle of the screen",
-      );
     const { context, page } = await openPhoneContext(browser, testInfo, keyboard);
     try {
       await gotoTaskChat(page, seed);
@@ -188,24 +178,14 @@ for (const keyboard of ["none", "ios"] as const) {
   });
 }
 
-const editorCases: Array<{ keyboard: KeyboardMode; failing: string }> = [
-  {
-    keyboard: "none",
-    failing: "Defect 2 (composer height): the 28dvh editor cap is 236px, 28% of an 844px phone, above the 25% budget",
-  },
-  {
-    keyboard: "android",
-    failing: "Defect 2 (composer height): the editor reaches its 28dvh cap, 134px or 28% of the 480px visible height",
-  },
-  {
-    keyboard: "ios",
-    failing: "Defect 2 (composer height): dvh ignores the iOS keyboard, so the editor keeps its 236px cap inside a 480px visible viewport",
-  },
+const editorCases: Array<{ keyboard: KeyboardMode }> = [
+  { keyboard: "none" },
+  { keyboard: "android" },
+  { keyboard: "ios" },
 ];
 
 for (const scenario of editorCases) {
   test(`phone 390x844 15-line draft keeps the composer bounded (keyboard=${scenario.keyboard})`, async ({ browser }, testInfo) => {
-    if (!RAW) test.fail(true, scenario.failing);
     const { context, page } = await openPhoneContext(browser, testInfo, scenario.keyboard);
     try {
       await gotoTaskChat(page, seed);
@@ -231,7 +211,6 @@ for (const scenario of editorCases) {
 }
 
 test("desktop 1280x800 15-line draft keeps the composer bounded", async ({ browser }, testInfo) => {
-  if (!RAW) test.fail(true, "Defect 2 (composer height, PC): the 28dvh editor cap is 224px, 28% of an 800px window, above the 25% budget");
   const { context, page } = await openDesktopContext(browser, testInfo);
   try {
     await gotoTaskChat(page, seed);
@@ -287,6 +266,16 @@ test("desktop 1280x800 scroll-up keeps the dock in place", async ({ browser }, t
   try {
     await gotoTaskChat(page, seed);
     await page.mouse.move(640, 300);
+    // The thread keeps following to the bottom while late content settles;
+    // wait until the scroller holds still so "before" is a stable baseline.
+    let settled = await measure(page);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await page.waitForTimeout(400);
+      const next = await measure(page);
+      const stable = next.scrollerTop === settled.scrollerTop;
+      settled = next;
+      if (stable) break;
+    }
     const before = await measure(page);
     const samples = [before, ...(await scrollUpInSteps(page, 1500, 150))];
     const after = samples[samples.length - 1];

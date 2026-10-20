@@ -811,7 +811,7 @@ describe("TaskChatComposer", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" mobile />);
 
     expect(editable().dataset.contentClassName).toContain("min-h-(--sz-48px)");
-    expect(editable().dataset.contentClassName).toContain("max-h-(--sz-28dvh)");
+    expect(editable().dataset.contentClassName).toContain("max-h-(--tc-editor-max-h)");
   });
 
   it("submits the trimmed body on Cmd+Enter and clears the draft", async () => {
@@ -1018,6 +1018,32 @@ describe("TaskChatComposer", () => {
     expect(
       container.querySelector('[data-testid="task-chat-composer-attachments"]'),
     ).toBeNull();
+  });
+
+  it("attaches images picked from the + button as chips instead of growing the editor", async () => {
+    const onAttachImage = vi.fn().mockImplementation(async (file: File) => ({
+      contentPath: `/attachments/${file.name}`,
+      originalFilename: file.name,
+    }));
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onAttachImage={onAttachImage} />);
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(input.multiple).toBe(true);
+    const files = [
+      new File(["png"], "one.png", { type: "image/png" }),
+      new File(["png"], "two.png", { type: "image/png" }),
+    ];
+    Object.defineProperty(input, "files", { value: files, configurable: true });
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]')!;
+    expect(chips.textContent).toContain("one.png");
+    expect(chips.textContent).toContain("two.png");
+    expect(onAttachImage).toHaveBeenCalledTimes(2);
+    expect(editable().querySelector("img")).toBeNull();
   });
 
   it("does not register the image plugin without an upload handler", () => {

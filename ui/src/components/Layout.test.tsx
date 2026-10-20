@@ -156,7 +156,9 @@ vi.mock("./AnnouncementWell", () => ({
 }));
 
 vi.mock("./MobileBottomNav", () => ({
-  MobileBottomNav: () => null,
+  MobileBottomNav: ({ visible }: { visible: boolean }) => (
+    <div data-testid="mobile-bottom-nav" data-visible={String(visible)} />
+  ),
 }));
 
 vi.mock("./WorktreeBanner", () => ({
@@ -364,6 +366,67 @@ describe("Layout", () => {
     expect(container.textContent).not.toContain(
       "Sign-in is required and this instance is intended for private-network access.",
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the mobile nav hidden and the composer offset fixed on task chat routes (TOM-654)", async () => {
+    currentPathname = "/PAP/issues/PAP-1";
+    mockSidebarState.isMobile = true;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const nav = container.querySelector('[data-testid="mobile-bottom-nav"]');
+    const main = container.querySelector("#main-content") as HTMLElement;
+    expect(nav?.getAttribute("data-visible")).toBe("false");
+    expect(main.style.getPropertyValue("--tc-composer-bottom")).toBe("var(--tc-composer-hidden-nav-offset)");
+
+    // A scroll-up (the gesture that used to re-show the nav) leaves both alone.
+    await act(async () => {
+      window.scrollY = 600;
+      window.dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => {
+      window.scrollY = 300;
+      window.dispatchEvent(new Event("scroll"));
+    });
+    expect(container.querySelector('[data-testid="mobile-bottom-nav"]')?.getAttribute("data-visible")).toBe("false");
+    expect(main.style.getPropertyValue("--tc-composer-bottom")).toBe("var(--tc-composer-hidden-nav-offset)");
+
+    window.scrollY = 0;
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("still shows the mobile nav on other mobile routes", async () => {
+    currentPathname = "/PAP/dashboard";
+    mockSidebarState.isMobile = true;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.querySelector('[data-testid="mobile-bottom-nav"]')?.getAttribute("data-visible")).toBe("true");
 
     await act(async () => {
       root.unmount();

@@ -96,6 +96,7 @@ import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMes
 import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
+import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -2699,6 +2700,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // and track auto-follow against window scroll. Both paths include takeover
   // state so opening or closing composer input preserves bottom pinning.
   const { isMobile } = useSidebar();
+  const { keyboardOpen } = useVisualViewport();
   const initialCommentWindow = useRef<{
     oldestAt: number;
     ids: Set<string>;
@@ -3004,18 +3006,29 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
                     : "bottom-0 z-10",
                   "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-1 pb-1 md:px-4 md:pb-2",
+                  // Bounded dock (TOM-654): never taller than 40% of the visible
+                  // viewport (45% with the keyboard open); the accessory stack
+                  // scrolls inside it so the editor and action row stay put.
+                  keyboardOpen
+                    ? "max-h-(--tc-dock-max-h-keyboard)"
+                    : "max-h-(--tc-dock-max-h)",
                   streamlinedUiEnabled && "md:px-0 md:pb-0",
                   (!streamlinedUiEnabled || isMobile) &&
                     "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 dark:bg-transparent dark:backdrop-blur-none dark:supports-[backdrop-filter]:bg-transparent",
                 )}
               >
-                {composerAccessory}
-                {tailTurnStatus ? (
-                  <TaskChatTurnStatusIsland model={tailTurnStatus} />
-                ) : null}
-                <RunnerGoalWidget control={runnerGoal} />
                 <div
-                  className="relative isolate flex flex-col"
+                  className="flex min-h-0 shrink flex-col gap-2 overflow-y-auto empty:hidden"
+                  data-testid="task-chat-composer-accessories"
+                >
+                  {composerAccessory}
+                  {tailTurnStatus ? (
+                    <TaskChatTurnStatusIsland model={tailTurnStatus} />
+                  ) : null}
+                  <RunnerGoalWidget control={runnerGoal} />
+                </div>
+                <div
+                  className="relative isolate flex shrink-0 flex-col"
                   data-testid="task-chat-composer-stack"
                 >
                   {queuedMessageQueue && !composerPause ? (

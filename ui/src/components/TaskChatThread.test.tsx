@@ -2,6 +2,7 @@
 
 import type { ComponentProps, ReactElement } from "react";
 import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
+import { resetVisualViewportForTests } from "@/hooks/useVisualViewport";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -3382,6 +3383,42 @@ describe("TaskChatThread mobile composer dock (PAP-495)", () => {
     // what let the nav occlude the action row before PAP-495.
     expect(dock?.className).toContain("bottom-(--tc-composer-bottom)");
     expect(dock?.className).not.toContain("bottom-(--sz-calc-8)");
+  });
+
+  it("bounds the dock to 40% of the visible viewport and keeps the accessory stack scrollable inside it (TOM-654)", () => {
+    sidebarState.isMobile = true;
+
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} draftKey="task-chat-draft:issue-bound" />);
+
+    const dock = container.querySelector('[data-testid="task-chat-composer-dock"]');
+    const accessories = container.querySelector('[data-testid="task-chat-composer-accessories"]');
+    expect(dock?.className).toContain("max-h-(--tc-dock-max-h)");
+    expect(dock?.className).not.toContain("max-h-(--tc-dock-max-h-keyboard)");
+    expect(accessories?.className).toContain("overflow-y-auto");
+    expect(accessories?.className).toContain("min-h-0");
+    // The editor and its action row never shrink to make room for accessories.
+    expect(container.querySelector('[data-testid="task-chat-composer-stack"]')?.className).toContain("shrink-0");
+  });
+
+  it("widens the dock bound to 45% while the keyboard is open (TOM-654)", async () => {
+    sidebarState.isMobile = true;
+    resetVisualViewportForTests();
+    const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0 });
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: viewport });
+    try {
+      render(<TaskChatThread comments={[]} onAdd={async () => {}} draftKey="task-chat-draft:issue-keyboard" />);
+      const dock = () => container.querySelector('[data-testid="task-chat-composer-dock"]');
+      expect(dock()?.className).toContain("max-h-(--tc-dock-max-h)");
+
+      await act(async () => {
+        viewport.height = 480;
+        viewport.dispatchEvent(new Event("resize"));
+      });
+      expect(dock()?.className).toContain("max-h-(--tc-dock-max-h-keyboard)");
+    } finally {
+      Object.defineProperty(window, "visualViewport", { configurable: true, value: undefined });
+      resetVisualViewportForTests();
+    }
   });
 });
 

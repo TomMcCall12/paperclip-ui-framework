@@ -38,6 +38,7 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useVisualViewport } from "../hooks/useVisualViewport";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
@@ -139,6 +140,11 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
+  const { keyboardOpen, keyboardInset } = useVisualViewport();
+  // The mobile nav never shares the screen with the keyboard, and task chat
+  // keeps it hidden so the composer dock is not re-offset by scroll-direction
+  // toggles (a 72px lift while the reader scrolls back through history).
+  const mobileNavShown = mobileNavVisible && !(isMobile && (keyboardOpen || isTaskDetailRoute));
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
@@ -739,9 +745,11 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               style={
                 isMobile
                   ? ({
-                      "--tc-composer-bottom": mobileNavVisible
+                      "--tc-composer-bottom": mobileNavShown
                         ? "var(--sz-calc-14)"
-                        : "var(--tc-composer-hidden-nav-offset)",
+                        : keyboardOpen
+                          ? `calc(var(--tc-composer-hidden-nav-offset) + ${keyboardInset}px)`
+                          : "var(--tc-composer-hidden-nav-offset)",
                     } as CSSProperties)
                   : undefined
               }
@@ -755,7 +763,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                 // changes (e.g. switching skill-detail tabs) don't widen/shift
                 // when the vertical scrollbar appears or disappears (PAP-10907).
                 isMobile
-                  ? isTaskDetailRoute && !mobileNavVisible
+                  ? isTaskDetailRoute && !mobileNavShown
                     ? "overflow-visible pb-(--tc-composer-hidden-nav-offset)"
                     : "overflow-visible pb-(--sz-calc-14)"
                   : "overflow-auto [scrollbar-gutter:stable]",
@@ -777,7 +785,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           </div>
         </div>
       </div>
-      {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
+      {isMobile && <MobileBottomNav visible={mobileNavShown} />}
       <CommandPalette />
       <NewIssueDialog />
       <NewProjectDialog />

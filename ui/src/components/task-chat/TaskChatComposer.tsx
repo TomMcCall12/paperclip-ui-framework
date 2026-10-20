@@ -770,9 +770,14 @@ export function TaskChatComposer({
     }
   }
 
-  /** Images picked from the + button go inline at the caret, like paste/drop. */
+  /**
+   * Files picked from the + button become chips in the attachment row, images
+   * included: an inline picture grows the editor by up to its image cap (a
+   * 3x taller composer on a phone). Pasted and dropped images still go inline
+   * at the caret. Without an attach handler an image falls back to inline.
+   */
   async function attachPickedFile(file: File) {
-    if (!file.type.startsWith("image/")) {
+    if (!file.type.startsWith("image/") || onAttachImage) {
       await attachNonImageFile(file);
       return;
     }
@@ -1374,8 +1379,8 @@ export function TaskChatComposer({
               className={cn(disabled && "opacity-60")}
               contentClassName={
                 mobile
-                  ? "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
-                  : "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-sm scrollbar-auto-hide"
+                  ? "max-h-(--tc-editor-max-h) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
+                  : "max-h-(--tc-editor-max-h) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-sm scrollbar-auto-hide"
               }
             />
           </div>
@@ -1469,6 +1474,7 @@ export function TaskChatComposer({
                 <input
                   ref={fileInputRef}
                   type="file"
+                  multiple
                   className="hidden"
                   onChange={handleFileInputChange}
                 />
