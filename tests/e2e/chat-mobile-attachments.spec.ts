@@ -26,10 +26,7 @@ import {
 } from "./helpers/mobile-chat";
 
 // Phone chat defect 1 (TOM-654): "layout or sizing breaks when I add
-// attachments". Cases that fail on the current UI are marked test.fail()
-// with the defect they reproduce; each fix step flips its cases by deleting
-// the marker. CHAT_MOBILE_RAW=1 ignores the markers to print raw results.
-const RAW = process.env.CHAT_MOBILE_RAW === "1";
+// attachments". These cases guard the fixed behaviour.
 
 let api: APIRequestContext;
 let seed: ChatSeed;
@@ -136,25 +133,10 @@ function assertStable(snapshots: Snapshot[], dockMaxShare: number) {
   }
 }
 
-const phoneCases: Array<{ count: number; failing?: string }> = [
-  {
-    count: 1,
-  },
-  {
-    count: 3,
-    failing:
-      "Defect 1: once a picked photo finishes uploading it is inserted inline into the editor, which jumps from 48px to its 236px cap; the dock grows from 126px to 365px (43% of the screen)",
-  },
-  {
-    count: 8,
-    failing:
-      "Defect 1: the inline photo plus the chip row push the dock to 365px (43% of the screen) after upload",
-  },
-];
+const phoneCases: Array<{ count: number }> = [{ count: 1 }, { count: 3 }, { count: 8 }];
 
 for (const scenario of phoneCases) {
   test(`phone 390x844 task chat attaching ${scenario.count} file(s) keeps the layout stable`, async ({ browser }, testInfo) => {
-    if (scenario.failing && !RAW) test.fail(true, scenario.failing);
     const { context, page } = await openPhoneContext(browser, testInfo);
     try {
       const snapshots = await runTaskAttachmentFlow(page, context, testInfo, scenario.count, "390-task");
@@ -166,8 +148,6 @@ for (const scenario of phoneCases) {
 }
 
 test("desktop 1280x800 task chat attaching 8 files keeps the layout stable", async ({ browser }, testInfo) => {
-  if (!RAW)
-    test.fail(true, "Defect 1 (PC): the inline photo fills the editor to its 224px cap and the dock reaches 44% of an 800px window");
   const { context, page } = await openDesktopContext(browser, testInfo);
   try {
     const snapshots = await runTaskAttachmentFlow(page, context, testInfo, 8, "1280-task");
@@ -195,6 +175,25 @@ test("phone 390x844 a sent message with attachments does not overflow the thread
     await attachMetrics(testInfo, "sent-bubble-overflow", overflow);
     await attachShot(page, testInfo, "390-task-sent-attachments");
     expect(overflow.scrollWidth, `no horizontal overflow (${overflow.widest?.selector})`).toBe(overflow.clientWidth);
+  } finally {
+    await context.close();
+  }
+});
+
+test("phone 844x390 landscape board chat dock stays within 40% of the screen", async ({ browser }, testInfo) => {
+  const { context, page } = await openPhoneContext(browser, testInfo);
+  try {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await gotoBoardChat(page, seed);
+    const textarea = page.getByTestId("chat-composer").locator("textarea");
+    await textarea.focus();
+    await page.keyboard.type(Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\n"));
+    await page.waitForTimeout(300);
+    const dock = await page.getByTestId("board-chat-dock").boundingBox();
+    expect(dock).not.toBeNull();
+    await attachMetrics(testInfo, "844-board-chat-dock", dock);
+    await attachShot(page, testInfo, "844x390-board-chat");
+    expect(dock!.height / 390, "dock share of the landscape screen").toBeLessThanOrEqual(THRESHOLDS.dockMaxShareKeyboardClosed);
   } finally {
     await context.close();
   }

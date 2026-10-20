@@ -1648,6 +1648,20 @@
   color: var(--foreground);
 }
 
+/* Board chat dock in short windows (phone landscape, TOM-654): trim the fade
+   padding and bound the editor so the dock stays within 40% of the visible
+   height even though the viewport is wide enough for the desktop layout. */
+@media (max-height: 30rem) {
+  .board-chat-dock {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+    max-height: calc(var(--tc-visible-h) * 0.4);
+  }
+  .board-chat-dock textarea {
+    max-height: calc(var(--tc-visible-h) * 0.12);
+  }
+}
+
 @media (min-width: 768px) {
   .paperclip-mdxeditor-scope,
   .paperclip-mdxeditor {

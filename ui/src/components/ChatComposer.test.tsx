@@ -249,17 +249,17 @@ describe("ChatComposer", () => {
     act(() => root.unmount());
   });
 
-  it('surface="translucent" applies the task glass recipe and keeps shared chrome (PAP-131)', () => {
+  it('surface="translucent" applies the opaque task surface and keeps shared chrome (PAP-131)', () => {
     const root = createRoot(container);
     act(() => {
       root.render(<Harness surface="translucent" />);
     });
     const box = container.querySelector('[data-testid="chat-composer"]')!;
     expect(box.getAttribute("data-surface")).toBe("translucent");
-    // Glass recipe — mirrors the task-comments composer shell.
-    expect(box.className).toContain("bg-background/95");
-    expect(box.className).toContain("supports-[backdrop-filter]:bg-background/85");
-    expect(box.className).toContain("backdrop-blur");
+    // Opaque surface (TOM-665): no translucency, no blur.
+    expect(box.className).toContain("bg-background");
+    expect(box.className).not.toContain("bg-background/");
+    expect(box.className).not.toContain("backdrop-blur");
     expect(box.className).toContain("shadow-(--shadow-extract-4)");
     expect(box.className).toContain("dark:shadow-(--shadow-extract-5)");
     expect(box.className).not.toContain("bg-card");

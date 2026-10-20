@@ -165,7 +165,14 @@ for (const classic of [false, true]) {
     await expect(
       fixture.composer.getByText("board-fresh.txt", { exact: true }),
     ).toBeVisible();
-    await expect(fixture.composer.locator("img")).toHaveCount(1);
+    if (classic) {
+      await expect(fixture.composer.locator("img")).toHaveCount(1);
+    } else {
+      // Task chat shows picked photos as chips, not inline pictures.
+      await expect(
+        fixture.composer.getByText("board-fresh.png", { exact: true }),
+      ).toBeVisible();
+    }
     const outbound = page.waitForRequest(
       (req) =>
         req.method() === "POST" &&
