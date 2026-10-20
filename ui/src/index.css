@@ -379,6 +379,19 @@
   --chat-attachments-max-h: 6rem;
   /* Minimum touch target for phone chat controls (TOM-664). */
   --tc-touch-target: var(--sz-44px);
+  --chat-composer-phone-font-size: 1rem;
+}
+
+@media (max-width: 767px) {
+  [data-testid="chat-composer"] textarea {
+    font-size: var(--chat-composer-phone-font-size);
+  }
+
+  [data-testid="chat-composer"] .chat-composer-touch-control {
+    width: var(--sz-44px);
+    height: var(--sz-44px);
+    min-height: var(--sz-44px);
+  }
 }
 
 .dark {

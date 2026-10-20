@@ -455,7 +455,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
                     type="button"
                     aria-label={`Remove ${attachment.name}`}
                     onClick={() => onRemoveAttachment(attachment.id)}
-                    className="grid h-5 w-5 shrink-0 place-items-center rounded-sm hover:bg-accent"
+                    className="chat-composer-touch-control grid h-5 w-5 shrink-0 place-items-center rounded-sm hover:bg-accent"
                   >
                     <X className="h-3.5 w-3.5" aria-hidden />
                   </button>
@@ -501,7 +501,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               disabled={disabled || attaching}
               aria-label="Attach files"
               title="Attach files"
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              className="chat-composer-touch-control grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
               {attaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
             </button>
@@ -521,7 +521,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           aria-label={sendLabel}
           title={sendLabel}
           className={cn(
-            "grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors duration-150 disabled:cursor-not-allowed",
+            "chat-composer-touch-control grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors duration-150 disabled:cursor-not-allowed",
             canSend
               ? "bg-foreground text-background hover:opacity-90"
               : "bg-accent text-muted-foreground",

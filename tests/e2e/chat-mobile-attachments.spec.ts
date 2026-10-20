@@ -7,6 +7,8 @@ import {
   type Page,
   type TestInfo,
 } from "@playwright/test";
+import { createRequire } from "node:module";
+import { ChatComposer } from "../../ui/src/components/ChatComposer";
 import {
   LONG_FILE_NAME,
   THRESHOLDS,
@@ -30,6 +32,9 @@ import {
 // with the defect they reproduce; each fix step flips its cases by deleting
 // the marker. CHAT_MOBILE_RAW=1 ignores the markers to print raw results.
 const RAW = process.env.CHAT_MOBILE_RAW === "1";
+const requireFromUi = createRequire(new URL("../../ui/package.json", import.meta.url));
+const { createElement } = requireFromUi("react") as typeof import("../../ui/node_modules/react");
+const { renderToStaticMarkup } = requireFromUi("react-dom/server") as typeof import("../../ui/node_modules/react-dom/server");
 
 let api: APIRequestContext;
 let seed: ChatSeed;
@@ -207,8 +212,19 @@ for (const viewport of ["phone", "desktop"] as const) {
     try {
       await gotoBoardChat(page, seed);
       const composer = page.getByTestId("chat-composer");
-      // Board chat has no attach control today; record that so the
-      // attachments build step knows the surface has nothing to fix yet.
+      const textarea = composer.locator("textarea");
+      await expect(textarea).toHaveCSS("font-size", viewport === "phone" ? "16px" : "14px");
+      const send = composer.getByRole("button", { name: "Send message" });
+      const sendBox = await send.boundingBox();
+      expect(sendBox).not.toBeNull();
+      if (viewport === "phone") {
+        expect(sendBox!.width).toBeGreaterThanOrEqual(44);
+        expect(sendBox!.height).toBeGreaterThanOrEqual(44);
+      } else {
+        expect(sendBox!.width).toBe(28);
+        expect(sendBox!.height).toBe(28);
+      }
+      // The board currently renders the shared composer without attachment handlers.
       const attachControls = await composer.getByRole("button", { name: "Attach files" }).count();
       const before = await measure(page, "board");
       // focus() rather than click(): on the phone the sticky top bar covers the
@@ -248,3 +264,74 @@ for (const viewport of ["phone", "desktop"] as const) {
     }
   });
 }
+
+test("phone shared composer fits eight chips and gives attach, remove, and send 44px targets", async ({ browser }, testInfo) => {
+  const { context, page } = await openPhoneContext(browser, testInfo);
+  try {
+    await gotoBoardChat(page, seed);
+    const stylesheets = await page.locator('link[rel="stylesheet"]').evaluateAll((links) =>
+      links.map((link) => (link as HTMLLinkElement).href),
+    );
+    const attachments = Array.from({ length: 8 }, (_, index) => ({
+      id: `file-${index}`,
+      name: index === 0 ? LONG_FILE_NAME : `file-${index}.txt`,
+      status: "attached" as const,
+    }));
+    const markup = renderToStaticMarkup(createElement(ChatComposer, {
+      value: "A message with eight files",
+      onChange: () => {},
+      onSubmit: () => {},
+      onAttachFiles: () => {},
+      onRemoveAttachment: () => {},
+      attachments,
+    }));
+    await page.setContent(`<html><head>${stylesheets.map((href) => `<link rel="stylesheet" href="${href}">`).join("")}</head><body><main style="width:calc(100% - 3rem);margin:2rem auto">${markup}</main></body></html>`);
+    const composer = page.getByTestId("chat-composer");
+    await expect(composer.locator("textarea")).toHaveCSS("font-size", "16px");
+    const controls = [
+      composer.getByRole("button", { name: "Attach files" }),
+      composer.getByRole("button", { name: `Remove ${LONG_FILE_NAME}` }),
+      composer.getByRole("button", { name: "Send message" }),
+    ];
+    for (const control of controls) {
+      const box = await control.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.width).toBeGreaterThanOrEqual(44);
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+    }
+    const attachBox = (await controls[0]!.boundingBox())!;
+    const removeBox = (await controls[1]!.boundingBox())!;
+    const sendBox = (await controls[2]!.boundingBox())!;
+    expect(attachBox.x + attachBox.width).toBeLessThanOrEqual(sendBox.x);
+    const chips = composer.locator("[data-attachment-chip]");
+    await expect(chips).toHaveCount(8);
+    const firstChip = (await chips.first().boundingBox())!;
+    const secondChip = (await chips.nth(1).boundingBox())!;
+    expect(removeBox.x).toBeGreaterThanOrEqual(firstChip.x);
+    expect(removeBox.x + removeBox.width).toBeLessThanOrEqual(firstChip.x + firstChip.width);
+    expect(firstChip.x + firstChip.width).toBeLessThanOrEqual(secondChip.x);
+    const layout = await composer.evaluate((element) => {
+      const row = element.querySelector('[data-testid="chat-composer-attachments"]')!;
+      const rect = element.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      return {
+        composerLeft: rect.left,
+        composerRight: rect.right,
+        rowLeft: rowRect.left,
+        rowRight: rowRect.right,
+        rowScrollWidth: row.scrollWidth,
+        rowClientWidth: row.clientWidth,
+        documentWidth: document.documentElement.scrollWidth,
+      };
+    });
+    expect(layout.composerLeft).toBeGreaterThanOrEqual(0);
+    expect(layout.composerRight).toBeLessThanOrEqual(390);
+    expect(layout.rowLeft).toBeGreaterThanOrEqual(layout.composerLeft);
+    expect(layout.rowRight).toBeLessThanOrEqual(layout.composerRight);
+    expect(layout.rowScrollWidth).toBeGreaterThan(layout.rowClientWidth);
+    expect(layout.documentWidth).toBeLessThanOrEqual(390);
+    await attachShot(page, testInfo, "390-shared-composer-eight-chips");
+  } finally {
+    await context.close();
+  }
+});
