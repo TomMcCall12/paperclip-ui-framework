@@ -260,67 +260,83 @@ for (const viewport of ["phone", "desktop"] as const) {
   });
 }
 
-test("phone shared composer styles fit eight chips and give controls 44px targets", async ({ browser }, testInfo) => {
-  const { context, page } = await openPhoneContext(browser, testInfo);
-  try {
-    await gotoBoardChat(page, seed);
-    const stylesheets = await page.locator('link[rel="stylesheet"]').evaluateAll((links) =>
-      links.map((link) => (link as HTMLLinkElement).href),
-    );
-    // BoardChat does not supply attachment handlers yet. Match the shared
-    // component's chip and control classes to exercise its compiled phone CSS.
-    const chipsMarkup = Array.from({ length: 8 }, (_, index) => {
-      const name = index === 0 ? LONG_FILE_NAME : `file-${index}.txt`;
-      return `<div data-attachment-chip class="flex w-(--sz-12rem) max-w-full shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-xs bg-background/70 text-muted-foreground"><span class="h-3.5 w-3.5 shrink-0"></span><span class="min-w-0 flex-1 truncate font-medium text-foreground" title="${name}">${name}</span><span class="max-w-(--sz-6rem) shrink-0 truncate">Attached</span><button type="button" aria-label="Remove ${name}" class="chat-composer-touch-control grid h-5 w-5 shrink-0 place-items-center rounded-sm">×</button></div>`;
-    }).join("");
-    const markup = `<div data-testid="chat-composer" class="relative min-w-0 rounded-xl border px-3 pt-2.5 pb-2"><textarea class="block min-h-(--sz-22px) w-full resize-none border-0 bg-transparent p-0 text-sm leading-6"></textarea><div data-testid="chat-composer-attachments" class="mt-2 flex min-w-0 max-w-full gap-1.5 overflow-x-auto rounded-md border p-1.5">${chipsMarkup}</div><div class="mt-2 flex items-center gap-2"><button type="button" aria-label="Attach files" class="chat-composer-touch-control grid h-7 w-7 shrink-0 place-items-center rounded-md">+</button><span class="flex-1"></span><button type="button" aria-label="Send message" class="chat-composer-touch-control grid h-7 w-7 shrink-0 place-items-center rounded-md">➤</button></div></div>`;
-    await page.setContent(`<html><head>${stylesheets.map((href) => `<link rel="stylesheet" href="${href}">`).join("")}</head><body><main style="width:calc(100% - 3rem);margin:2rem auto">${markup}</main></body></html>`);
-    const composer = page.getByTestId("chat-composer");
-    await expect(composer.locator("textarea")).toHaveCSS("font-size", "16px");
-    const controls = [
-      composer.getByRole("button", { name: "Attach files" }),
-      composer.getByRole("button", { name: `Remove ${LONG_FILE_NAME}` }),
-      composer.getByRole("button", { name: "Send message" }),
-    ];
-    for (const control of controls) {
-      const box = await control.boundingBox();
-      expect(box).not.toBeNull();
-      expect(box!.width).toBeGreaterThanOrEqual(44);
-      expect(box!.height).toBeGreaterThanOrEqual(44);
+for (const viewport of ["phone", "desktop"] as const) {
+  const windowWidth = viewport === "phone" ? 390 : 1280;
+
+  test(`${viewport} shared composer styles fit eight chips and give controls proper targets`, async ({ browser }, testInfo) => {
+    const { context, page } =
+      viewport === "phone" ? await openPhoneContext(browser, testInfo) : await openDesktopContext(browser, testInfo);
+    try {
+      await gotoBoardChat(page, seed);
+      const stylesheets = await page.locator('link[rel="stylesheet"]').evaluateAll((links) =>
+        links.map((link) => (link as HTMLLinkElement).href),
+      );
+      // BoardChat does not supply attachment handlers yet. Match the shared
+      // component's chip and control classes to exercise its compiled CSS at
+      // this viewport, with one chip carrying an unbroken long file name.
+      const chipsMarkup = Array.from({ length: 8 }, (_, index) => {
+        const name = index === 0 ? LONG_FILE_NAME : `file-${index}.txt`;
+        return `<div data-attachment-chip class="flex w-(--sz-12rem) max-w-full shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-xs bg-background/70 text-muted-foreground"><span class="h-3.5 w-3.5 shrink-0"></span><span class="min-w-0 flex-1 truncate font-medium text-foreground" title="${name}">${name}</span><span class="max-w-(--sz-6rem) shrink-0 truncate">Attached</span><button type="button" aria-label="Remove ${name}" class="chat-composer-touch-control grid h-5 w-5 shrink-0 place-items-center rounded-sm">×</button></div>`;
+      }).join("");
+      const markup = `<div data-testid="chat-composer" class="relative min-w-0 rounded-xl border px-3 pt-2.5 pb-2"><textarea class="block min-h-(--sz-22px) w-full resize-none border-0 bg-transparent p-0 text-sm leading-6"></textarea><div data-testid="chat-composer-attachments" class="mt-2 flex min-w-0 max-w-full gap-1.5 overflow-x-auto rounded-md border p-1.5">${chipsMarkup}</div><div class="mt-2 flex items-center gap-2"><button type="button" aria-label="Attach files" class="chat-composer-touch-control grid h-7 w-7 shrink-0 place-items-center rounded-md">+</button><span class="flex-1"></span><button type="button" aria-label="Send message" class="chat-composer-touch-control grid h-7 w-7 shrink-0 place-items-center rounded-md">➤</button></div></div>`;
+      await page.setContent(`<html><head>${stylesheets.map((href) => `<link rel="stylesheet" href="${href}">`).join("")}</head><body><main style="width:calc(100% - 3rem);margin:2rem auto">${markup}</main></body></html>`);
+      const composer = page.getByTestId("chat-composer");
+      await expect(composer.locator("textarea")).toHaveCSS("font-size", viewport === "phone" ? "16px" : "14px");
+      const controls = [
+        composer.getByRole("button", { name: "Attach files" }),
+        composer.getByRole("button", { name: `Remove ${LONG_FILE_NAME}` }),
+        composer.getByRole("button", { name: "Send message" }),
+      ];
+      for (const control of controls) {
+        expect(await control.boundingBox()).not.toBeNull();
+      }
+      const attachBox = (await controls[0]!.boundingBox())!;
+      const removeBox = (await controls[1]!.boundingBox())!;
+      const sendBox = (await controls[2]!.boundingBox())!;
+      if (viewport === "phone") {
+        expect(attachBox.width).toBeGreaterThanOrEqual(44);
+        expect(attachBox.height).toBeGreaterThanOrEqual(44);
+        expect(sendBox.width).toBeGreaterThanOrEqual(44);
+        expect(sendBox.height).toBeGreaterThanOrEqual(44);
+      } else {
+        expect(attachBox.width).toBe(28);
+        expect(attachBox.height).toBe(28);
+        expect(sendBox.width).toBe(28);
+        expect(sendBox.height).toBe(28);
+      }
+      expect(attachBox.x + attachBox.width).toBeLessThanOrEqual(sendBox.x);
+      const chips = composer.locator("[data-attachment-chip]");
+      await expect(chips).toHaveCount(8);
+      const firstChip = (await chips.first().boundingBox())!;
+      const secondChip = (await chips.nth(1).boundingBox())!;
+      expect(removeBox.x).toBeGreaterThanOrEqual(firstChip.x);
+      expect(removeBox.x + removeBox.width).toBeLessThanOrEqual(firstChip.x + firstChip.width);
+      expect(firstChip.x + firstChip.width).toBeLessThanOrEqual(secondChip.x);
+      // The long name must truncate to the chip's fixed width, not stretch it.
+      expect(firstChip.width).toBeLessThanOrEqual(secondChip.width + 1);
+      const layout = await composer.evaluate((element) => {
+        const row = element.querySelector('[data-testid="chat-composer-attachments"]')!;
+        const rect = element.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        return {
+          composerLeft: rect.left,
+          composerRight: rect.right,
+          rowLeft: rowRect.left,
+          rowRight: rowRect.right,
+          rowScrollWidth: row.scrollWidth,
+          rowClientWidth: row.clientWidth,
+          documentWidth: document.documentElement.scrollWidth,
+        };
+      });
+      expect(layout.composerLeft).toBeGreaterThanOrEqual(0);
+      expect(layout.composerRight).toBeLessThanOrEqual(windowWidth);
+      expect(layout.rowLeft).toBeGreaterThanOrEqual(layout.composerLeft);
+      expect(layout.rowRight).toBeLessThanOrEqual(layout.composerRight);
+      expect(layout.rowScrollWidth).toBeGreaterThan(layout.rowClientWidth);
+      expect(layout.documentWidth).toBeLessThanOrEqual(windowWidth);
+      await attachShot(page, testInfo, `${windowWidth}-shared-composer-eight-chips`);
+    } finally {
+      await context.close();
     }
-    const attachBox = (await controls[0]!.boundingBox())!;
-    const removeBox = (await controls[1]!.boundingBox())!;
-    const sendBox = (await controls[2]!.boundingBox())!;
-    expect(attachBox.x + attachBox.width).toBeLessThanOrEqual(sendBox.x);
-    const chips = composer.locator("[data-attachment-chip]");
-    await expect(chips).toHaveCount(8);
-    const firstChip = (await chips.first().boundingBox())!;
-    const secondChip = (await chips.nth(1).boundingBox())!;
-    expect(removeBox.x).toBeGreaterThanOrEqual(firstChip.x);
-    expect(removeBox.x + removeBox.width).toBeLessThanOrEqual(firstChip.x + firstChip.width);
-    expect(firstChip.x + firstChip.width).toBeLessThanOrEqual(secondChip.x);
-    const layout = await composer.evaluate((element) => {
-      const row = element.querySelector('[data-testid="chat-composer-attachments"]')!;
-      const rect = element.getBoundingClientRect();
-      const rowRect = row.getBoundingClientRect();
-      return {
-        composerLeft: rect.left,
-        composerRight: rect.right,
-        rowLeft: rowRect.left,
-        rowRight: rowRect.right,
-        rowScrollWidth: row.scrollWidth,
-        rowClientWidth: row.clientWidth,
-        documentWidth: document.documentElement.scrollWidth,
-      };
-    });
-    expect(layout.composerLeft).toBeGreaterThanOrEqual(0);
-    expect(layout.composerRight).toBeLessThanOrEqual(390);
-    expect(layout.rowLeft).toBeGreaterThanOrEqual(layout.composerLeft);
-    expect(layout.rowRight).toBeLessThanOrEqual(layout.composerRight);
-    expect(layout.rowScrollWidth).toBeGreaterThan(layout.rowClientWidth);
-    expect(layout.documentWidth).toBeLessThanOrEqual(390);
-    await attachShot(page, testInfo, "390-shared-composer-eight-chips");
-  } finally {
-    await context.close();
-  }
-});
+  });
+}
