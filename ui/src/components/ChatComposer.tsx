@@ -326,7 +326,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         "relative min-w-0 rounded-xl border px-3 pt-2.5 pb-2 transition-colors duration-150 focus-within:border-muted-foreground/40",
         // Surface: opaque card vs the task glass recipe (IssueChatThread.tsx shell).
         surface === "translucent"
-          ? "border-border/70 bg-background/95 shadow-(--shadow-extract-4) backdrop-blur supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)"
+          ? "border-border/70 bg-background shadow-(--shadow-extract-4) dark:shadow-(--shadow-extract-5)"
           : "border-border bg-card",
         // No blue focus ring — neutral border darkening only.
         isAsk &&
@@ -407,7 +407,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           "block min-h-(--sz-22px) w-full resize-none border-0 bg-transparent p-0 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground focus:outline-none focus:ring-0",
           singleLine
             ? "max-h-(--sz-22px) overflow-x-auto whitespace-nowrap"
-            : "max-h-(--sz-200px) overflow-y-auto",
+            : "chat-composer-editor-fade max-h-(--sz-200px) overflow-y-auto",
           textareaClassName,
         )}
       />

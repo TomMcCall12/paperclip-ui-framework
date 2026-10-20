@@ -306,7 +306,9 @@ const MODE_DESCRIPTION: Partial<Record<IssueWorkMode, string>> = {
 };
 
 /** v7 per-mode placeholder copy; `{agent}` is the pending assignee's name. */
-function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean): string {
+function modePlaceholder(mode: IssueWorkMode, rawAgentName: string, mobile: boolean): string {
+  // An agent literally named "Me" makes "Message Me…" read like a typo.
+  const agentName = rawAgentName.trim().toLowerCase() === "me" ? "the agent" : rawAgentName;
   if (mobile) {
     if (mode === "planning") return `Plan with ${agentName}…`;
     if (mode === "ask") return `Ask ${agentName}…`;

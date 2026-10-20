@@ -840,6 +840,29 @@
     opacity: 1;
   }
 }
+/* Soft top edge so a long overflowing draft is not cut mid-line. Scroll-driven:
+   the fade only appears once the editor has scrolled, so the first line of a
+   short draft stays crisp. Browsers without scroll timelines get no fade. */
+@property --chat-composer-editor-fade-height {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes chat-composer-editor-fade-in {
+  to { --chat-composer-editor-fade-height: var(--spacing-2, 0.5rem); }
+}
+
+@supports (animation-timeline: scroll()) {
+  .chat-composer-editor-fade {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--chat-composer-editor-fade-height));
+    mask-image: linear-gradient(to bottom, transparent, black var(--chat-composer-editor-fade-height));
+    animation: chat-composer-editor-fade-in linear both;
+    animation-timeline: scroll(self block);
+    animation-range: 0 var(--spacing-2, 0.5rem);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .typing-dots span {
     animation: none;
