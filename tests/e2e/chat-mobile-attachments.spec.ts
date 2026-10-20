@@ -202,11 +202,6 @@ test("phone 390x844 a sent message with attachments does not overflow the thread
 
 for (const viewport of ["phone", "desktop"] as const) {
   test(`${viewport} board chat composer stays in bounds with a long unbroken name`, async ({ browser }, testInfo) => {
-    if (viewport === "phone" && !RAW)
-      test.fail(
-        true,
-        "Board chat on phone: the page height is calc(100% + 3rem) of a main area with no height on mobile, so the message list collapses to 0px and the composer floats up under the top bar",
-      );
     const { context, page } =
       viewport === "phone" ? await openPhoneContext(browser, testInfo) : await openDesktopContext(browser, testInfo);
     try {
@@ -245,6 +240,7 @@ for (const viewport of ["phone", "desktop"] as const) {
       expect(attachControls, "board chat has no attach control").toBe(0);
       expect(overflow.scrollWidth, `no horizontal overflow (${overflow.widest?.selector})`).toBe(overflow.clientWidth);
       expect(Math.abs(after.dock!.width - before.dock!.width), "composer width stable").toBeLessThanOrEqual(1);
+      expect(after.editor!.height / after.visibleHeight, "board editor share of visible viewport").toBeLessThanOrEqual(THRESHOLDS.editorMaxShare);
       expect(messageListHeight ?? 0, "message list has room to show history").toBeGreaterThan(after.visibleHeight * 0.4);
       expect(after.dock!.bottom, "composer sits in the bottom part of the screen").toBeGreaterThan(after.visibleHeight * 0.6);
     } finally {

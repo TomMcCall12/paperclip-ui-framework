@@ -77,6 +77,41 @@ describe("ChatComposer", () => {
     act(() => root.unmount());
   });
 
+  it("keeps eight attachment chips in one scrolling row and truncates long names", () => {
+    const longName = `${"a".repeat(116)}.txt`;
+    const attachments = Array.from({ length: 8 }, (_, index) => ({
+      id: `file-${index}`,
+      name: index === 0 ? longName : `file-${index}.txt`,
+      status: index === 0 ? "uploading" as const : "attached" as const,
+    }));
+    const root = createRoot(container);
+    act(() => root.render(<Harness attachments={attachments} />));
+    const row = container.querySelector<HTMLElement>('[data-testid="chat-composer-attachments"]')!;
+    const chips = row.querySelectorAll<HTMLElement>("[data-attachment-chip]");
+    expect(row.className).toContain("overflow-x-auto");
+    expect(chips).toHaveLength(8);
+    expect(chips[0]!.className).toContain("w-(--sz-12rem)");
+    const name = chips[0]!.querySelector<HTMLElement>("[title]")!;
+    expect(name.className).toContain("truncate");
+    expect(name.title).toBe(longName);
+    expect(chips[0]!.textContent).toContain("Uploading…");
+    act(() => root.unmount());
+  });
+
+  it("reports the selected chip for removal", () => {
+    const onRemoveAttachment = vi.fn();
+    const root = createRoot(container);
+    act(() => root.render(
+      <Harness
+        attachments={[{ id: "one", name: "notes.txt", status: "attached" }]}
+        onRemoveAttachment={onRemoveAttachment}
+      />,
+    ));
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Remove notes.txt"]')!.click());
+    expect(onRemoveAttachment).toHaveBeenCalledExactlyOnceWith("one");
+    act(() => root.unmount());
+  });
+
   it("disables send while empty and enables it once there is text", () => {
     const root = createRoot(container);
     act(() => {

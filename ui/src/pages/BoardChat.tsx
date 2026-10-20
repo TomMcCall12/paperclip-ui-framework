@@ -658,7 +658,7 @@ export function BoardChat() {
   }
 
   return (
-    <div className="flex h-(--sz-calc-29) flex-col -m-6">
+    <div className="-m-4 flex h-(--bc-shell-h) min-w-0 flex-col md:-m-6 md:h-(--sz-calc-29)">
       <div
         ref={splitContainerRef}
         className="flex min-h-0 min-w-0 flex-1 flex-row"
@@ -926,19 +926,6 @@ export function BoardChat() {
           </div>
           </div>
 
-          {/* Jump-to-latest — shows when user is scrolled away and new content has arrived */}
-          {hasNewBelow && (
-            <button
-              type="button"
-              onClick={() => scrollToLatest("smooth")}
-              aria-label="Jump to latest messages"
-              // design-allow(card-pattern): floating scroll-to-bottom <button>, not a content card (C5a Run 3)
-              className="absolute bottom-24 left-1/2 z-20 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-border bg-card text-foreground shadow-md transition-colors duration-150 hover:bg-accent hover:border-muted-foreground/30"
-            >
-              <ArrowDown className="h-4 w-4" />
-            </button>
-          )}
-
           {/* Input — shared ChatComposer (PAP-95a), adopted bare: textarea + send.
                No mode chip (the room has no task lifecycle). Multiline like task
                comments (PAP-116): text soft-wraps and the box auto-grows instead of
@@ -952,6 +939,18 @@ export function BoardChat() {
                (mirrors IssueChatThread's composer dock). pointer-events pass through
                the fade so the scrollbar stays usable; the composer re-enables them. */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-background via-background/95 to-background/0 px-6 pt-6 pb-5">
+            {/* Position relative to the dock so the button clears a growing composer. */}
+            {hasNewBelow && (
+              <button
+                type="button"
+                onClick={() => scrollToLatest("smooth")}
+                aria-label="Jump to latest messages"
+                // design-allow(card-pattern): floating scroll-to-bottom <button>, not a content card (C5a Run 3)
+                className="pointer-events-auto absolute bottom-full left-1/2 z-20 mb-2 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-border bg-card text-foreground shadow-md transition-colors duration-150 hover:bg-accent hover:border-muted-foreground/30"
+              >
+                <ArrowDown className="h-4 w-4" />
+              </button>
+            )}
             <ChatComposer
               ref={composerRef}
               value={input}
@@ -964,6 +963,7 @@ export function BoardChat() {
               disabled={sending}
               sendLabel="Send message"
               className="pointer-events-auto"
+              textareaClassName="max-h-(--tc-editor-max-h)"
               actionCommands={hostCommands.options}
               onActionCommand={hostCommands.execute}
             />

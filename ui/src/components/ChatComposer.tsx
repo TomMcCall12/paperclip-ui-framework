@@ -10,7 +10,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { AlertTriangle, Check, Loader2, Paperclip, Send } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Paperclip, Send, X } from "lucide-react";
 import type { CommandExecutionResult } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import type { ActionCommandOption } from "../context/EditorAutocompleteContext";
@@ -87,6 +87,7 @@ export interface ChatComposerProps {
    */
   onAttachFiles?: (files: File[]) => void | Promise<void>;
   attachments?: ChatComposerAttachment[];
+  onRemoveAttachment?: (attachmentId: string) => void;
   attaching?: boolean;
   /** Restrict the file picker (e.g. "image/*"). */
   acceptFileTypes?: string;
@@ -140,6 +141,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     sendLabel = "Send message",
     onAttachFiles,
     attachments = [],
+    onRemoveAttachment,
     attaching = false,
     acceptFileTypes,
     leadingTools,
@@ -321,7 +323,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       data-tone={tone}
       data-surface={surface}
       className={cn(
-        "relative rounded-xl border px-3 pt-2.5 pb-2 transition-colors duration-150 focus-within:border-muted-foreground/40",
+        "relative min-w-0 rounded-xl border px-3 pt-2.5 pb-2 transition-colors duration-150 focus-within:border-muted-foreground/40",
         // Surface: opaque card vs the task glass recipe (IssueChatThread.tsx shell).
         surface === "translucent"
           ? "border-border/70 bg-background/95 shadow-(--shadow-extract-4) backdrop-blur supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)"
@@ -413,7 +415,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       {attachments.length > 0 ? (
         <div
           data-testid="chat-composer-attachments"
-          className="mt-2 space-y-1 rounded-md border border-dashed border-border/80 bg-muted/20 p-1.5"
+          className="mt-2 flex min-w-0 max-w-full gap-1.5 overflow-x-auto overscroll-x-contain rounded-md border border-dashed border-border/80 bg-muted/20 p-1.5 scrollbar-auto-hide"
         >
           {attachments.map((attachment) => {
             const sizeLabel = formatAttachmentSize(attachment.size);
@@ -428,8 +430,9 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
             return (
               <div
                 key={attachment.id}
+                data-attachment-chip
                 className={cn(
-                  "flex min-w-0 items-center gap-2 rounded-sm px-2 py-1 text-xs",
+                  "flex w-(--sz-12rem) max-w-full shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-xs",
                   attachment.status === "error"
                     ? "bg-destructive/10 text-destructive"
                     : "bg-background/70 text-muted-foreground",
@@ -442,11 +445,21 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
                 ) : (
                   <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                 )}
-                <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                <span className="min-w-0 flex-1 truncate font-medium text-foreground" title={attachment.name}>
                   {attachment.name}
                 </span>
-                {sizeLabel ? <span className="shrink-0">{sizeLabel}</span> : null}
-                <span className="shrink-0">{statusLabel}</span>
+                {sizeLabel ? <span className="sr-only">{sizeLabel}</span> : null}
+                <span className="max-w-(--sz-6rem) shrink-0 truncate" title={statusLabel}>{statusLabel}</span>
+                {onRemoveAttachment ? (
+                  <button
+                    type="button"
+                    aria-label={`Remove ${attachment.name}`}
+                    onClick={() => onRemoveAttachment(attachment.id)}
+                    className="grid h-5 w-5 shrink-0 place-items-center rounded-sm hover:bg-accent"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                ) : null}
               </div>
             );
           })}
