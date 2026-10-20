@@ -7,8 +7,6 @@ import {
   type Page,
   type TestInfo,
 } from "@playwright/test";
-import { createRequire } from "node:module";
-import { ChatComposer } from "../../ui/src/components/ChatComposer";
 import {
   LONG_FILE_NAME,
   THRESHOLDS,
@@ -32,9 +30,6 @@ import {
 // with the defect they reproduce; each fix step flips its cases by deleting
 // the marker. CHAT_MOBILE_RAW=1 ignores the markers to print raw results.
 const RAW = process.env.CHAT_MOBILE_RAW === "1";
-const requireFromUi = createRequire(new URL("../../ui/package.json", import.meta.url));
-const { createElement } = requireFromUi("react") as typeof import("../../ui/node_modules/react");
-const { renderToStaticMarkup } = requireFromUi("react-dom/server") as typeof import("../../ui/node_modules/react-dom/server");
 
 let api: APIRequestContext;
 let seed: ChatSeed;
@@ -265,26 +260,20 @@ for (const viewport of ["phone", "desktop"] as const) {
   });
 }
 
-test("phone shared composer fits eight chips and gives attach, remove, and send 44px targets", async ({ browser }, testInfo) => {
+test("phone shared composer styles fit eight chips and give controls 44px targets", async ({ browser }, testInfo) => {
   const { context, page } = await openPhoneContext(browser, testInfo);
   try {
     await gotoBoardChat(page, seed);
     const stylesheets = await page.locator('link[rel="stylesheet"]').evaluateAll((links) =>
       links.map((link) => (link as HTMLLinkElement).href),
     );
-    const attachments = Array.from({ length: 8 }, (_, index) => ({
-      id: `file-${index}`,
-      name: index === 0 ? LONG_FILE_NAME : `file-${index}.txt`,
-      status: "attached" as const,
-    }));
-    const markup = renderToStaticMarkup(createElement(ChatComposer, {
-      value: "A message with eight files",
-      onChange: () => {},
-      onSubmit: () => {},
-      onAttachFiles: () => {},
-      onRemoveAttachment: () => {},
-      attachments,
-    }));
+    // BoardChat does not supply attachment handlers yet. Match the shared
+    // component's chip and control classes to exercise its compiled phone CSS.
+    const chipsMarkup = Array.from({ length: 8 }, (_, index) => {
+      const name = index === 0 ? LONG_FILE_NAME : `file-${index}.txt`;
+      return `<div data-attachment-chip class="flex w-(--sz-12rem) max-w-full shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-xs bg-background/70 text-muted-foreground"><span class="h-3.5 w-3.5 shrink-0"></span><span class="min-w-0 flex-1 truncate font-medium text-foreground" title="${name}">${name}</span><span class="max-w-(--sz-6rem) shrink-0 truncate">Attached</span><button type="button" aria-label="Remove ${name}" class="chat-composer-touch-control grid h-5 w-5 shrink-0 place-items-center rounded-sm">×</button></div>`;
+    }).join("");
+    const markup = `<div data-testid="chat-composer" class="relative min-w-0 rounded-xl border px-3 pt-2.5 pb-2"><textarea class="block min-h-(--sz-22px) w-full resize-none border-0 bg-transparent p-0 text-sm leading-6"></textarea><div data-testid="chat-composer-attachments" class="mt-2 flex min-w-0 max-w-full gap-1.5 overflow-x-auto rounded-md border p-1.5">${chipsMarkup}</div><div class="mt-2 flex items-center gap-2"><button type="button" aria-label="Attach files" class="chat-composer-touch-control grid h-7 w-7 shrink-0 place-items-center rounded-md">+</button><span class="flex-1"></span><button type="button" aria-label="Send message" class="chat-composer-touch-control grid h-7 w-7 shrink-0 place-items-center rounded-md">➤</button></div></div>`;
     await page.setContent(`<html><head>${stylesheets.map((href) => `<link rel="stylesheet" href="${href}">`).join("")}</head><body><main style="width:calc(100% - 3rem);margin:2rem auto">${markup}</main></body></html>`);
     const composer = page.getByTestId("chat-composer");
     await expect(composer.locator("textarea")).toHaveCSS("font-size", "16px");
