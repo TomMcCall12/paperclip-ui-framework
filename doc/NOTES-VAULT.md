@@ -17,6 +17,7 @@ A notes vault is a folder of Markdown notes, such as an Obsidian vault, that cho
 | Only Markdown (`.md`) files can be written. | server |
 | `create` never overwrites an existing file. | bridge |
 | `replace` needs `baseSha256` from the caller's latest read and fails if the file changed since. | server and bridge |
+| A full read, `create` or `replace` is refused at `VAULT_MAX_FILE_BYTES` (default 512 KiB). `append` is not: it streams onto the end of the file and is held only to the much larger `VAULT_MAX_APPEND_FILE_BYTES` (default 50 MiB), so a log that has already grown past the read limit can still be appended to — it just can't be read or replaced whole until it's split or trimmed. | bridge |
 | Agent-created files must start with the AI prefix, `(C) ` by default. | server |
 | Every write appends one row to the changelog: `\| date \| path \| summary \| actor \|`. Nobody can write the changelog directly. | bridge |
 | Every write is recorded in the activity log as `notes_vault.file_written` with the path, mode and hashes, but not the content. | server |
@@ -29,8 +30,9 @@ All routes are company-scoped. If the caller has no vault access, the status rou
 |---|---|
 | `GET /api/companies/{companyId}/notes-vault` | Status: `enabled`, `access` (`none`, `read` or `write`), `aiFilePrefix` and `changelogPath`. |
 | `GET /api/companies/{companyId}/notes-vault/list?path=<folder>` | List a folder. Hidden entries are left out. |
-| `GET /api/companies/{companyId}/notes-vault/file?path=<file>` | Read a file. Returns `content`, `sha256` and `bytes`. |
-| `POST /api/companies/{companyId}/notes-vault/file` | Write a file. Body: `{ path, mode: "create" \| "append" \| "replace", content, baseSha256?, summary }`. |
+| `GET /api/companies/{companyId}/notes-vault/file?path=<file>` | Read a file. Returns `content`, `sha256` and `bytes`. Refused with 413 once the file is over `VAULT_MAX_FILE_BYTES`, however it got that large. |
+| `POST /api/companies/{companyId}/notes-vault/file` | Write a file. Body: `{ path, mode: "create" \| "append" \| "replace", content, baseSha256?, summary }`. `append` is not held to the read limit above (see the rules table); `create` and `replace` are. |
+| `GET /api/companies/{companyId}/notes-vault/contains?path=<file>&needle=<string>` | Whether the file contains `needle`, without the read limit above — the cheap way to check for an idempotency marker (for example a commit hash) in a file too large to read whole. Returns `{ path, found }`. |
 | `GET /api/companies/{companyId}/notes-vault/sync` | Readers: status of the two-way sync with the vault's cloud copy: `enabled`, `running`, `lastSuccessAt`, `lastOk`, `lastError`, `lastConflicts`, `nextRunAt`. |
 | `POST /api/companies/{companyId}/notes-vault/sync` | Writers: sync now instead of at the next scheduled time. Returns 202 with the status, or 409 when no cloud copy is set up. Logged as `notes_vault.sync_requested`. |
 
@@ -48,6 +50,8 @@ All routes are company-scoped. If the caller has no vault access, the status rou
    | `PAPERCLIP_NOTES_VAULT_READER_AGENT_IDS` | Optional. Comma-separated agent ids that may only read. |
    | `PAPERCLIP_NOTES_VAULT_AI_FILE_PREFIX` | Optional. Defaults to `(C) `; set it empty to drop the prefix rule. |
    | `PAPERCLIP_NOTES_VAULT_CHANGELOG_PATH` | Optional. Defaults to `vault-changelog.md`. |
+
+   The bridge itself (not the `paperclip` service) also takes `VAULT_MAX_FILE_BYTES` (full read/create/replace limit, default 512 KiB) and `VAULT_MAX_APPEND_FILE_BYTES` (append ceiling, default 50 MiB) — see the rules table above.
 
 3. Give the writing agents the `notes-vault` skill so they know the API and the rules.
 

@@ -65,7 +65,7 @@ async function main() {
     return;
   }
 
-  const report = { version: 1, companyId, approvedReference, manifestFile, startedAt: new Date().toISOString(), results: [] as Array<{ rootIssueId: string; outcome: string; lineId?: string }> };
+  const report = { version: 1, companyId, approvalId: approvedReference, manifestSha256: approvedSha256, manifestFile, startedAt: new Date().toISOString(), results: [] as Array<{ rootIssueId: string; outcome: string; lineId?: string }> };
   for (const [index, root] of roots.entries()) {
     const approved = sourceManifest!.roots[index]!;
     if (approved.fingerprint !== root.fingerprint || JSON.stringify(approved.memberIssueIds) !== JSON.stringify(root.memberIssueIds)) {
@@ -74,7 +74,9 @@ async function main() {
       report.results.push({ rootIssueId: root.rootIssueId, outcome: root.conflict ?? approved.conflict! });
     } else {
       try {
-        const result = await lineService(db).ensure(companyId, root.rootIssueId, { type: "system" });
+        const result = await lineService(db).ensure(companyId, root.rootIssueId, { type: "system" }, {
+          memberIssueIds: approved.memberIssueIds, manifestSha256: approvedSha256!, approvalId: approvedReference!,
+        });
         report.results.push({ rootIssueId: root.rootIssueId, outcome: result.created ? "created" : "already_grouped", lineId: result.line.id });
       } catch (error) {
         report.results.push({ rootIssueId: root.rootIssueId, outcome: error instanceof Error ? error.message : "unknown_error" });

@@ -69,6 +69,37 @@ export function skillNameFromRuntimeName(value: string): string {
   return value.replace(/--[0-9a-f]{10}$/, "");
 }
 
+/** Tools whose input can open a skill's SKILL.md: a file read or a shell command such as `cat`. */
+const SKILL_FILE_READ_TOOL_NAMES = new Set(["Read", "Bash", "read_file", "terminal"]);
+// The directory right before /SKILL.md, not a shell variable such as `$D/SKILL.md`.
+const SKILL_FILE_PATTERN = /(?<![$A-Za-z0-9._-])([A-Za-z0-9][A-Za-z0-9._-]*)\/SKILL\.md\b/g;
+
+/**
+ * Agents often load a skill by reading its SKILL.md (Paperclip's own prompts
+ * say "or by reading its SKILL.md"), as Hermes agents do with skill_view.
+ * Returns the skill directory names opened in a path or shell command.
+ */
+export function skillNamesFromSkillFileReads(text: string): string[] {
+  const names: string[] = [];
+  for (const match of text.matchAll(SKILL_FILE_PATTERN)) {
+    const name = skillNameFromRuntimeName(match[1]!);
+    // `skills/SKILL.md` or `.claude/SKILL.md` is not a skill directory.
+    if (name !== "skills" && !name.startsWith(".")) names.push(name);
+  }
+  return names;
+}
+
+function skillFileReadsFromInput(input: unknown): string[] {
+  if (!input || typeof input !== "object") return [];
+  const record = input as Record<string, unknown>;
+  const names: string[] = [];
+  for (const key of ["file_path", "path", "command"]) {
+    const value = record[key];
+    if (typeof value === "string") names.push(...skillNamesFromSkillFileReads(value));
+  }
+  return names;
+}
+
 function skillNameFromInput(input: unknown): string | null {
   if (!input || typeof input !== "object") return null;
   const record = input as Record<string, unknown>;
@@ -84,6 +115,9 @@ function skillNameFromInput(input: unknown): string | null {
  * skill loads. Best effort and adapter-aware: Claude stream-json `tool_use`
  * blocks (the `Skill` tool names the skill), Codex tool items, and Hermes
  * gateway `tool.started` events (`skill_view` names the skill in its preview).
+ * ACP engine `acpx.tool_call` events are counted once per tool call id.
+ * Reading a skill's SKILL.md (Claude `Read` or `Bash`, a Codex command, an
+ * ACP tool call) also counts as loading that skill.
  * Lines split across chunks are reassembled; malformed lines are ignored.
  */
 export function createRunToolTracker() {
@@ -106,8 +140,25 @@ export function createRunToolTracker() {
         toolCalls += 1;
         if (SKILL_TOOL_NAMES.has(record.name)) {
           const skill = skillNameFromInput(record.input);
-            if (skill) skills.add(skillNameFromRuntimeName(skill));
+          if (skill) skills.add(skillNameFromRuntimeName(skill));
+        } else if (SKILL_FILE_READ_TOOL_NAMES.has(record.name)) {
+          for (const skill of skillFileReadsFromInput(record.input)) skills.add(skill);
         }
+      }
+      return;
+    }
+    // ACP engine events: one call streams several updates under one toolCallId.
+    // The update's name is the call's title (the command or "Read <path>"); its
+    // text carries tool output, so only the name is read for skill loads.
+    if (record.type === "acpx.tool_call") {
+      const id = typeof record.toolCallId === "string" ? record.toolCallId : null;
+      if (id && !seenToolIds.has(id)) {
+        seenToolIds.add(id);
+        toolCalls += 1;
+      }
+      const name = typeof record.name === "string" ? record.name : "";
+      if (!/^(?:Write|Edit)\b/.test(name)) {
+        for (const skill of skillNamesFromSkillFileReads(name)) skills.add(skill);
       }
       return;
     }
@@ -121,7 +172,12 @@ export function createRunToolTracker() {
     }
     if (record.type === "item.started" && record.item && typeof record.item === "object") {
       const item = record.item as Record<string, unknown>;
-      if (typeof item.type === "string" && CODEX_TOOL_ITEM_TYPES.has(item.type)) toolCalls += 1;
+      if (typeof item.type === "string" && CODEX_TOOL_ITEM_TYPES.has(item.type)) {
+        toolCalls += 1;
+        if (item.type === "command_execution") {
+          for (const skill of skillFileReadsFromInput(item)) skills.add(skill);
+        }
+      }
       return;
     }
     for (const key of ["message", "content", "item"]) {

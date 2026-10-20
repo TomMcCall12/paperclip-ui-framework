@@ -8,6 +8,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   builtInManagedResources,
   issueRelations,
+  lines,
   principalPermissionGrants,
   type Db,
 } from "@paperclipai/db";
@@ -86,6 +87,8 @@ import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
+import { lineService } from "./lines.js";
+import { sanitizeLineName } from "./line-naming-prompt.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
@@ -3419,6 +3422,8 @@ function buildManifestFromPackageFiles(
     const fallbackSlug = normalizeAgentUrlKey(path.posix.basename(path.posix.dirname(taskPath))) ?? "task";
     const slug = asString(frontmatter.slug) ?? fallbackSlug;
     const extension = isPlainRecord(paperclipTasks[slug]) ? paperclipTasks[slug] : {};
+    if (isPlainRecord(extension.line) && extension.line.name != null && !sanitizeLineName(extension.line.name))
+      warnings.push(`Task ${slug} has an invalid Line name; the imported Line will use a temporary name.`);
     const routineExtension = normalizeRoutineExtension(paperclipRoutines[slug]);
     const routineExtensionRaw = isPlainRecord(paperclipRoutines[slug]) ? paperclipRoutines[slug] : {};
     const schedule = isPlainRecord(frontmatter.schedule) ? frontmatter.schedule : null;
@@ -3463,6 +3468,10 @@ function buildManifestFromPackageFiles(
       monitor: normalizePortableIssueMonitor(extension.monitor),
       attachments: normalizePortableIssueAttachments(extension.attachments, warnings, `Task ${slug}`),
       parentSlug: asString(extension.parent),
+      line: isPlainRecord(extension.line) ? {
+        name: sanitizeLineName(extension.line.name),
+        archivedAt: readPortableIssueTimestamp(extension.line.archivedAt, warnings, `Task ${slug}`, "Line archivedAt"),
+      } : undefined,
       createdAt: readPortableIssueTimestamp(extension.createdAt, warnings, `Task ${slug}`, "createdAt"),
       updatedAt: readPortableIssueTimestamp(extension.updatedAt, warnings, `Task ${slug}`, "updatedAt"),
       startedAt: readPortableIssueTimestamp(extension.startedAt, warnings, `Task ${slug}`, "startedAt"),
@@ -4049,6 +4058,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const selectedIssueRows = Array.from(selectedIssues.values())
       .filter((issue): issue is NonNullable<typeof issue> => issue != null)
       .sort((left, right) => (left.identifier ?? left.title).localeCompare(right.identifier ?? right.title));
+    const selectedRootIds = selectedIssueRows.filter((issue) => issue.lineId).map((issue) => issue.id);
+    const selectedLineRows = selectedRootIds.length ? await db.select().from(lines)
+      .where(and(eq(lines.companyId, companyId), inArray(lines.rootIssueId, selectedRootIds))) : [];
+    const lineByRootId = new Map(selectedLineRows.map((line) => [line.rootIssueId, line] as const));
     const selectedRoutineSummaries = Array.from(selectedRoutines.values())
       .sort((left, right) => left.title.localeCompare(right.title));
     const selectedRoutineRows = (
@@ -4502,6 +4515,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         status: issue.status,
         priority: issue.priority,
         parent: parentTaskSlug ?? undefined,
+        line: lineByRootId.has(issue.id) ? {
+          name: lineByRootId.get(issue.id)!.name,
+          archivedAt: lineByRootId.get(issue.id)!.archivedAt?.toISOString() ?? null,
+        } : undefined,
         createdAt: toPortableTimestamp(issue.createdAt),
         updatedAt: toPortableTimestamp(issue.updatedAt),
         startedAt: toPortableTimestamp(issue.startedAt),
@@ -6391,6 +6408,20 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         // handful per table. Empty buffers are skipped so an issues-free import
         // (e.g. routines only) issues no writes at all.
         if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
+        for (const sourceIssue of sourceManifest.issues) {
+          if (!sourceIssue.line) continue;
+          const rootId = importedIssueIdBySlug.get(sourceIssue.slug);
+          if (!rootId) continue;
+          const imported = await lineService(db).ensure(targetCompany.id, rootId, { type: "system" });
+          await db.update(lines).set({
+            name: sourceIssue.line.name,
+            namingStatus: sourceIssue.line.name ? "ready" : "pending",
+            // Imported display names are historical data, not new GPT output.
+            namingModel: null,
+            archivedAt: sourceIssue.line.archivedAt ? new Date(sourceIssue.line.archivedAt) : null,
+            updatedAt: new Date(),
+          }).where(and(eq(lines.companyId, targetCompany.id), eq(lines.id, imported.line.id)));
+        }
         // Imported issues are historical work, not new inbox items. Seed a
         // per-user inbox archive for the importing board user so a large import
         // (a real 1,418-task company shipped every task to the inbox) does not

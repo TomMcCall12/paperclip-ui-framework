@@ -3005,6 +3005,7 @@ function toCompactIssue(issue: any): CompactIssue {
     projectWorkspaceId: issue.projectWorkspaceId,
     goalId: issue.goalId,
     parentId: issue.parentId,
+    lineId: issue.lineId,
     title: issue.title,
     description: issue.description,
     status: issue.status,

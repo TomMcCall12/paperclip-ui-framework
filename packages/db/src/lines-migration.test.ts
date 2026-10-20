@@ -49,6 +49,20 @@ describePostgres("Lines additive migration", () => {
       await applyPendingMigrations(database.connectionString);
       expect(await sql`SELECT line_id FROM issues WHERE id = ${oldIssue}`).toEqual([{ line_id: null }]);
       expect(await sql`SELECT id FROM lines`).toHaveLength(0);
+      const lineId = randomUUID(), oldAppIssueId = randomUUID();
+      await sql`INSERT INTO lines (id, company_id, root_issue_id, name, naming_status, created_by_type)
+        VALUES (${lineId}, ${company}, ${oldIssue}, 'Existing Work Group', 'ready', 'system')`;
+      await sql`UPDATE issues SET line_id = ${lineId} WHERE id = ${oldIssue}`;
+      // Rehearse old application SQL after a code rollback: it does not know
+      // about the nullable Line column, yet it can still create and edit work.
+      await sql`INSERT INTO issues (id, company_id, title) VALUES (${oldAppIssueId}, ${company}, 'Old application task')`;
+      await sql`UPDATE issues SET title = 'Old application edited task' WHERE id = ${oldAppIssueId}`;
+      expect(await sql`SELECT title FROM issues WHERE id = ${oldIssue}`).toEqual([{ title: "Existing task" }]);
+      expect(await sql`SELECT title, line_id FROM issues WHERE id = ${oldAppIssueId}`)
+        .toEqual([{ title: "Old application edited task", line_id: null }]);
+      expect(await sql`SELECT id, name FROM lines WHERE id = ${lineId}`)
+        .toEqual([{ id: lineId, name: "Existing Work Group" }]);
+      expect(await sql`SELECT line_id FROM issues WHERE id = ${oldIssue}`).toEqual([{ line_id: lineId }]);
     } finally { await sql.end(); }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 });

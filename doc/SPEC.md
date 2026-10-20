@@ -619,3 +619,6 @@ Agents cannot
 read or change these preferences. The legacy instance general setting is retained
 for API compatibility but no longer controls shortcut behavior in the app;
 users opt in individually after the upgrade.
+### Lines
+
+An assembly line may be represented by one company-scoped Line attached to its root issue. Line membership follows ordinary task descendants and does not replace the issue hierarchy or governance. Lines start explicitly during Discovery; saving a blueprint or creating a generic task does not start one. A temporary name is available until a GPT/OpenAI naming run succeeds. Operators can inspect progress, blocked work and review work from the Line surface. Historical grouping requires a reviewed manifest and an approved adoption; export/import preserves named and archived Lines through portable root references.

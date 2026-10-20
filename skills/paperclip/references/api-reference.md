@@ -193,29 +193,6 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
 
 Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
 
-### Lines
-
-Issue reads and heartbeat context include nullable `lineId`. A Line starts only when the root assignee or board explicitly calls `POST /api/companies/:companyId/lines` with an existing `rootIssueId`. Creating a root task or saving a blueprint does not create one. New descendants inherit the Line automatically; issue create/update requests cannot set membership directly.
-
-| Action | Endpoint | Request |
-| --- | --- | --- |
-| Ensure a Line at Discovery | `POST /api/companies/:companyId/lines` | `{ "rootIssueId": "<existing root UUID>" }` |
-| List Lines | `GET /api/companies/:companyId/lines` | `status`, `q`, `limit`, `cursor` query parameters |
-| Read Line | `GET /api/lines/:lineId` | No body |
-| Archive or unarchive | `PATCH /api/lines/:lineId` | `{ "archived": true \| false }` |
-| Retry GPT naming | `POST /api/lines/:lineId/naming/retry` | `{}` |
-
-The ensure call returns 201 when it creates a Line and 200 on a repeated call. Line names are generated asynchronously; use `displayName` while `name` is null. `GET /api/companies/:companyId/issues?lineId=<UUID>` lists members and `lineId=ungrouped` lists work without membership. Hidden naming tasks do not count in Line progress. Only the bound Summarizer task run can submit a naming result; ordinary agents and board users cannot set a Line name.
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/api/companies/:companyId/lines` | Ensure one Line for an existing root at Discovery |
-| GET | `/api/companies/:companyId/lines` | List company Lines and computed progress |
-| GET | `/api/lines/:lineId` | Read one Line |
-| PATCH | `/api/lines/:lineId` | Archive or unarchive a Line |
-| POST | `/api/lines/:lineId/naming/retry` | Request GPT naming again |
-| POST | `/api/lines/:lineId/naming/result` | Submit a result from the bound naming run only |
-
 ### Issue Update Response (`PATCH /api/issues/:issueId`)
 
 The default successful response is the full, authoritative updated issue row plus:
@@ -1696,3 +1673,26 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
+
+**Lines API**
+
+Issue reads and heartbeat context include nullable `lineId`. A Line starts only when the root assignee or board explicitly calls `POST /api/companies/:companyId/lines` with an existing `rootIssueId`. Creating a root task or saving a blueprint does not create one. New descendants inherit the Line automatically; issue create/update requests cannot set membership directly.
+
+| Action | Endpoint | Request |
+| --- | --- | --- |
+| Ensure a Line at Discovery | `POST /api/companies/:companyId/lines` | `{ "rootIssueId": "<existing root UUID>" }` |
+| List Lines | `GET /api/companies/:companyId/lines` | `status`, `q`, `limit`, `cursor` query parameters |
+| Read Line | `GET /api/lines/:lineId` | No body |
+| Archive or unarchive | `PATCH /api/lines/:lineId` | `{ "archived": true \| false }` |
+| Retry GPT naming | `POST /api/lines/:lineId/naming/retry` | `{}` |
+
+The ensure call returns 201 when it creates a Line and 200 on a repeated call. Line names are generated asynchronously; use `displayName` while `name` is null. `GET /api/companies/:companyId/issues?lineId=<UUID>` lists members and `lineId=ungrouped` lists work without membership. Hidden naming tasks do not count in Line progress. Only the bound Summarizer task run can submit a naming result; ordinary agents and board users cannot set a Line name.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/companies/:companyId/lines` | Ensure one Line for an existing root at Discovery |
+| GET | `/api/companies/:companyId/lines` | List company Lines and computed progress |
+| GET | `/api/lines/:lineId` | Read one Line |
+| PATCH | `/api/lines/:lineId` | Archive or unarchive a Line |
+| POST | `/api/lines/:lineId/naming/retry` | Request GPT naming again |
+| POST | `/api/lines/:lineId/naming/result` | Submit a result from the bound naming run only |

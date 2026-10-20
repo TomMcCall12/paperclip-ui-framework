@@ -30,6 +30,12 @@ export interface NotesVaultFile {
   bytes: number;
 }
 
+/** Whether a file contains a string, without reading it whole — checks an idempotency marker cheaply. */
+export interface NotesVaultContainsResult {
+  path: string;
+  found: boolean;
+}
+
 export type NotesVaultWriteMode = "create" | "append" | "replace";
 
 export interface NotesVaultWriteResult {

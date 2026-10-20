@@ -1143,6 +1143,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const parsedSubtype = asString(parsed.subtype, "").trim().toLowerCase();
     const parsedSucceeded = parsedSubtype === "success" && !parsedIsError;
     const failed = !parsedSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
+    // Paperclip's own terminal-result cleanup stops the process group when the
+    // CLI stays alive after a successful result (for example, a lingering
+    // run_in_background task). That SIGTERM exit is ours, not a CLI failure, so
+    // report a clean exit and keep the raw exit as cleanup evidence.
+    const stoppedByTerminalResultCleanup =
+      parsedSucceeded && proc.terminalResultCleanup?.terminalResultSeen === true;
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -1243,12 +1249,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
-      ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
+      ...(proc.terminalResultCleanup
+        ? {
+            unmanagedBackgroundTask: {
+              ...proc.terminalResultCleanup,
+              processExitCode: proc.exitCode,
+            },
+          }
+        : {}),
     };
 
     return {
-      exitCode: proc.exitCode,
-      signal: proc.signal,
+      exitCode: stoppedByTerminalResultCleanup ? 0 : proc.exitCode,
+      signal: stoppedByTerminalResultCleanup ? null : proc.signal,
       timedOut: false,
       errorMessage,
       errorCode: resolvedErrorCode,

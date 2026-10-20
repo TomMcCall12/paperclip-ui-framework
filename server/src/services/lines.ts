@@ -1,6 +1,6 @@
 import { and, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issues, lines } from "@paperclipai/db";
+import { approvals, heartbeatRuns, issueApprovals, issues, lines } from "@paperclipai/db";
 import type { Line, ListLinesQuery, PaginatedLines } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -10,6 +10,12 @@ export interface LineActor {
   agentId?: string | null;
   userId?: string | null;
   runId?: string | null;
+}
+
+export interface LineAdoptionEvidence {
+  memberIssueIds: string[];
+  manifestSha256: string;
+  approvalId: string;
 }
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -39,7 +45,8 @@ function actorLog(actor: LineActor) {
   } as const;
 }
 
-function lineView(row: typeof lines.$inferSelect, root: typeof issues.$inferSelect, members: Array<typeof issues.$inferSelect>): Line {
+function lineView(row: typeof lines.$inferSelect, root: typeof issues.$inferSelect, members: Array<typeof issues.$inferSelect>,
+  pendingApprovals: Line["pendingApprovals"] = []): Line {
   const visible = members.filter((member) => member.hiddenAt === null);
   const terminal = visible.filter((member) => member.status === "done" || member.status === "cancelled").length;
   const completionStatus = root.status === "cancelled" ? "cancelled"
@@ -48,10 +55,16 @@ function lineView(row: typeof lines.$inferSelect, root: typeof issues.$inferSele
     ...row,
     rootIdentifier: root.identifier ?? root.id,
     rootTitle: root.title,
+    rootObjective: root.description,
+    rootStatus: root.status,
     displayName: row.name ?? `Line ${root.identifier ?? root.id}`,
     completionStatus,
     visibleIssueCount: visible.length,
     terminalIssueCount: terminal,
+    blockedIssueCount: visible.filter((member) => member.status === "blocked").length,
+    reviewIssueCount: visible.filter((member) => member.status === "in_review").length,
+    lastTaskActivityAt: visible.length ? new Date(Math.max(...visible.map((member) => member.updatedAt.getTime()))).toISOString() : null,
+    pendingApprovals,
     nextNamingAttemptAt: row.nextNamingAttemptAt?.toISOString() ?? null,
     namedAt: row.namedAt?.toISOString() ?? null,
     archivedAt: row.archivedAt?.toISOString() ?? null,
@@ -67,7 +80,11 @@ export function lineService(db: Db) {
     const [root] = await db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, row.rootIssueId)));
     if (!root) return null;
     const members = await db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.lineId, lineId)));
-    return lineView(row, root, members);
+    const pendingApprovals = await db.select({ issueId: issueApprovals.issueId, approvalId: issueApprovals.approvalId })
+      .from(issueApprovals).innerJoin(issues, and(eq(issues.companyId, issueApprovals.companyId), eq(issues.id, issueApprovals.issueId)))
+      .innerJoin(approvals, and(eq(approvals.companyId, issueApprovals.companyId), eq(approvals.id, issueApprovals.approvalId)))
+      .where(and(eq(issueApprovals.companyId, companyId), eq(issues.lineId, lineId), eq(approvals.status, "pending")));
+    return lineView(row, root, members, pendingApprovals);
   }
 
   return {
@@ -87,11 +104,21 @@ export function lineService(db: Db) {
         return { memberIssueIds, conflict: conflictCode, existingLineId: existing?.id ?? null };
       });
     },
-    async ensure(companyId: string, rootIssueId: string, actor: LineActor) {
+    async ensure(companyId: string, rootIssueId: string, actor: LineActor, adoption?: LineAdoptionEvidence) {
       const result = await db.transaction(async (tx) => {
         await lockLineTree(tx, companyId);
         const [root] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, rootIssueId))).for("update");
         if (!root) throw notFound("Issue not found");
+        if (adoption) {
+          const exactIds = (await lineDescendantIds(tx, companyId, rootIssueId)).sort();
+          if (JSON.stringify(exactIds) !== JSON.stringify(adoption.memberIssueIds.slice().sort()))
+            throw conflict("Line membership changed since approval");
+          const [approval] = await tx.select().from(approvals).where(and(eq(approvals.companyId, companyId), eq(approvals.id, adoption.approvalId))).for("share");
+          if (!approval || approval.type !== "request_board_approval" || approval.payload.kind !== "lines_adoption" ||
+              approval.status !== "approved" || !approval.decidedByUserId || !approval.decidedAt ||
+              approval.payload.manifestSha256 !== adoption.manifestSha256)
+            throw conflict("Verified Line adoption approval required");
+        }
         const [existing] = await tx.select().from(lines).where(and(eq(lines.companyId, companyId), eq(lines.rootIssueId, rootIssueId)));
         if (existing) {
           const ids = await lineDescendantIds(tx, companyId, rootIssueId);
@@ -123,7 +150,8 @@ export function lineService(db: Db) {
         await tx.update(issues).set({ lineId: row.id }).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids)));
         await logActivity(tx as unknown as Db, {
           companyId, ...actorLog(actor), action: "line.created", entityType: "line", entityId: row.id,
-          details: { rootIssueId, memberCount: ids.length },
+          details: { rootIssueId, memberCount: ids.length,
+            ...(adoption ? { manifestSha256: adoption.manifestSha256, approvalId: adoption.approvalId } : {}) },
         });
         return { id: row.id, created: true };
       });
@@ -131,7 +159,8 @@ export function lineService(db: Db) {
       if (!line) throw new Error("New Line missing after commit");
       return { line, created: result.created };
     },
-    async list(companyId: string, query: ListLinesQuery): Promise<PaginatedLines> {
+    async list(companyId: string, query: ListLinesQuery,
+      authorizeMembers?: (root: typeof issues.$inferSelect, members: Array<typeof issues.$inferSelect>) => Promise<boolean>): Promise<PaginatedLines> {
       const normalizedQ = query.q?.trim().toLowerCase() ?? "";
       let after: { updatedAt: string; id: string; status: string; q: string } | null = null;
       if (query.cursor) {
@@ -155,9 +184,8 @@ export function lineService(db: Db) {
           query.status === "archived" ? sql`${lines.archivedAt} is not null` : query.status === "all" ? undefined : isNull(lines.archivedAt),
           query.status === "completed" ? completed : query.status === "active" ? sql`not ${completed}` : undefined,
           after ? sql`(${lines.updatedAt} < ${new Date(after.updatedAt)} or (${lines.updatedAt} = ${new Date(after.updatedAt)} and ${lines.id} < ${after.id}))` : undefined,
-        )).orderBy(desc(lines.updatedAt), desc(lines.id)).limit(query.limit + 1);
-      const pageRows = rows.slice(0, query.limit);
-      const ids = pageRows.map(({ line }) => line.id);
+        )).orderBy(desc(lines.updatedAt), desc(lines.id)).limit(authorizeMembers ? 1_000_000 : query.limit + 1);
+      const ids = rows.map(({ line }) => line.id);
       const members = ids.length ? await db.select().from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.lineId, ids))) : [];
       const byLine = new Map<string, Array<typeof issues.$inferSelect>>();
       for (const member of members) {
@@ -166,9 +194,14 @@ export function lineService(db: Db) {
         group.push(member);
         byLine.set(member.lineId, group);
       }
+      const authorizedRows = authorizeMembers ? [] as typeof rows : rows;
+      if (authorizeMembers) for (const row of rows) {
+        if (await authorizeMembers(row.root, byLine.get(row.line.id) ?? [])) authorizedRows.push(row);
+      }
+      const pageRows = authorizedRows.slice(0, query.limit);
       const items = pageRows.map(({ line, root }) => lineView(line, root, byLine.get(line.id) ?? []));
       const last = pageRows.at(-1)?.line;
-      return { items, nextCursor: rows.length > query.limit && last
+      return { items, nextCursor: authorizedRows.length > query.limit && last
         ? Buffer.from(JSON.stringify({ updatedAt: last.updatedAt.toISOString(), id: last.id, status: query.status, q: normalizedQ })).toString("base64url")
         : null };
     },

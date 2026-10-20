@@ -201,6 +201,8 @@ export interface CompanyPortabilityIssueManifestEntry {
   attachments?: CompanyPortabilityIssueAttachmentManifestEntry[];
   /** Slug of the parent task when it is part of the same bundle (schemaVersion >= 7). */
   parentSlug?: string | null;
+  /** Only the root task carries its portable Line state. Older bundles omit it. */
+  line?: { name: string | null; archivedAt: string | null } | null;
   /** Preserved source timestamps as ISO strings (schemaVersion >= 7); absent in older bundles. */
   createdAt?: string | null;
   updatedAt?: string | null;

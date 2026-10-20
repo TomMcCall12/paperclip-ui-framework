@@ -119,6 +119,41 @@ function createLocalSandboxRunner() {
 }
 
 describe("codex execute", () => {
+  it("sends only the bounded Line naming prompt to Codex", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-line-naming-prompt-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const instructionsPath = path.join(root, "instructions.md");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(instructionsPath, "OLDER_ANCESTOR_SECRET", "utf8");
+    await writeFakeCodexCommand(commandPath);
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    try {
+      const prompt = "Name this Line. Input: {\"title\":\"Approved title\",\"objective\":\"Approved objective\"}";
+      await execute({
+        runId: "line-run", agent: { id: "agent-1", companyId: "company-1", name: "Summarizer", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { engine: "cli", command: commandPath, cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath, OPENAI_API_KEY: "sk-test-line" },
+          instructionsFilePath: instructionsPath, bootstrapPromptTemplate: "BOOTSTRAP_SECRET",
+          promptTemplate: "HEARTBEAT_SECRET" },
+        context: { issueId: "line-task", lineNamingPrompt: prompt,
+          paperclipTaskMarkdown: "PLAN_SECRET", paperclipWake: { comments: [{ body: "COMMENT_SECRET" }] } },
+        onLog: async () => {},
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toBe(prompt);
+      expect(capture.prompt).not.toMatch(/OLDER_ANCESTOR_SECRET|BOOTSTRAP_SECRET|HEARTBEAT_SECRET|PLAN_SECRET|COMMENT_SECRET/);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    }
+  });
+
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
     const workspace = path.join(root, "workspace");

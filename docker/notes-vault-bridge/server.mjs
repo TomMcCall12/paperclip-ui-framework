@@ -10,7 +10,10 @@
 //   VAULT_BRIDGE_TOKEN      bearer token the Paperclip server sends
 //   VAULT_CHANGELOG_PATH    vault-relative changelog file (default vault-changelog.md)
 //   VAULT_BRIDGE_PORT       listen port (default 8787)
-//   VAULT_MAX_FILE_BYTES    largest file read or written (default 524288)
+//   VAULT_MAX_FILE_BYTES    largest file a full read or a create/replace write may be (default 524288)
+//   VAULT_MAX_APPEND_FILE_BYTES  largest a file may grow to via append (default 52428800, 50 MiB).
+//                           An append streams onto the end of the file and is not held to
+//                           VAULT_MAX_FILE_BYTES, so a log that outgrows that limit can keep growing.
 //   VAULT_UMASK             octal umask for new files and folders (default 002, group-writable)
 //   VAULT_OWNER_UID/GID     owner given to new files and folders (optional; needs CAP_CHOWN)
 //
@@ -26,12 +29,14 @@
 import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_MAX_FILE_BYTES = 512 * 1024;
+const DEFAULT_MAX_APPEND_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_LIST_ENTRIES = 2000;
+const CONTAINS_CHUNK_BYTES = 64 * 1024;
 
 export class VaultBridgeError extends Error {
   constructor(status, code, message) {
@@ -110,6 +115,59 @@ async function readTextFile(absolutePath, maxBytes) {
   return fs.readFile(absolutePath, "utf8");
 }
 
+/** sha256 and byte length of a file, read in chunks so a large file is never fully held in memory. */
+function hashFile(absolutePath) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    let bytes = 0;
+    const stream = createReadStream(absolutePath);
+    stream.on("data", (chunk) => {
+      hash.update(chunk);
+      bytes += chunk.length;
+    });
+    stream.on("error", reject);
+    stream.on("end", () => resolve({ sha256: hash.digest("hex"), bytes }));
+  });
+}
+
+/** True when the file is empty or its last byte is a newline, so an append knows whether to add one first. */
+async function endsWithNewlineOrEmpty(absolutePath, size) {
+  if (size === 0) return true;
+  const fd = await fs.open(absolutePath, "r");
+  try {
+    const buf = Buffer.alloc(1);
+    await fd.read(buf, 0, 1, size - 1);
+    return buf[0] === 0x0a;
+  } finally {
+    await fd.close();
+  }
+}
+
+/**
+ * Whether a file contains `needle`, read in chunks so a large file is never fully
+ * held in memory. Carries the last (needle.length - 1) bytes of each chunk into the
+ * next so a match spanning a chunk boundary is still found.
+ */
+async function fileContainsBytes(absolutePath, needleBuf) {
+  const fd = await fs.open(absolutePath, "r");
+  try {
+    let carry = Buffer.alloc(0);
+    let position = 0;
+    const readBuf = Buffer.alloc(CONTAINS_CHUNK_BYTES);
+    for (;;) {
+      const { bytesRead } = await fd.read(readBuf, 0, CONTAINS_CHUNK_BYTES, position);
+      if (bytesRead === 0) return false;
+      position += bytesRead;
+      const window = carry.length > 0 ? Buffer.concat([carry, readBuf.subarray(0, bytesRead)]) : readBuf.subarray(0, bytesRead);
+      if (window.includes(needleBuf)) return true;
+      const keep = Math.min(window.length, needleBuf.length - 1);
+      carry = keep > 0 ? Buffer.from(window.subarray(window.length - keep)) : Buffer.alloc(0);
+    }
+  } finally {
+    await fd.close();
+  }
+}
+
 function changelogCell(value) {
   return String(value).replace(/\r?\n/g, " ").replace(/\|/g, "\\|").trim();
 }
@@ -122,6 +180,7 @@ export function createVaultBridge(options) {
   const root = path.resolve(options.root);
   const changelogPath = options.changelogPath ?? "vault-changelog.md";
   const maxBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  const maxAppendBytes = options.maxAppendFileBytes ?? DEFAULT_MAX_APPEND_FILE_BYTES;
   const now = options.now ?? (() => new Date());
   const owner = Number.isInteger(options.ownerUid) && Number.isInteger(options.ownerGid)
     ? { uid: options.ownerUid, gid: options.ownerGid }
@@ -181,6 +240,28 @@ export function createVaultBridge(options) {
     return { path: relativePath, content, sha256: sha256(content), bytes: Buffer.byteLength(content, "utf8") };
   }
 
+  /**
+   * Whether a file contains a string, without the bridge limit on a full read — the
+   * cheap check a caller uses to see if an idempotency marker is already in a large file.
+   */
+  async function contains(relativePath, needle) {
+    if (typeof needle !== "string" || needle.length === 0) {
+      throw new VaultBridgeError(400, "vault_needle_invalid", "needle must be a non-empty string.");
+    }
+    const absolute = resolveVaultPath(root, relativePath);
+    await assertRealPathInside(root, absolute);
+    let stat;
+    try {
+      stat = await fs.stat(absolute);
+    } catch (error) {
+      if (error?.code === "ENOENT") throw new VaultBridgeError(404, "vault_not_found", "File not found.");
+      throw error;
+    }
+    if (!stat.isFile()) throw new VaultBridgeError(400, "vault_not_a_file", "Path is not a file.");
+    const found = await fileContainsBytes(absolute, Buffer.from(needle, "utf8"));
+    return { path: relativePath, found };
+  }
+
   async function appendChangelog(row) {
     const absolute = resolveVaultPath(root, changelogPath);
     await assertRealPathInside(root, absolute);
@@ -226,30 +307,41 @@ export function createVaultBridge(options) {
         if (error?.code === "EEXIST") throw new VaultBridgeError(409, "vault_file_exists", "File already exists; use append or replace.");
         throw error;
       }
-    } else {
+    } else if (mode === "replace") {
       const current = await readTextFile(absolute, maxBytes);
       previousSha256 = sha256(current);
-      if (mode === "replace") {
-        if (typeof baseSha256 !== "string" || baseSha256 !== previousSha256) {
-          throw new VaultBridgeError(409, "vault_base_mismatch", "The file changed since it was read (or baseSha256 is missing). Read it again and retry.");
-        }
-        if (Buffer.byteLength(content, "utf8") > maxBytes) throw new VaultBridgeError(413, "vault_file_too_large", "Content is larger than the bridge limit.");
-        await fs.writeFile(absolute, content, "utf8");
-      } else {
-        const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
-        if (Buffer.byteLength(current + separator + content, "utf8") > maxBytes) {
-          throw new VaultBridgeError(413, "vault_file_too_large", "The file would exceed the bridge limit.");
-        }
-        await fs.appendFile(absolute, separator + content, "utf8");
+      if (typeof baseSha256 !== "string" || baseSha256 !== previousSha256) {
+        throw new VaultBridgeError(409, "vault_base_mismatch", "The file changed since it was read (or baseSha256 is missing). Read it again and retry.");
       }
+      if (Buffer.byteLength(content, "utf8") > maxBytes) throw new VaultBridgeError(413, "vault_file_too_large", "Content is larger than the bridge limit.");
+      await fs.writeFile(absolute, content, "utf8");
+    } else {
+      // append streams onto the end of the file and is held to the (much larger)
+      // append ceiling, never the full-read/replace bridge limit, so a file that has
+      // already grown past that limit can still be appended to.
+      let stat;
+      try {
+        stat = await fs.stat(absolute);
+      } catch (error) {
+        if (error?.code === "ENOENT") throw new VaultBridgeError(404, "vault_not_found", "File not found.");
+        throw error;
+      }
+      if (!stat.isFile()) throw new VaultBridgeError(400, "vault_not_a_file", "Path is not a file.");
+      previousSha256 = (await hashFile(absolute)).sha256;
+      const separator = (await endsWithNewlineOrEmpty(absolute, stat.size)) ? "" : "\n";
+      const addedBytes = Buffer.byteLength(separator + content, "utf8");
+      if (stat.size + addedBytes > maxAppendBytes) {
+        throw new VaultBridgeError(413, "vault_file_too_large", "The file would exceed the append ceiling.");
+      }
+      await fs.appendFile(absolute, separator + content, "utf8");
     }
-    const written = await fs.readFile(absolute, "utf8");
+    const { sha256: finalSha256, bytes: finalBytes } = await hashFile(absolute);
     const date = now().toISOString().slice(0, 10);
     await appendChangelog(formatChangelogRow({ date, path: relativePath, summary, actor }));
-    return { path: relativePath, mode, sha256: sha256(written), previousSha256, bytes: Buffer.byteLength(written, "utf8") };
+    return { path: relativePath, mode, sha256: finalSha256, previousSha256, bytes: finalBytes };
   }
 
-  return { root, list, read, write };
+  return { root, list, read, write, contains };
 }
 
 const SYNC_EXCLUDES = [".DS_Store", "desktop.ini", "Thumbs.db", ".~lock.*", "~$*"];
@@ -490,6 +582,7 @@ export function createVaultBridgeServer(options) {
       const body = await readJsonBody(req, bodyLimit);
       if (req.url === "/list") return send(200, await bridge.list(body.path ?? ""));
       if (req.url === "/read") return send(200, await bridge.read(body.path));
+      if (req.url === "/contains") return send(200, await bridge.contains(body.path, body.needle));
       if (req.url === "/write") {
         const written = await bridge.write(body);
         sync?.requestSoon();
@@ -544,6 +637,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     ownerUid,
     ownerGid,
     maxFileBytes: process.env.VAULT_MAX_FILE_BYTES ? Number.parseInt(process.env.VAULT_MAX_FILE_BYTES, 10) : undefined,
+    maxAppendFileBytes: process.env.VAULT_MAX_APPEND_FILE_BYTES ? Number.parseInt(process.env.VAULT_MAX_APPEND_FILE_BYTES, 10) : undefined,
     sync,
   });
   server.listen(port, "0.0.0.0", () => console.log(`vault bridge listening on ${port}${sync ? `, syncing with ${syncRemote}` : ""}`));

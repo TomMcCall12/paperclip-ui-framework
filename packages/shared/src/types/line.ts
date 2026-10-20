@@ -8,6 +8,8 @@ export interface Line {
   rootIssueId: string;
   rootIdentifier: string;
   rootTitle: string;
+  rootObjective: string | null;
+  rootStatus: string;
   name: string | null;
   /** Display only; `Line <root identifier>` is temporary while name is null. */
   displayName: string;
@@ -27,6 +29,10 @@ export interface Line {
   completionStatus: LineCompletionStatus;
   visibleIssueCount: number;
   terminalIssueCount: number;
+  blockedIssueCount: number;
+  reviewIssueCount: number;
+  lastTaskActivityAt: string | null;
+  pendingApprovals: Array<{ issueId: string; approvalId: string }>;
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
