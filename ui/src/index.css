@@ -361,6 +361,22 @@
   --tc-composer-bottom: var(--sz-calc-8);
   /* Together with the dock's pb-2, match the page's p-4 side gutters. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+
+  /* Phone chat layout (TOM-654). --tc-visible-h and --tc-keyboard-inset are
+     published at runtime by useVisualViewport (window.visualViewport) so the
+     composer budgets track what the reader can actually see, not the layout
+     viewport. Without visualViewport they fall back to 100dvh and 0. */
+  --tc-visible-h: 100dvh;
+  --tc-keyboard-inset: 0px;
+  --tc-editor-max-h: calc(var(--tc-visible-h) * 0.25);
+  --tc-dock-max-h: calc(var(--tc-visible-h) * 0.4);
+  --tc-dock-max-h-keyboard: calc(var(--tc-visible-h) * 0.45);
+  --tc-editor-img-max-h: 4rem;
+  --tc-attachment-thumb: 3rem;
+  /* Board chat phone shell: visible height minus top bar, page padding and the
+     bottom nav. Tuned by the board chat step; desktop keeps calc(100% + 3rem). */
+  --bc-shell-h: calc(var(--tc-visible-h) - 5.5rem - var(--sz-calc-14));
+  --chat-attachments-max-h: 6rem;
 }
 
 .dark {
