@@ -1484,7 +1484,7 @@ export function TaskChatComposer({
                   disabled={disabled}
                   title="Attach file"
                   aria-label="Attach file"
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  className="flex h-8 w-8 max-md:h-(--tc-touch-target) max-md:w-(--tc-touch-target) shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
                   data-testid="task-chat-composer-attach"
                 >
                   <Plus className="h-4 w-4" aria-hidden />
@@ -1506,7 +1506,7 @@ export function TaskChatComposer({
                     disabled={disabled || !onWorkModeChange}
                     aria-keyshortcuts="Meta+Period Control+Period Shift+Tab"
                     className={cn(
-                      "flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium disabled:opacity-50",
+                      "flex h-8 max-md:h-(--tc-touch-target) shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium disabled:opacity-50",
                       streamlined
                         ? "status-chip border-0 transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none"
                         : "status-chip transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none",
@@ -1575,7 +1575,7 @@ export function TaskChatComposer({
                 onChange={updatePendingAssignee}
                 disabled={disabled}
                 triggerTestId="task-chat-composer-assignee"
-                className="h-8 gap-1.5 border-0 bg-transparent px-2.5 text-xs shadow-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-0"
+                className="h-8 max-md:h-(--tc-touch-target) gap-1.5 border-0 bg-transparent px-2.5 text-xs shadow-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-0"
                 renderTriggerValue={(option) => {
                   return (
                     <>
@@ -1616,7 +1616,7 @@ export function TaskChatComposer({
                 type="button"
                 onClick={onCancelQueuedEdit}
                 disabled={submitting}
-                className="h-8 shrink-0 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                className="h-8 max-md:h-(--tc-touch-target) shrink-0 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -1663,7 +1663,7 @@ export function TaskChatComposer({
                     : "Send"
               }
               className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
+                "flex h-8 w-8 max-md:h-(--tc-touch-target) max-md:w-(--tc-touch-target) shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
                 streamlined
                   ? "bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
                   : "bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",

@@ -377,6 +377,8 @@
      bottom nav. Tuned by the board chat step; desktop keeps calc(100% + 3rem). */
   --bc-shell-h: calc(var(--tc-visible-h) - 5.5rem - var(--sz-calc-14));
   --chat-attachments-max-h: 6rem;
+  /* Minimum touch target for phone chat controls (TOM-664). */
+  --tc-touch-target: var(--sz-44px);
 }
 
 .dark {

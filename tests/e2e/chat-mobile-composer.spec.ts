@@ -210,6 +210,40 @@ for (const scenario of editorCases) {
   });
 }
 
+const TOUCH_TARGET = 44;
+const JUMP_GAP_MIN = 8;
+
+test("phone 390x844 composer controls and jump-to-latest are at least 44x44 (TOM-664)", async ({ browser }, testInfo) => {
+  const { context, page } = await openPhoneContext(browser, testInfo, "none");
+  try {
+    await gotoTaskChat(page, seed);
+    const controls = ["send", "attach", "mode", "assignee"] as const;
+    const boxes: Record<string, { width: number; height: number } | null> = {};
+    for (const name of controls) {
+      boxes[name] = await page.getByTestId(`task-chat-composer-${name}`).boundingBox();
+    }
+    await scrollUpInSteps(page);
+    const jump = page.getByRole("button", { name: "Scroll to bottom" });
+    await expect(jump).toBeVisible();
+    const jumpBox = await jump.boundingBox();
+    const dockBox = await page.getByTestId("task-chat-composer-dock").boundingBox();
+    await attachMetrics(testInfo, "touch-targets", { boxes, jumpBox, dockBox });
+    await attachShot(page, testInfo, "390-touch-targets");
+    for (const name of controls) {
+      const box = boxes[name];
+      expect(box, `${name} control present`).not.toBeNull();
+      expect(box!.width, `${name} width`).toBeGreaterThanOrEqual(TOUCH_TARGET);
+      expect(box!.height, `${name} height`).toBeGreaterThanOrEqual(TOUCH_TARGET);
+    }
+    expect(jumpBox!.width, "jump width").toBeGreaterThanOrEqual(TOUCH_TARGET);
+    expect(jumpBox!.height, "jump height").toBeGreaterThanOrEqual(TOUCH_TARGET);
+    // The button sits above the dock's top edge, clear of the composer.
+    expect(dockBox!.y - (jumpBox!.y + jumpBox!.height), "gap above composer").toBeGreaterThanOrEqual(JUMP_GAP_MIN);
+  } finally {
+    await context.close();
+  }
+});
+
 test("desktop 1280x800 15-line draft keeps the composer bounded", async ({ browser }, testInfo) => {
   const { context, page } = await openDesktopContext(browser, testInfo);
   try {
@@ -223,6 +257,9 @@ test("desktop 1280x800 15-line draft keeps the composer bounded", async ({ brows
       visibleHeight: metrics.visibleHeight,
     });
     await attachShot(page, testInfo, "1280-15-line-draft");
+    const sendBox = await page.getByTestId("task-chat-composer-send").boundingBox();
+    expect(sendBox!.width, "desktop send width unchanged").toBeLessThan(TOUCH_TARGET);
+    expect(sendBox!.height, "desktop send height unchanged").toBeLessThan(TOUCH_TARGET);
     expect(metrics.editor!.height / DESKTOP.height).toBeLessThanOrEqual(THRESHOLDS.editorMaxShare);
     expect(metrics.dock!.height / DESKTOP.height).toBeLessThanOrEqual(THRESHOLDS.dockMaxShareKeyboardClosed);
   } finally {

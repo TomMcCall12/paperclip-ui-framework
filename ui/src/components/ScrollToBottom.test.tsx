@@ -64,6 +64,8 @@ describe("ScrollToBottom mobile composer docking", () => {
     );
     expect(initialButton).not.toBeNull();
     expect(initialButton?.classList).toContain("absolute");
+    expect(initialButton?.classList).toContain("max-md:h-(--tc-touch-target)");
+    expect(initialButton?.classList).toContain("max-md:w-(--tc-touch-target)");
     expect(host.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull();
 
     await act(async () => {

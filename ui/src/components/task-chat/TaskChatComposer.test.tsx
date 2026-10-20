@@ -290,6 +290,23 @@ function autocompleteOption(matchText: string) {
 }
 
 describe("TaskChatComposer", () => {
+  it("grows the action row controls to the phone touch target", async () => {
+    render(
+      <TaskChatComposer
+        onAdd={vi.fn()}
+        workMode="standard"
+        draftKey="touch-target"
+        onAttachImage={vi.fn()}
+        onWorkModeChange={vi.fn()}
+      />,
+    );
+    for (const id of ["send", "attach", "mode"]) {
+      const el = container.querySelector<HTMLElement>(`[data-testid="task-chat-composer-${id}"]`);
+      expect(el, id).not.toBeNull();
+      expect(el!.className, id).toContain("max-md:h-(--tc-touch-target)");
+    }
+  });
+
   it("settles an acknowledged submission after navigating away", async () => {
     const key = "navigate-before-save";
     let resolveSend!: () => void;

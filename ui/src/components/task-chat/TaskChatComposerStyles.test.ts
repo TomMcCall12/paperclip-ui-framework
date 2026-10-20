@@ -38,4 +38,8 @@ describe("task-chat composer styles", () => {
     expect(shadow).toContain("color-mix(in oklab, var(--primary) 16%, transparent)");
     expect(shadow).not.toContain("hsl(var(");
   });
+
+  it("defines a 44px phone touch target token for the chat controls", () => {
+    expect(customPropertyValue("--tc-touch-target")).toBe("var(--sz-44px)");
+  });
 });
