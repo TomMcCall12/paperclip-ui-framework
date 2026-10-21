@@ -58,12 +58,23 @@ LAN_IP=""
 
 check_round() {
   FAILURE=""
-  LAN_IP="$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1]; exit }')"
+  local out="" rc=0
+  out="$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    FAILURE="the ip tool is broken or missing ('ip -4 addr show' exited $rc), so the address of $IFACE cannot be checked"
+    return 1
+  fi
+  LAN_IP="$(awk '{ split($4, a, "/"); print a[1]; exit }' <<<"$out")"
   if [[ -z "$LAN_IP" ]]; then
     FAILURE="$IFACE has no IPv4 address (no DHCP lease?)"
     return 1
   fi
-  if [[ -z "$(ip -4 route show default dev "$IFACE" 2>/dev/null)" ]]; then
+  out="$(ip -4 route show default dev "$IFACE" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    FAILURE="the ip tool is broken or missing ('ip -4 route show' exited $rc), so the default route of $IFACE cannot be checked"
+    return 1
+  fi
+  if [[ -z "$out" ]]; then
     FAILURE="$IFACE has address $LAN_IP but no default route"
     return 1
   fi

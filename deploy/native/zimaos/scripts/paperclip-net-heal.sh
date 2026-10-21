@@ -30,6 +30,11 @@
 #     its lock, and at most once per PAPERCLIP_NET_HEAL_REBOOT_MIN_INTERVAL
 #     seconds (default 21600, across reboots).
 #
+# Fails closed: if `ip` is missing, or either probe exits non-zero, the script
+# cannot tell whether the port has an address. It then takes no action,
+# leaves the outage state as it was, and exits 1 so the unit's OnFailure=
+# alert fires. A broken tool must never look like "no address".
+#
 # A port that has an address is never touched. Every action and every
 # outage end is appended to <root>/logs/network-heal.log, which agents can
 # read without journal access. The outage state is per boot (it records the
@@ -44,7 +49,7 @@
 # PAPERCLIP_NET_HEAL_REBOOT_MIN_INTERVAL (21600). Test hooks:
 # PAPERCLIP_SYS_CLASS_NET (/sys/class/net), PAPERCLIP_BOOT_ID_FILE,
 # PAPERCLIP_UPTIME_FILE, PAPERCLIP_NOW, PAPERCLIP_NET_HEAL_BOUNCE_DELAY (3),
-# PAPERCLIP_FLOCK_CMD (flock).
+# PAPERCLIP_FLOCK_CMD (flock), PAPERCLIP_IP_CMD (ip).
 #
 # Usage: paperclip-net-heal.sh [--dry-run]
 set -euo pipefail
@@ -71,6 +76,7 @@ HEAL_LOG="$LOG_DIR/network-heal.log"
 LOCK_FILE="$LOG_DIR/.paperclip-update.lock"
 STEPS=3
 FLOCK="${PAPERCLIP_FLOCK_CMD:-flock}"
+IPCMD="${PAPERCLIP_IP_CMD:-ip}"
 
 for v in GRACE STEP_INTERVAL REBOOT_AFTER REBOOT_MIN_INTERVAL BOUNCE_DELAY; do
   [[ "${!v}" =~ ^[0-9]+$ ]] || { log "ERROR: $v must be a whole number of seconds (got: ${!v})"; exit 2; }
@@ -97,12 +103,34 @@ record() {
     || log "WARNING: could not append to $HEAL_LOG"
 }
 
+if ! command -v "$IPCMD" >/dev/null 2>&1; then
+  record "ERROR: $IPCMD is not installed; cannot tell whether $IFACE has an address. Taking no action."
+  exit 1
+fi
+
+# probe <description> <ip args...>: sets PROBE_OUT to ip's output. Exits 1
+# with no action when ip itself fails: that is "cannot tell", not "no address".
+PROBE_OUT=""
+probe() {
+  local what="$1" rc=0
+  shift
+  PROBE_OUT="$("$IPCMD" "$@" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    record "ERROR: '$IPCMD $*' exited $rc; cannot tell whether $IFACE has $what. Taking no action and leaving the outage state unchanged."
+    exit 1
+  fi
+}
+
+# has_ipv4 / has_default_route: true or false. They run in this shell, so
+# probe's exit 1 ends the script even inside an `if`.
 has_ipv4() {
-  [[ -n "$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null)" ]]
+  probe "an IPv4 address" -4 -o addr show dev "$IFACE" scope global
+  [[ -n "$PROBE_OUT" ]]
 }
 
 has_default_route() {
-  [[ -n "$(ip -4 route show default dev "$IFACE" 2>/dev/null)" ]]
+  probe "a default route" -4 route show default dev "$IFACE"
+  [[ -n "$PROBE_OUT" ]]
 }
 
 # carrier: prints 1, 0, or unknown (an interface that is administratively

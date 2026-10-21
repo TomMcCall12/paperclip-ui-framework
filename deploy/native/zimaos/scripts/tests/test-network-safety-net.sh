@@ -44,10 +44,16 @@ export STUB_DIR="$WORKDIR/stub"
 mkdir -p "$BIN" "$STUB_DIR"
 cat >"$BIN/ip" <<'EOF'
 #!/usr/bin/env bash
+# ip-rc (optional): make the address and route queries fail with that exit code.
+ip_fails() {
+  if [[ -s "$STUB_DIR/ip-rc" ]]; then echo "RTNETLINK answers: stub failure" >&2; exit "$(cat "$STUB_DIR/ip-rc")"; fi
+}
 case "$*" in
   "-4 -o addr show dev eth0 scope global")
+    ip_fails
     [[ "$(cat "$STUB_DIR/addr")" == "yes" ]] && echo "2: eth0    inet 192.168.0.163/24 brd 192.168.0.255 scope global dynamic noprefixroute eth0" ;;
   "-4 route show default dev eth0")
+    ip_fails
     [[ "$(cat "$STUB_DIR/route")" == "yes" ]] && echo "default via 192.168.0.1 proto dhcp src 192.168.0.163 metric 100" ;;
   *) echo "ip $*" >>"$STUB_DIR/calls.log" ;;
 esac
@@ -159,7 +165,7 @@ heal() {
     bash -c 'stubbed "$0"' "$SCRIPTS_DIR/paperclip-net-heal.sh" 2>&1)"
   HEAL_RC=$?
   set -e
-  [[ "$HEAL_RC" -eq 0 ]] || fail "A: net-heal exited $HEAL_RC at t=$t: $HEAL_OUT"
+  [[ "$HEAL_RC" -eq "${HEAL_WANT_RC:-0}" ]] || fail "A: net-heal exited $HEAL_RC (wanted ${HEAL_WANT_RC:-0}) at t=$t: $HEAL_OUT"
 }
 set_net() { echo "$1" >"$STUB_DIR/addr"; echo "$2" >"$STUB_DIR/route"; echo "$3" >"$WORKDIR/sys/eth0/carrier"; }
 calls() { cat "$STUB_DIR/calls.log" 2>/dev/null || true; }
@@ -303,6 +309,49 @@ set_net yes yes 1
 heal 32200
 echo "PASS: A14 without flock the reboot step fails closed (treated as an update running)"
 
+# A15/A16: a missing or failing ip is "cannot tell", not "no address": no
+# action at all, state unchanged, non-zero exit (so OnFailure= alerts). Carrier
+# is 1 and the outage is long past the grace period plus 3 step intervals.
+rm -f "$ROOT/logs/.paperclip-net-heal.state" "$ROOT/logs/.paperclip-net-heal.last-reboot"
+set_net no no 1
+reset_calls
+heal 40000
+heal 40300
+heal 40600
+heal 40900
+state_before="$(cat "$ROOT/logs/.paperclip-net-heal.state")"
+reset_calls
+no_action() {
+  local label="$1"
+  [[ "$(calls)" != *nmcli* ]] || fail "$label: ran nmcli: $(calls)"
+  [[ "$(calls)" != *"ip link"* ]] || fail "$label: ran ip link: $(calls)"
+  [[ "$(calls)" != *systemctl* ]] || fail "$label: restarted NetworkManager or rebooted: $(calls)"
+  [[ -z "$(calls)" ]] || fail "$label: acted: $(calls)"
+  [[ "$(cat "$ROOT/logs/.paperclip-net-heal.state")" == "$state_before" ]] || fail "$label: outage state changed"
+}
+# A15: ip is not installed.
+for t in 41200 41500 41800 42100; do
+  HEAL_WANT_RC=1 heal "$t" PAPERCLIP_IP_CMD=ip-not-installed
+  grep -q 'ip-not-installed is not installed' <<<"$HEAL_OUT" || fail "A15: no reason on stderr: $HEAL_OUT"
+done
+no_action A15
+echo "PASS: A15 without ip: exit 1, no nmcli/ip link/NetworkManager restart, state unchanged"
+# A16: ip exists but exits 1.
+echo 1 >"$STUB_DIR/ip-rc"
+for t in 42400 42700 43000 43300; do
+  HEAL_WANT_RC=1 heal "$t"
+  grep -q "exited 1; cannot tell" <<<"$HEAL_OUT" || fail "A16: no reason in the output: $HEAL_OUT"
+done
+no_action A16
+grep -q "cannot tell whether eth0 has" "$ROOT/logs/network-heal.log" || fail "A16: the failure was not written to the heal log"
+rm -f "$STUB_DIR/ip-rc"
+# the same link with a working ip still heals (the fix did not turn healing off)
+heal 43600
+grep -qx 'nmcli --wait 60 device connect eth0' <<<"$(calls)" || fail "A16: healing did not resume once ip worked: $(calls)"
+set_net yes yes 1
+heal 43700
+echo "PASS: A16 ip exits 1: exit 1, no action, state unchanged, healing resumes once ip works"
+
 # --- B. paperclip-netwatch.sh ------------------------------------------------
 # watch [VAR=value...]: one netwatch run; sets WATCH_RC and WATCH_OUT.
 # shellcheck disable=SC2016 # the inner bash expands "$0", not this one
@@ -327,6 +376,14 @@ for case_ in "no no up up up:no IPv4 address" "yes no up up up:no default route"
   [[ "$WATCH_RC" -eq 1 ]] || fail "B2: expected exit 1 for '${case_#*:}', got $WATCH_RC: $WATCH_OUT"
   grep -q "${case_#*:}" <<<"$WATCH_OUT" || fail "B2: the failure did not say '${case_#*:}': $WATCH_OUT"
 done
+# A broken ip tool alerts as "tool broken", not as "no IPv4 address".
+set_path yes yes up up up
+echo 1 >"$STUB_DIR/ip-rc"
+watch
+rm -f "$STUB_DIR/ip-rc"
+[[ "$WATCH_RC" -eq 1 ]] || fail "B2: a failing ip did not alert (exit $WATCH_RC): $WATCH_OUT"
+grep -q 'ip tool is broken or missing' <<<"$WATCH_OUT" || fail "B2: a failing ip was not reported as a broken tool: $WATCH_OUT"
+grep -q 'has no IPv4 address' <<<"$WATCH_OUT" && fail "B2: a failing ip was reported as no address: $WATCH_OUT"
 grep -q 'network check failed twice' "$ROOT/logs/network-watch.log" || fail "B2: failures were not written to network-watch.log"
 echo "PASS: B2 no address / no route / no LAN health / no DNS / no internet each fail with a clear reason"
 set_path yes yes up blip up
