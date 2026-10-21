@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
+import { getStallSentinelHealthDetails } from "../services/stall-sentinel/health-state.js";
 
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
 const testServerInfo = {
@@ -76,7 +77,7 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
+    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo, stallSentinel: expect.objectContaining({ mode: expect.any(String), lastSweepOk: expect.any(Boolean) }) });
   }, 15_000);
 
   it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
@@ -90,6 +91,7 @@ describe("GET /health", () => {
       serverVersion,
       commit: testServerInfo.git.fullSha,
       serverInfo: testServerInfo,
+      stallSentinel: getStallSentinelHealthDetails(),
     };
     expect(res.text).toBe(JSON.stringify(baseline));
     expect(Object.prototype.hasOwnProperty.call(res.body, "cloud")).toBe(false);
@@ -180,6 +182,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(503);
     expect(res.body).toEqual({
       status: "unhealthy",
+      stallSentinel: expect.objectContaining({ mode: expect.any(String), lastSweepOk: expect.any(Boolean) }),
       version: serverVersion,
       serverVersion,
       commit: testServerInfo.git.fullSha,
@@ -357,6 +360,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       status: "ok",
+      stallSentinel: expect.objectContaining({ mode: expect.any(String), lastSweepOk: expect.any(Boolean) }),
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       localAiLoginSupported: false,
@@ -415,6 +419,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       status: "ok",
+      stallSentinel: expect.objectContaining({ mode: expect.any(String), lastSweepOk: expect.any(Boolean) }),
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       localAiLoginSupported: false,
@@ -454,6 +459,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       status: "ok",
+      stallSentinel: expect.objectContaining({ mode: expect.any(String), lastSweepOk: expect.any(Boolean) }),
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       localAiLoginSupported: false,
