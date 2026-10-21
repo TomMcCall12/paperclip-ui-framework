@@ -222,9 +222,15 @@ require_memory_available_mb() {
 # its flags onto them); see deploy/native/zimaos/README.md for why each
 # value is what it is.
 #
-# BUILD_SCOPE_MODE: auto | systemd | setsid. auto picks systemd when this
-# runs as root on a systemd host with systemd-run, else setsid.
+# BUILD_SCOPE_MODE: auto | systemd | setsid. auto and systemd need a
+# transient systemd scope (the only hard memory ceiling) and die if one
+# cannot be created: a build with no ceiling is not started. setsid (process
+# group only, no ceiling) is a test-only mode: it is refused unless
+# BUILD_ALLOW_SETSID_FOR_TESTS=1, which production never sets.
 : "${BUILD_SCOPE_MODE:=auto}"
+: "${BUILD_ALLOW_SETSID_FOR_TESTS:=0}"
+# Where the cgroup v2 tree is mounted (overridden only by offline tests).
+: "${BUILD_CGROUP_ROOT:=/sys/fs/cgroup}"
 # Transient unit name (without .scope); callers set paperclip-build-<sha>.
 : "${BUILD_SCOPE_UNIT:=paperclip-build-$$}"
 # Hard ceiling (MemoryMax) and swap allowance (MemorySwapMax) of the scope.
@@ -236,6 +242,8 @@ require_memory_available_mb() {
 : "${BUILD_NICE:=10}"
 # SIGTERM-to-SIGKILL grace when the guard trips or the update aborts.
 : "${BUILD_KILL_GRACE_SECONDS:=10}"
+# How long to wait for the kernel to empty a scope after SIGKILL.
+: "${BUILD_KILL_WAIT_SECONDS:=10}"
 
 # Runtime state of the one build run_memory_guarded() is supervising, read
 # by build_guard_stop() (also called from paperclip-update.sh's exit trap).
@@ -243,6 +251,19 @@ BUILD_GUARD_MODE=""
 BUILD_GUARD_LEADER=""
 BUILD_GUARD_CGROUP=""
 BUILD_GUARD_PEAK_BYTES=0
+
+# top_memory_users <n>
+# Prints the <n> processes with the largest resident memory as
+# "name (MBMB), ..." for the pre-flight refusal message. Never fails.
+top_memory_users() {
+  local n="$1" out=""
+  ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -n "$n" | {
+    while read -r rss comm; do
+      out+="${out:+, }${comm} ($((rss / 1024))MB)"
+    done
+    printf '%s' "$out"
+  } || true
+}
 
 # require_build_preflight <what> <reserve-mb> <min-ceiling-mb> <max-swap-used-pct>
 # Refuses to start <what> on a host that is already under memory pressure,
@@ -278,7 +299,9 @@ require_build_preflight() {
   fi
   avail="$(mem_available_mb)"
   if [[ "$avail" -lt $((reserve_mb + min_ceiling_mb)) ]]; then
-    die "Refusing to start ($what): only ${avail}MB available, need >= $((reserve_mb + min_ceiling_mb))MB (${reserve_mb}MB kept for the host + ${min_ceiling_mb}MB minimum for the build). Free memory first (for example stop the hermes-browser container for the build), then retry (BUILD_EXIT=90-class failure)."
+    local need=$((reserve_mb + min_ceiling_mb)) top
+    top="$(top_memory_users 3)"
+    die "Refusing to start ($what): only ${avail}MB available, need >= ${need}MB (${reserve_mb}MB kept for the host + ${min_ceiling_mb}MB minimum for the build), so ${need}MB - ${avail}MB = $((need - avail))MB must be freed first. Largest memory users right now: ${top:-unknown}. The usual fix: stop the hermes-browser container for the build (sudo docker stop hermes-browser; start it again afterwards), then retry (BUILD_EXIT=90-class failure)."
   fi
   headroom=$((avail - reserve_mb))
   if [[ "$headroom" -lt "$BUILD_MEMORY_MAX_MB" ]]; then
@@ -294,33 +317,48 @@ require_build_preflight() {
 # transient scopes are not allowed) is caught before the build, not as an
 # unexplained instant build failure.
 build_scope_probe() {
-  systemd-run --scope --quiet --collect --unit="paperclip-build-probe-$$" \
+  systemd-run --scope --quiet --collect --expand-environment=no --unit="paperclip-build-probe-$$" \
     -p "MemoryMax=${BUILD_MEMORY_MAX_MB}M" -p "MemorySwapMax=${BUILD_SWAP_MAX_MB}M" \
     -p "CPUWeight=$BUILD_CPU_WEIGHT" -p "IOWeight=$BUILD_IO_WEIGHT" --nice="$BUILD_NICE" \
     -- true >/dev/null 2>&1
 }
 
+# build_scope_host_ok
+# True when this host can create a transient scope at all: root, a running
+# systemd, and systemd-run. (A function so offline tests can stand in.)
+build_scope_host_ok() {
+  [[ "${EUID:-$(id -u)}" -eq 0 && -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1
+}
+
 # build_scope_mode
-# Resolves BUILD_SCOPE_MODE=auto to systemd or setsid (run_memory_guarded
-# caches the answer in BUILD_GUARD_MODE).
+# Resolves BUILD_SCOPE_MODE to systemd or setsid (run_memory_guarded caches
+# the answer in BUILD_GUARD_MODE). Dies instead of silently dropping the
+# MemoryMax ceiling: the 21 Oct failure was a build with no ceiling.
 build_scope_mode() {
   if [[ -n "$BUILD_GUARD_MODE" ]]; then
     printf '%s\n' "$BUILD_GUARD_MODE"
     return 0
   fi
   case "$BUILD_SCOPE_MODE" in
-    systemd|setsid) printf '%s\n' "$BUILD_SCOPE_MODE" ;;
+    systemd) printf '%s\n' systemd ;;
+    setsid)
+      [[ "$BUILD_ALLOW_SETSID_FOR_TESTS" == "1" ]] \
+        || die "BUILD_SCOPE_MODE=setsid runs the build with no memory ceiling and is test-only (set BUILD_ALLOW_SETSID_FOR_TESTS=1 in a test); refusing to build."
+      printf '%s\n' setsid
+      ;;
     auto)
-      # A --dry-run plans the real run, which is root; so it ignores EUID.
-      if [[ ("${EUID:-$(id -u)}" -eq 0 || "$DRY_RUN" == "1") && -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1; then
-        if [[ "$DRY_RUN" == "1" ]] || build_scope_probe; then
-          echo systemd
-        else
-          log "WARNING: systemd-run cannot create a transient scope with the build's limits on this host; falling back to a setsid process group (no MemoryMax ceiling)."
-          echo setsid
-        fi
-      else
+      # A --dry-run plans the real run, which is root on systemd; so it
+      # ignores EUID and the probe.
+      if [[ "$DRY_RUN" == "1" ]]; then
+        echo systemd
+      elif [[ "$BUILD_ALLOW_SETSID_FOR_TESTS" == "1" ]]; then
         echo setsid
+      elif ! build_scope_host_ok; then
+        die "Cannot build: no transient systemd scope is available here (needs root, a running systemd and systemd-run), so the build would run with no MemoryMax ceiling. Refusing to build (BUILD_EXIT=90-class failure)."
+      elif build_scope_probe; then
+        echo systemd
+      else
+        die "Cannot build: systemd-run could not create a transient scope with the build's limits (MemoryMax=${BUILD_MEMORY_MAX_MB}M MemorySwapMax=${BUILD_SWAP_MAX_MB}M CPUWeight, IOWeight, nice). A build with no hard memory ceiling is not started (BUILD_EXIT=90-class failure). Run: systemd-run --scope -p MemoryMax=64M -- true"
       fi
       ;;
     *) die "BUILD_SCOPE_MODE must be auto, systemd or setsid (got: $BUILD_SCOPE_MODE)" ;;
@@ -341,88 +379,199 @@ process_group_members() {
   return 0
 }
 
-# build_guard_cgroup_procs
-# Prints the PIDs still in the build scope's cgroup (nothing once the scope
-# is gone -- systemd removes the cgroup when its last process exits).
-build_guard_cgroup_procs() {
-  [[ -n "$BUILD_GUARD_CGROUP" && -r "/sys/fs/cgroup$BUILD_GUARD_CGROUP/cgroup.procs" ]] || return 0
-  cat "/sys/fs/cgroup$BUILD_GUARD_CGROUP/cgroup.procs" 2>/dev/null || true
+# scope_unit_state <unit.scope>
+# Prints the unit's ActiveState; returns 1 if systemd cannot be asked.
+scope_unit_state() {
+  systemctl show -p ActiveState --value "$1" 2>/dev/null
+}
+
+# scope_unit_procs <unit.scope>
+# Prints the PIDs in the scope's cgroup, found by asking systemd for the
+# scope's own ControlGroup (never by following the systemd-run client's
+# PID). Prints nothing and returns 0 only when the scope is verifiably
+# empty or gone. Returns 1 (fail closed, with an ERROR logged) when that
+# cannot be verified: systemd cannot be asked, the scope is running but
+# reports no cgroup, or its cgroup.procs cannot be read.
+scope_unit_procs() {
+  local unit="$1" state cg procs
+  state="$(scope_unit_state "$unit")" || { log "ERROR: cannot query the state of $unit; cannot verify it is empty."; return 1; }
+  cg="$(systemctl show -p ControlGroup --value "$unit" 2>/dev/null)" || { log "ERROR: cannot query the cgroup of $unit; cannot verify it is empty."; return 1; }
+  if [[ -z "$cg" ]]; then
+    case "$state" in
+      active|activating|deactivating|reloading)
+        log "ERROR: $unit is $state but systemd reports no ControlGroup for it; cannot verify it is empty."
+        return 1
+        ;;
+    esac
+    return 0
+  fi
+  [[ -d "$BUILD_CGROUP_ROOT$cg" ]] || return 0
+  procs="$(cat "$BUILD_CGROUP_ROOT$cg/cgroup.procs" 2>/dev/null)" || {
+    log "ERROR: cannot read $BUILD_CGROUP_ROOT$cg/cgroup.procs of $unit; cannot verify it is empty."
+    return 1
+  }
+  printf '%s\n' "$procs"
+}
+
+# stop_scope_unit <unit.scope> [grace-seconds]
+# Stops every process in a transient scope: SIGTERM to the whole scope, up to
+# <grace> seconds for it to empty, SIGKILL, `systemctl stop`, then confirms
+# that cgroup.procs is empty and the unit is no longer active. Returns 0 only
+# when that is verified; 1 otherwise (including "could not read the cgroup").
+stop_scope_unit() {
+  local unit="$1" grace="${2:-$BUILD_KILL_GRACE_SECONDS}" i procs state
+  systemctl kill --signal=SIGTERM --kill-whom=all "$unit" >/dev/null 2>&1 || true
+  for ((i = 0; i < grace * 4; i++)); do
+    procs="$(scope_unit_procs "$unit" 2>/dev/null)" && [[ -z "$procs" ]] && break
+    sleep 0.25
+  done
+  if ! procs="$(scope_unit_procs "$unit" 2>/dev/null)" || [[ -n "$procs" ]]; then
+    systemctl kill --signal=SIGKILL --kill-whom=all "$unit" >/dev/null 2>&1 || true
+    for ((i = 0; i < BUILD_KILL_WAIT_SECONDS * 4; i++)); do
+      procs="$(scope_unit_procs "$unit" 2>/dev/null)" && [[ -z "$procs" ]] && break
+      sleep 0.25
+    done
+  fi
+  systemctl stop "$unit" >/dev/null 2>&1 || true
+  procs="$(scope_unit_procs "$unit")" || return 1
+  if [[ -n "$procs" ]]; then
+    log "ERROR: $unit still has processes after SIGKILL and stop: ${procs//$'\n'/ }"
+    return 1
+  fi
+  state="$(scope_unit_state "$unit")" || { log "ERROR: cannot query the state of $unit after stopping it."; return 1; }
+  case "$state" in
+    active|activating|deactivating|reloading)
+      log "ERROR: $unit is still $state after systemctl stop."
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# stop_orphaned_build_scopes
+# Stops every paperclip-build-*.scope still on the host. A build scope
+# outlives its updater when the updater is SIGKILLed (no trap runs), so
+# callers that hold the update lock -- which proves no updater is running --
+# use this to reap it: paperclip-update.sh before it starts a build, and
+# paperclip-recover.sh (its own copy) before it restarts the server.
+# Returns 1 if the scopes cannot be listed or one cannot be stopped. The
+# optional argument narrows the glob (the host tests use it so they never
+# touch a real build scope).
+stop_orphaned_build_scopes() {
+  local pattern="${1:-paperclip-build-*.scope}" out a b unit rc=0
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "[dry-run] would stop any leftover paperclip-build-*.scope from an updater that was killed (the update lock proves none is running)"
+    return 0
+  fi
+  out="$(systemctl list-units --all --plain --no-legend --no-pager --type=scope "$pattern" 2>/dev/null)" \
+    || { log "ERROR: could not list $pattern units."; return 1; }
+  while read -r a b _; do
+    case "$a" in
+      "●"|"○"|"×"|"*") unit="$b" ;;
+      *) unit="$a" ;;
+    esac
+    # shellcheck disable=SC2053 # $pattern is a glob on purpose
+    [[ "$unit" == $pattern ]] || continue
+    log "Found a leftover build scope $unit (its updater was killed); stopping it."
+    if stop_scope_unit "$unit"; then
+      log "Stopped $unit; no process is left in it."
+    else
+      log "ERROR: could not stop $unit."
+      rc=1
+    fi
+  done <<<"$out"
+  return "$rc"
 }
 
 # build_guard_survivors
 # Every process the supervised build still has: its process group, plus
-# (systemd mode) its cgroup, which also catches a process that left the
-# group with its own setsid.
+# (systemd mode) every process in the scope's own cgroup, which also catches
+# a process that left the group with its own setsid. Returns 1 if the
+# scope's cgroup could not be verified (see scope_unit_procs).
 build_guard_survivors() {
   [[ -n "$BUILD_GUARD_LEADER" ]] || return 0
-  { process_group_members "$BUILD_GUARD_LEADER"; build_guard_cgroup_procs; } | sort -u
+  local cgp="" rc=0
+  if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
+    cgp="$(scope_unit_procs "$BUILD_SCOPE_UNIT.scope")" || rc=1
+  fi
+  { process_group_members "$BUILD_GUARD_LEADER"; printf '%s\n' "$cgp"; } | sed '/^$/d' | sort -u
+  return "$rc"
 }
 
 # build_guard_signal <signal>
-# Sends <signal> to the whole build: the process group, every PID in the
-# scope's cgroup, and (systemd mode) the scope itself via systemctl kill.
+# Sends <signal> to the whole build: the process group and (systemd mode)
+# the scope itself via systemctl kill, which signals every process in it.
 build_guard_signal() {
-  local sig="$1" pid
+  local sig="$1"
   kill "-$sig" -- "-$BUILD_GUARD_LEADER" 2>/dev/null || true
   kill "-$sig" "$BUILD_GUARD_LEADER" 2>/dev/null || true
-  for pid in $(build_guard_cgroup_procs); do
-    kill "-$sig" "$pid" 2>/dev/null || true
-  done
   if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
-    systemctl kill --signal="SIG$sig" "$BUILD_SCOPE_UNIT.scope" >/dev/null 2>&1 || true
+    systemctl kill --signal="SIG$sig" --kill-whom=all "$BUILD_SCOPE_UNIT.scope" >/dev/null 2>&1 || true
   fi
 }
 
 # build_guard_stop
 # Stops every process of the supervised build: SIGTERM, up to
 # BUILD_KILL_GRACE_SECONDS for it to exit, SIGKILL, then confirms that no
-# process is left in its process group or cgroup. Returns 0 when the build
-# is fully gone (or there was none), 1 if anything survived SIGKILL.
+# process is left in its process group or in the scope's cgroup (asked of
+# systemd, not guessed from the systemd-run client's PID). Fails closed:
+# returns 1 if anything survived SIGKILL or if the scope could not be
+# verified empty. Returns 0 when the build is fully gone (or there was none).
 # Idempotent; safe to call from an exit trap.
 build_guard_stop() {
   local i survivors
   [[ -n "$BUILD_GUARD_LEADER" ]] || return 0
-  survivors="$(build_guard_survivors)"
+  survivors="$(build_guard_survivors)" || survivors="unverified"
   if [[ -n "$survivors" ]]; then
-    log "Stopping the build ($BUILD_GUARD_MODE mode, process group $BUILD_GUARD_LEADER${BUILD_GUARD_CGROUP:+, cgroup $BUILD_GUARD_CGROUP}): SIGTERM, then SIGKILL after ${BUILD_KILL_GRACE_SECONDS}s"
+    log "Stopping the build ($BUILD_GUARD_MODE mode, process group $BUILD_GUARD_LEADER$([[ "$BUILD_GUARD_MODE" == "systemd" ]] && echo ", scope $BUILD_SCOPE_UNIT.scope")): SIGTERM, then SIGKILL after ${BUILD_KILL_GRACE_SECONDS}s"
     build_guard_signal TERM
     for ((i = 0; i < BUILD_KILL_GRACE_SECONDS * 4; i++)); do
-      [[ -z "$(build_guard_survivors)" ]] && break
+      [[ -z "$(process_group_members "$BUILD_GUARD_LEADER")" ]] && break
       sleep 0.25
     done
-    if [[ -n "$(build_guard_survivors)" ]]; then
-      build_guard_signal KILL
-      for ((i = 0; i < 40; i++)); do
-        [[ -z "$(build_guard_survivors)" ]] && break
-        sleep 0.25
-      done
+    build_guard_signal KILL
+    for ((i = 0; i < BUILD_KILL_WAIT_SECONDS * 4; i++)); do
+      [[ -z "$(process_group_members "$BUILD_GUARD_LEADER")" ]] && break
+      sleep 0.25
+    done
+    if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
+      stop_scope_unit "$BUILD_SCOPE_UNIT.scope" "$BUILD_KILL_GRACE_SECONDS" || true
     fi
   fi
-  if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
-    systemctl stop "$BUILD_SCOPE_UNIT.scope" >/dev/null 2>&1 || true
-  fi
   wait "$BUILD_GUARD_LEADER" 2>/dev/null || true
-  survivors="$(build_guard_survivors)"
+  if ! survivors="$(build_guard_survivors)"; then
+    log "ERROR: could not verify that the build scope $BUILD_SCOPE_UNIT.scope is empty; treating the build as still running."
+    return 1
+  fi
   if [[ -n "$survivors" ]]; then
     log "ERROR: build processes survived SIGKILL: ${survivors//$'\n'/ }"
     return 1
   fi
-  log "Confirmed: no build process left (process group $BUILD_GUARD_LEADER is empty${BUILD_GUARD_CGROUP:+, cgroup.procs is empty})"
+  if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
+    case "$(scope_unit_state "$BUILD_SCOPE_UNIT.scope")" in
+      active|activating|deactivating|reloading)
+        log "ERROR: $BUILD_SCOPE_UNIT.scope is still active although its cgroup is empty."
+        return 1
+        ;;
+    esac
+  fi
+  log "Confirmed: no build process left (process group $BUILD_GUARD_LEADER is empty$([[ "$BUILD_GUARD_MODE" == "systemd" ]] && echo ", scope $BUILD_SCOPE_UNIT.scope cgroup.procs is empty or gone"))"
   BUILD_GUARD_LEADER=""
   return 0
 }
 
 # build_guard_sample_cgroup
-# systemd mode only: records the scope's cgroup path and its memory.peak.
+# systemd mode only: records the scope's cgroup path (asked of systemd) and
+# its memory.peak.
 build_guard_sample_cgroup() {
-  local line peak
+  local cg peak
   [[ "$BUILD_GUARD_MODE" == "systemd" ]] || return 0
-  if [[ -z "$BUILD_GUARD_CGROUP" && -r "/proc/$BUILD_GUARD_LEADER/cgroup" ]]; then
-    line="$(grep -m1 '^0::' "/proc/$BUILD_GUARD_LEADER/cgroup" 2>/dev/null || true)"
-    [[ "${line#0::}" == *"/$BUILD_SCOPE_UNIT.scope" ]] && BUILD_GUARD_CGROUP="${line#0::}"
+  if [[ -z "$BUILD_GUARD_CGROUP" ]]; then
+    cg="$(systemctl show -p ControlGroup --value "$BUILD_SCOPE_UNIT.scope" 2>/dev/null || true)"
+    [[ -n "$cg" ]] && BUILD_GUARD_CGROUP="$cg"
   fi
-  if [[ -n "$BUILD_GUARD_CGROUP" && -r "/sys/fs/cgroup$BUILD_GUARD_CGROUP/memory.peak" ]]; then
-    peak="$(cat "/sys/fs/cgroup$BUILD_GUARD_CGROUP/memory.peak" 2>/dev/null || echo 0)"
+  if [[ -n "$BUILD_GUARD_CGROUP" && -r "$BUILD_CGROUP_ROOT$BUILD_GUARD_CGROUP/memory.peak" ]]; then
+    peak="$(cat "$BUILD_CGROUP_ROOT$BUILD_GUARD_CGROUP/memory.peak" 2>/dev/null || echo 0)"
     [[ "$peak" =~ ^[0-9]+$ && "$peak" -gt "$BUILD_GUARD_PEAK_BYTES" ]] && BUILD_GUARD_PEAK_BYTES="$peak"
   fi
   return 0
@@ -444,7 +593,10 @@ build_guard_launch_argv() {
   local mode="$1"
   shift
   if [[ "$mode" == "systemd" ]]; then
-    BUILD_GUARD_ARGV=(systemd-run --scope --quiet --collect --unit="$BUILD_SCOPE_UNIT"
+    # --expand-environment=no: systemd-run would otherwise expand ${...} in
+    # the argv, emptying ${cg##*/} in the wrapper (and rewriting any literal
+    # ${...} in a build argument).
+    BUILD_GUARD_ARGV=(systemd-run --scope --quiet --collect --expand-environment=no --unit="$BUILD_SCOPE_UNIT"
       -p "MemoryMax=${BUILD_MEMORY_MAX_MB}M" -p "MemorySwapMax=${BUILD_SWAP_MAX_MB}M"
       -p "CPUWeight=$BUILD_CPU_WEIGHT" -p "IOWeight=$BUILD_IO_WEIGHT" --nice="$BUILD_NICE"
       -- setsid bash -c "$BUILD_SCOPE_WRAPPER" paperclip-build "$@")
@@ -477,7 +629,8 @@ run_memory_guarded() {
   shift
   if [[ "$DRY_RUN" == "1" ]]; then
     local planned_mode
-    planned_mode="$(build_scope_mode)"
+    # die inside $(...) only ends the substitution, so pass its failure on.
+    planned_mode="$(build_scope_mode)" || exit 1
     build_guard_launch_argv "$planned_mode" "$@"
     print_dry_run_command "$desc (contained: $planned_mode mode, scope $BUILD_SCOPE_UNIT.scope MemoryMax=${BUILD_MEMORY_MAX_MB}M MemorySwapMax=${BUILD_SWAP_MAX_MB}M; abort if host MemAvailable < ${min_mb}MB, checked every ${poll_seconds}s; on abort SIGTERM then SIGKILL the whole scope/process group and confirm it is empty)" "${BUILD_GUARD_ARGV[@]}"
     return 0
@@ -485,19 +638,22 @@ run_memory_guarded() {
   if declare -F "$1" >/dev/null 2>&1; then
     die "run_memory_guarded(): '$1' is a shell function; pass an external command (see drop_priv_argv) so the build runs in its own scope and process group."
   fi
-  BUILD_GUARD_MODE="$(build_scope_mode)"
+  BUILD_GUARD_MODE="$(build_scope_mode)" || exit 1
+  [[ "$BUILD_GUARD_MODE" == "systemd" || "$BUILD_GUARD_MODE" == "setsid" ]] \
+    || die "run_memory_guarded(): no build containment mode resolved; refusing to build."
   build_guard_launch_argv "$BUILD_GUARD_MODE" "$@"
   BUILD_GUARD_CGROUP=""
   BUILD_GUARD_PEAK_BYTES=0
   if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
     # A scope left over from an earlier aborted attempt still holds its
-    # processes (and its unit name); stop it before reusing the name.
-    systemctl stop "$BUILD_SCOPE_UNIT.scope" >/dev/null 2>&1 || true
+    # processes (and its unit name); stop it before reusing the name, and
+    # refuse to build if it cannot be stopped.
+    stop_scope_unit "$BUILD_SCOPE_UNIT.scope" 2 || die "$desc: a leftover scope $BUILD_SCOPE_UNIT.scope could not be stopped; not starting a second build next to it."
   fi
   if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
     log "$desc (contained: scope $BUILD_SCOPE_UNIT.scope, MemoryMax=${BUILD_MEMORY_MAX_MB}M, MemorySwapMax=${BUILD_SWAP_MAX_MB}M, CPUWeight=$BUILD_CPU_WEIGHT, IOWeight=$BUILD_IO_WEIGHT, nice $BUILD_NICE, own process group; abort if MemAvailable < ${min_mb}MB)"
   else
-    log "$desc (contained: own process group only, nice $BUILD_NICE, no MemoryMax ceiling; abort if MemAvailable < ${min_mb}MB)"
+    log "$desc (TEST ONLY, contained: own process group only, nice $BUILD_NICE, no MemoryMax ceiling; abort if MemAvailable < ${min_mb}MB)"
   fi
   # 9>&-: never hand paperclip-update.sh's lock descriptor to the build.
   "${BUILD_GUARD_ARGV[@]}" 9>&- &
@@ -521,7 +677,7 @@ run_memory_guarded() {
   if [[ -n "$(build_guard_survivors)" ]]; then
     log "The build's main process exited but left processes behind; stopping them."
   fi
-  build_guard_stop || true
+  build_guard_stop || die "$desc: could not confirm that every build process is gone (see above), so the update does not go on. Investigate before retrying."
   if [[ "$BUILD_GUARD_MODE" == "systemd" && "$BUILD_GUARD_PEAK_BYTES" -gt 0 ]]; then
     log "Build scope $BUILD_SCOPE_UNIT.scope memory.peak (sampled every ${poll_seconds}s; the exact value is the [build-scope] line above): $((BUILD_GUARD_PEAK_BYTES / 1048576))MB of ${BUILD_MEMORY_MAX_MB}MB MemoryMax"
   fi

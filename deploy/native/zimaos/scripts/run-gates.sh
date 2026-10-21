@@ -17,8 +17,13 @@ section() { printf '\n=== %s ===\n' "$1"; }
 run_gate() {
   local desc="$1"
   shift
-  if "$@"; then
+  local rc=0
+  "$@" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
     printf 'PASS: %s\n' "$desc"
+  elif [[ "$rc" -eq 77 && "${PAPERCLIP_REQUIRE_HOST_TESTS:-0}" != "1" ]]; then
+    # Exit 77 = needs root and systemd (see test-build-scope-systemd.sh).
+    printf 'SKIP: %s (needs root and systemd; run it as root on the host)\n' "$desc"
   else
     printf 'FAIL: %s\n' "$desc"
     status=1
@@ -89,6 +94,12 @@ run_gate "test-pnpm-store-dir-pin-no-global-refusal.sh" bash "$SCRIPT_DIR/tests/
 
 section "memory guard stops the whole build tree offline test (TOM-686)"
 run_gate "test-memory-guard-kills-tree.sh" bash "$SCRIPT_DIR/tests/test-memory-guard-kills-tree.sh"
+
+section "build scope fails closed: unverifiable scope, cleanup failure, no ceiling, orphaned scopes (mocked systemd, TOM-686)"
+run_gate "test-build-scope-fail-closed.sh" bash "$SCRIPT_DIR/tests/test-build-scope-fail-closed.sh"
+
+section "real systemd build scope: guard trip and SIGKILLed-updater orphan sweep (root only, TOM-686)"
+run_gate "test-build-scope-systemd.sh" bash "$SCRIPT_DIR/tests/test-build-scope-systemd.sh"
 
 section "build pre-flight refuses on high swap / low memory offline test (TOM-686)"
 run_gate "test-build-preflight-swap.sh" bash "$SCRIPT_DIR/tests/test-build-preflight-swap.sh"

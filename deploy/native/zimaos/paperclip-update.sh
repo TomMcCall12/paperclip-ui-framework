@@ -100,6 +100,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# The no-ceiling build mode is for offline tests only; a real update never runs with it.
+if [[ "$DRY_RUN" != "1" && ( "${BUILD_ALLOW_SETSID_FOR_TESTS:-0}" == "1" || "${BUILD_SCOPE_MODE:-auto}" == "setsid" ) ]]; then
+  die "BUILD_ALLOW_SETSID_FOR_TESTS / BUILD_SCOPE_MODE=setsid (a build with no memory ceiling) are test-only and must not be set for a real update."
+fi
 [[ -n "$COMMIT" ]] || die "Give --commit <sha>"
 [[ "$COMMIT" =~ ^[0-9a-f]{7,40}$ ]] || die "--commit must be a hex git sha (got: $COMMIT)"
 [[ -n "$REPO_SRC" ]] || die "Give --repo-src <local-path>"
@@ -199,6 +203,12 @@ UPDATE_HEALTH_DELAY="$HEALTH_CHECK_DELAY"
 arm_update_exit_trap
 log "Updating to $COMMIT (currently $prev_commit)"
 
+# An updater killed with SIGKILL runs no trap and leaves its build scope
+# running. Holding the lock proves no updater is alive, so any
+# paperclip-build-*.scope on the host is an orphan: stop it before building.
+log "== Leftover build scopes (from an updater that was killed) =="
+stop_orphaned_build_scopes "paperclip-build-*.scope" || die "A leftover build scope could not be stopped (see above); not starting a new build next to it."
+
 log "== Host safety net: recovery scripts, units and drop-ins (idempotent) =="
 install_safety_net "$ZIMAOS_DIR" "$ROOT" "$MOUNT_PATH" "$RECOVERY_BASE"
 
@@ -241,8 +251,15 @@ drop_priv_argv "$PAPERCLIP_USER" -- env "${BUILD_ENV[@]}" \
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$REPO_SRC" \
   "$NATIVE_DIR/scripts/build-release.sh" --commit "$COMMIT" --dest "$RELEASES_DIR/$COMMIT" --repo-src "$REPO_SRC" \
   --workspace-concurrency "$BUILD_CONCURRENCY" "${BUILD_EXCLUDE_ARGS[@]}"
+# A failed build, a tripped guard, or a cleanup that could not confirm the
+# build is gone all stop the update here, before `current` is switched.
+build_rc=0
 run_memory_guarded "Build release $COMMIT as $PAPERCLIP_USER" "$MIN_BUILD_MEMORY_MB" "$BUILD_MEMORY_POLL_SECONDS" -- \
-  "${DROP_PRIV_ARGV[@]}"
+  "${DROP_PRIV_ARGV[@]}" || build_rc=$?
+if [[ "$build_rc" -ne 0 ]]; then
+  log "ERROR: the build of $COMMIT did not complete cleanly (exit $build_rc); not switching current."
+  exit "$build_rc"
+fi
 
 log "== Switch current and restart =="
 UPDATE_PHASE="switched"

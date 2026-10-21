@@ -12,10 +12,12 @@ OnFailure=paperclip-native-alert@%n.service
 Type=oneshot
 # Runs as root: restarting paperclip-native.service needs it. The script
 # lives in the recovery path outside every release (see README.md), so it
-# works whichever release is current, including after a rollback.
+# works whichever release is current, including after a rollback. The path
+# is quoted because install renders it to <root>/recovery, and a root such as
+# "/DATA/.media/External SSD/..." has a space in it.
 EnvironmentFile=/DATA/.media/External SSD/paperclip-native/env/paperclip-native.env
 Environment="PAPERCLIP_NATIVE_ROOT=/DATA/.media/External SSD/paperclip-native"
-ExecStart=/usr/local/lib/paperclip/scripts/paperclip-recover.sh
+ExecStart="/usr/local/lib/paperclip/scripts/paperclip-recover.sh"
 TimeoutStartSec=5min
 StandardOutput=journal
 StandardError=journal

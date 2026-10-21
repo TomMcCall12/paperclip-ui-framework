@@ -74,7 +74,7 @@ mem_available_mb() {
   if [[ -e "$WORKDIR/level3.ready" ]]; then echo 1; else echo 999999; fi
 }
 
-export BUILD_SCOPE_MODE=setsid
+export BUILD_SCOPE_MODE=setsid BUILD_ALLOW_SETSID_FOR_TESTS=1
 export BUILD_KILL_GRACE_SECONDS=2
 # Output goes to a file, not a $(...) capture: a leaked build process would
 # hold a capture pipe open and hang this test instead of failing it.

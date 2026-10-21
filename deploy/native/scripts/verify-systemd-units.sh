@@ -117,7 +117,13 @@ for unit_path in "${unit_files[@]}" "${dropin_files[@]}"; do
       ExecStart=*|ExecStartPre=*|ExecStartPost=*|ExecStop=*)
         raw="${line#Exec*=}"
         raw="$(printf '%s' "$raw" | sed -E 's/^[-+!]*//')"
-        bin="${raw%% *}"
+        if [[ "$raw" == \"* ]]; then
+          # Quoted program path (may contain spaces): up to the closing quote.
+          bin="${raw#\"}"
+          bin="${bin%%\"*}"
+        else
+          bin="${raw%% *}"
+        fi
         stub_path_in_fakeroot "$bin"
         ;;
       EnvironmentFile=*)

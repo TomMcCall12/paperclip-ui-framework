@@ -67,7 +67,13 @@ preflight "$(fake_meminfo lowmem 9000 5247 0)"
 [[ "$PF_RC" -ne 0 ]] || fail "9000MB available (< 4096 + 6144) was not refused. Output: $PF_OUT"
 printf '%s\n' "$PF_OUT" | grep -q "only 9000MB available, need >= 10240MB" \
   || fail "the low-memory refusal does not give the numbers. Output: $PF_OUT"
-echo "PASS: MemAvailable below reserve + minimum build ceiling -> refused with the numbers"
+printf '%s\n' "$PF_OUT" | grep -q "10240MB - 9000MB = 1240MB must be freed" \
+  || fail "the low-memory refusal does not say how much to free. Output: $PF_OUT"
+printf '%s\n' "$PF_OUT" | grep -q "Largest memory users right now:" \
+  || fail "the low-memory refusal does not list the largest memory users. Output: $PF_OUT"
+printf '%s\n' "$PF_OUT" | grep -q "stop the hermes-browser container" \
+  || fail "the low-memory refusal does not say what to stop. Output: $PF_OUT"
+echo "PASS: MemAvailable below reserve + minimum build ceiling -> refused with the numbers, the shortfall, and what to stop"
 
 # 4. Healthy host with less than ceiling + reserve -> ceiling clamped so
 #    MemAvailable stays >= 4096MB.

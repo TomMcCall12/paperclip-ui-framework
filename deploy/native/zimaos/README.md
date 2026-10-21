@@ -213,15 +213,28 @@ writing files for 41 more minutes. The pieces below, all in
    build outgrows `MemoryMax`, the kernel OOM-kills a process **inside the
    scope**; the build fails and the rest of the host is not touched. Every
    build process also gets `oom_score_adj` 1000, so if the kernel ever has
-   to kill something host-wide, the build goes first. If `systemd-run`
-   cannot create such a scope (checked with a throwaway probe scope first),
-   it falls back to the process group alone, with a warning.
+   to kill something host-wide, the build goes first. **No ceiling, no
+   build:** if `systemd-run` cannot create such a scope (checked with a
+   throwaway probe scope first), the update refuses to build. The
+   process-group-only mode (`BUILD_SCOPE_MODE=setsid`) exists for offline
+   tests and is refused unless `BUILD_ALLOW_SETSID_FOR_TESTS=1`, which
+   nothing in production sets. `systemd-run` gets `--expand-environment=no`,
+   so `${...}` in the build's arguments is never rewritten.
 3. **Mid-build guard** (`BUILD_EXIT=91`-class): `MemAvailable` is polled
    every `--build-memory-poll-seconds`; below `--min-build-memory-mb`
    (something else on the host is growing) the guard stops the build:
    SIGTERM to the whole scope and process group, SIGKILL after 10 seconds,
    then it **confirms the cgroup and the process group are empty** before
-   it reports the abort. The same stop runs from the update's exit trap.
+   it reports the abort. The scope is found by asking systemd for the
+   scope's own `ControlGroup` (not by following the `systemd-run` client's
+   PID), and the check fails closed: a scope that cannot be queried, whose
+   `cgroup.procs` cannot be read, or that still holds a process or is still
+   active after SIGKILL and `systemctl stop`, is a failure -- also when the
+   build itself exited 0. The same stop runs from the update's exit trap.
+   If the updater is killed with SIGKILL no trap runs and the scope keeps
+   going; the next `paperclip-update.sh` (under the update lock) and
+   `paperclip-recover.sh` (under the same lock) stop any leftover
+   `paperclip-build-*.scope` before they build or restart.
 4. **Capped parallelism**: `pnpm -r --workspace-concurrency=<n>`
    (`build-release.sh --workspace-concurrency`), and per-process caps:
    `NODE_OPTIONS=--max-old-space-size` for Node (pnpm, vite) and
@@ -248,8 +261,11 @@ CPUWeight 20, IOWeight 20 and nice 10 are fixed (`BUILD_CPU_WEIGHT`,
 `BUILD_IO_WEIGHT`, `BUILD_NICE` in `lib/common.sh`): the live server and
 agent runs always win CPU and disk contention against a build.
 
-**If the pre-flight refuses**, the message gives the numbers. Usually the
-long-running server has grown or filled swap: restart
+**If the pre-flight refuses**, the message gives the numbers: what is
+available, what is needed, how many MB to free, and the three largest memory
+users right now. The usual fix is `sudo docker stop hermes-browser` for the
+build (start it again afterwards). If the long-running server has grown or
+filled swap instead: restart
 `paperclip-native.service` in a quiet window (or stop the `hermes-browser`
 container for the build), then run the update again. Lower
 `--host-memory-reserve-mb` only with a reason. `install-native-zimaos.sh`
@@ -269,13 +285,17 @@ drop-ins too).
   `50-recover.conf`; the existing Telegram alert still fires next to it).
   It does nothing while `paperclip-update.sh` holds its lock. Otherwise it
   probes `/api/health` again after 30 seconds -- two consecutive failed
-  probes -- and only then restarts `paperclip-native.service` and waits for
-  health. At most one restart per 15 minutes
+  probes -- then takes the same lock and keeps it to the end of the run, so
+  an update cannot start between its last health check and the restart. Under
+  the lock it probes once more, stops any build scope an updater left
+  behind, and only then restarts `paperclip-native.service` and waits for
+  health. Its unit quotes the script path, because the install root may
+  contain a space (`/DATA/.media/External SSD/...`). At most one restart per 15 minutes
   (`<root>/logs/.paperclip-recover.last-restart`); a rate-limited or failed
   recovery exits non-zero, so its own `OnFailure=` alert tells a person.
 - **`paperclip-native-oom-guard.service`** (root), pulled in by
   `paperclip-native.service` (drop-in `50-oom-guard.conf`, `Wants=`) and
-  stopped with it (`PartOf=`). Every 5 seconds it sets `oom_score_adj` to
+  stopped with it (`PartOf=`). Every 0.2 seconds it sets `oom_score_adj` to
   -500 on the server's main process and its embedded Postgres, and raises
   every other process in the unit that is below 0 back to 0.
 - **No hardware watchdog** (`RuntimeWatchdogSec` stays off): Jarvis decided
@@ -290,7 +310,7 @@ and a child inherits its parent's `oom_score_adj` at fork. So:
 | Process | `oom_score_adj` |
 |---|---|
 | Server main process, embedded Postgres | -500 (same as dockerd) |
-| An agent run (or git, or any other child of the server) | -500 for at most 5 seconds after it starts, then 0 |
+| An agent run (or git, or any other child of the server) | -500 for at most about 0.2 seconds after it starts (one guard pass, before it can allocate anything), then 0 |
 | Anything an agent run starts after that | 0 (inherited from the agent) |
 | Release build (inside its scope) | 1000 |
 | For comparison on this board (21 Oct): `sshd` -1000, `containerd` -999, `dockerd` -500, `systemd-journald` -250, `tailscaled` 0, `NetworkManager` 0 | |
@@ -406,6 +426,9 @@ bash deploy/native/zimaos/scripts/tests/test-port-no-ambient-override.sh
 bash deploy/native/zimaos/scripts/tests/test-drop-priv-helper-fallback.sh
 bash deploy/native/zimaos/scripts/tests/test-recovery-base-fallback.sh
 bash deploy/native/zimaos/scripts/tests/test-memory-guard-kills-tree.sh
+bash deploy/native/zimaos/scripts/tests/test-build-scope-fail-closed.sh
+# Needs root and systemd (exit 77 = skipped otherwise); proves the real scope:
+sudo bash deploy/native/zimaos/scripts/tests/test-build-scope-systemd.sh
 bash deploy/native/zimaos/scripts/tests/test-build-preflight-swap.sh
 bash deploy/native/zimaos/scripts/tests/test-update-exit-trap.sh
 bash deploy/native/zimaos/scripts/tests/test-host-safety-net.sh

@@ -11,7 +11,7 @@ RequiresMountsFor="/DATA/.media/External SSD"
 [Service]
 Type=simple
 # Root: lowering another process's oom_score_adj needs CAP_SYS_RESOURCE.
-ExecStart=/usr/local/lib/paperclip/scripts/paperclip-oom-guard.sh
+ExecStart="/usr/local/lib/paperclip/scripts/paperclip-oom-guard.sh"
 Restart=always
 RestartSec=10
 NoNewPrivileges=true
