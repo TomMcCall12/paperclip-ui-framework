@@ -1196,6 +1196,7 @@ export async function createApp(
       logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
     },
   });
+  app.locals.sendBoardTelegramNotice = (companyId: string, text: string) => chatChannels.sendBoardTelegramNotice(companyId, text);
   const stopTaskNotifications = startTaskNotifications(db, {
     isEnabled: async () => (await instanceSettingsService(db).getExperimental()).enableTaskNotifications === true,
     send: (companyId, text) => chatChannels.sendBoardTelegramNotice(companyId, text),
