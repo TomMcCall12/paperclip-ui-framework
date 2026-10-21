@@ -116,6 +116,17 @@ describeDb("stall sentinel against a real database", () => {
     expect(wakes[0]!.n).toBe(0);
   });
 
+  it("never queues the same sentinel wake twice", async () => {
+    const { companyId, engineerId, childId } = await seed();
+    const heartbeat = recordingHeartbeat();
+    const actions = createStallSentinelActions({ db, heartbeat: heartbeat.port, send: null });
+    const key = `stall-sentinel:L:${childId}:1`;
+    await db.insert(agentWakeupRequests).values({ companyId, agentId: engineerId, source: "automation", triggerDetail: "system", reason: "stall_sentinel_requeue", idempotencyKey: key, payload: { issueId: childId } });
+    expect(await actions.wake(engineerId, { issueId: childId, reason: "stall_sentinel_requeue", idempotencyKey: key })).toEqual({ queued: false });
+    expect(await actions.wake(engineerId, { issueId: childId, reason: "stall_sentinel_requeue", idempotencyKey: `${key}x` })).toEqual({ queued: true });
+    expect(heartbeat.wakes).toHaveLength(1);
+  });
+
   it("loads a real tree; system comments do not count as progress and agent comments do", async () => {
     const { companyId, rootId, childId, engineerId } = await seed();
     const actions = createStallSentinelActions({ db, heartbeat: null, send: null });

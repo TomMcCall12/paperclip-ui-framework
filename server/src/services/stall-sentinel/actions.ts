@@ -1,4 +1,6 @@
+import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { agentWakeupRequests } from "@paperclipai/db";
 import { logActivity } from "../activity-log.js";
 import { issueService } from "../issues.js";
 import { STALL_SENTINEL_ACTOR_ID } from "./config.js";
@@ -71,6 +73,19 @@ export function createStallSentinelActions(input: {
   return {
     async wake(agentId, opts) {
       if (!input.heartbeat) return { queued: false };
+      // heartbeat.wakeup stores the idempotency key but does not deduplicate on it.
+      const existing = await input.db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+            ne(agentWakeupRequests.status, "skipped"),
+          ),
+        )
+        .limit(1);
+      if (existing.length > 0) return { queued: false };
       const result = await input.heartbeat.wakeup(agentId, {
         source: "automation",
         triggerDetail: "system",
