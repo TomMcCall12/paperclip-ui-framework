@@ -1,0 +1,9 @@
+[Unit]
+Description=Check the network path to and from Paperclip every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

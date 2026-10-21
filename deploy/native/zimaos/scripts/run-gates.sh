@@ -110,10 +110,18 @@ run_gate "test-update-exit-trap.sh" bash "$SCRIPT_DIR/tests/test-update-exit-tra
 section "recover unit, OOM guard and safety-net install offline test (TOM-686)"
 run_gate "test-host-safety-net.sh" bash "$SCRIPT_DIR/tests/test-host-safety-net.sh"
 
-section "recovery-path scripts --dry-run (TOM-686)"
+section "network self-heal, network-path check, quiet-hours restart and their install offline test (TOM-690)"
+run_gate "test-network-safety-net.sh" bash "$SCRIPT_DIR/tests/test-network-safety-net.sh"
+
+section "recovery-path scripts --dry-run (TOM-686, TOM-690)"
 run_gate "paperclip-recover.sh --dry-run" bash -c \
   "PAPERCLIP_NATIVE_ROOT=/nonexistent '$SCRIPT_DIR/paperclip-recover.sh' --dry-run >/dev/null 2>&1"
 run_gate "paperclip-oom-guard.sh --dry-run" bash -c "'$SCRIPT_DIR/paperclip-oom-guard.sh' --dry-run >/dev/null 2>&1"
+run_gate "paperclip-net-heal.sh --dry-run" bash -c \
+  "PAPERCLIP_NATIVE_ROOT=/nonexistent '$SCRIPT_DIR/paperclip-net-heal.sh' --dry-run >/dev/null 2>&1"
+run_gate "paperclip-netwatch.sh --dry-run" bash -c "'$SCRIPT_DIR/paperclip-netwatch.sh' --dry-run >/dev/null 2>&1"
+run_gate "paperclip-quiet-restart.sh --dry-run" bash -c \
+  "PAPERCLIP_NATIVE_ROOT=/nonexistent '$SCRIPT_DIR/paperclip-quiet-restart.sh' --dry-run >/dev/null 2>&1"
 
 section "install-native-zimaos.sh --dry-run"
 run_gate "install-native-zimaos.sh --dry-run" bash -c \

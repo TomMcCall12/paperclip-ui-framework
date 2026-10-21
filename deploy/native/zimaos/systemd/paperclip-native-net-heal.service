@@ -1,0 +1,22 @@
+[Unit]
+Description=Reconnect the wired port if it has a cable link but no address for 5 minutes (triggered by paperclip-native-net-heal.timer)
+RequiresMountsFor="/DATA/.media/External SSD"
+# No Before=, no early-boot target, no casaos-/zimaos- dependency (see
+# paperclip-native.service for the 5 Oct ordering-cycle outage this avoids).
+# Not After=network-online.target on purpose: this unit exists for the case
+# where the network never comes online.
+OnFailure=paperclip-native-alert@%n.service
+
+[Service]
+Type=oneshot
+# Root: nmcli device connect/disconnect, ip link and restarting
+# NetworkManager need it. The script lives in the recovery path outside
+# every release (see README.md), quoted because the root may contain a space.
+EnvironmentFile=/DATA/.media/External SSD/paperclip-native/env/paperclip-native.env
+Environment="PAPERCLIP_NATIVE_ROOT=/DATA/.media/External SSD/paperclip-native"
+ExecStart="/usr/local/lib/paperclip/scripts/paperclip-net-heal.sh"
+TimeoutStartSec=5min
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-net-heal

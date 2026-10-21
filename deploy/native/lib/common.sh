@@ -794,12 +794,30 @@ arm_update_exit_trap() {
 # on every update (and install-native-zimaos.sh on a first install). All of
 # them point only at the recovery path and systemctl, never into a release,
 # so they keep working after a rollback to a release that predates them.
-SAFETY_NET_SCRIPTS=(paperclip-recover.sh paperclip-oom-guard.sh)
+SAFETY_NET_SCRIPTS=(
+  paperclip-recover.sh paperclip-oom-guard.sh
+  paperclip-net-heal.sh paperclip-netwatch.sh paperclip-quiet-restart.sh
+)
 SAFETY_NET_UNITS=(
   paperclip-native-recover.service
   paperclip-native-oom-guard.service
   paperclip-native.service.d/50-oom-guard.conf
   paperclip-native-watchdog.service.d/50-recover.conf
+  paperclip-native-net-heal.service
+  paperclip-native-net-heal.timer
+  paperclip-native-netwatch.service
+  paperclip-native-netwatch.timer
+  paperclip-native-quiet-restart.service
+  paperclip-native-quiet-restart.timer
+)
+# Timers from the list above (TOM-690: network self-heal, network-path
+# check, quiet-hours restart). install_safety_net enables and starts each
+# one only when it installs the timer file for the first time, so a timer
+# a person has disabled stays disabled across later updates.
+SAFETY_NET_TIMERS=(
+  paperclip-native-net-heal.timer
+  paperclip-native-netwatch.timer
+  paperclip-native-quiet-restart.timer
 )
 # The checked-in units use these documented defaults as literal paths (so
 # systemd-analyze can verify them as-is); install renders them per host.
@@ -831,17 +849,18 @@ install_if_changed() {
 
 # install_safety_net <zimaos-dir> <root> <mount-path> <recovery-base>
 # Idempotent: copies each recovery script and rendered unit/drop-in only if
-# it changed, runs `systemctl daemon-reload` only if a unit changed, then
-# starts the OOM guard (a no-op if it already runs). Never restarts
-# paperclip-native.service. PAPERCLIP_SYSTEMD_DIR overrides
+# it changed, runs `systemctl daemon-reload` only if a unit changed,
+# enables and starts each SAFETY_NET_TIMERS timer installed for the first
+# time, then starts the OOM guard (a no-op if it already runs). Never
+# restarts paperclip-native.service. PAPERCLIP_SYSTEMD_DIR overrides
 # /etc/systemd/system for the offline tests.
 install_safety_net() {
   local zimaos_dir="$1" root="$2" mount="$3" recovery="$4"
-  local systemd_dir="${PAPERCLIP_SYSTEMD_DIR:-/etc/systemd/system}" f staged changed_units=0 changed=()
+  local systemd_dir="${PAPERCLIP_SYSTEMD_DIR:-/etc/systemd/system}" f staged changed_units=0 changed=() new_timers=()
   if [[ "$DRY_RUN" == "1" ]]; then
     log "[dry-run] would install (only if changed) into $recovery/scripts: ${SAFETY_NET_SCRIPTS[*]}"
     log "[dry-run] would install (only if changed) into $systemd_dir, rendered for root=$root mount=$mount recovery=$recovery: ${SAFETY_NET_UNITS[*]}"
-    log "[dry-run] would run systemctl daemon-reload only if a unit changed, then: systemctl start paperclip-native-oom-guard.service (never restarts paperclip-native.service)"
+    log "[dry-run] would run systemctl daemon-reload only if a unit changed, then: systemctl enable --now for each of ${SAFETY_NET_TIMERS[*]} installed for the first time; systemctl start paperclip-native-oom-guard.service (never restarts paperclip-native.service)"
     return 0
   fi
   staged="$(mktemp -d "$root/logs/.safety-net.XXXXXX")"
@@ -853,6 +872,9 @@ install_safety_net() {
   for f in "${SAFETY_NET_UNITS[@]}"; do
     mkdir -p "$staged/$(dirname "$f")"
     render_unit_file "$zimaos_dir/systemd/$f" "$staged/$f" "$root" "$mount" "$recovery"
+    if [[ "$f" == *.timer && ! -e "$systemd_dir/$f" ]]; then
+      new_timers+=("$f")
+    fi
     if install_if_changed 644 "$staged/$f" "$systemd_dir/$f"; then
       changed+=("$systemd_dir/$f")
       changed_units=1
@@ -867,6 +889,13 @@ install_safety_net() {
   if [[ "$changed_units" == "1" ]]; then
     systemctl daemon-reload
   fi
+  for f in "${new_timers[@]}"; do
+    if systemctl enable --now "$f"; then
+      log "Enabled and started $f (first install)."
+    else
+      log "WARNING: could not enable $f; its check does not run until it is enabled."
+    fi
+  done
   systemctl start paperclip-native-oom-guard.service || log "WARNING: could not start paperclip-native-oom-guard.service; the server is unprotected from the OOM killer until it starts."
 }
 

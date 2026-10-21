@@ -328,7 +328,8 @@ else
   for f in paperclip-watchdog.sh telegram-alert.sh; do
     install -m 755 "$NATIVE_DIR/scripts/$f" "$RECOVERY_BASE/scripts/$f"
   done
-  # The TOM-686 safety net: root recovery unit and OOM guard (see README.md).
+  # The TOM-686 safety net (root recovery unit, OOM guard) and the TOM-690
+  # network self-heal, network-path check and quiet-hours restart (README.md).
   for f in "${SAFETY_NET_SCRIPTS[@]}"; do
     install -m 755 "$ZIMAOS_DIR/scripts/$f" "$RECOVERY_BASE/scripts/$f"
   done
@@ -386,6 +387,7 @@ UNITS_TO_ENABLE=(
   paperclip-native-backup.timer
   paperclip-native-watchdog.timer
   paperclip-native-vault-sync.timer
+  "${SAFETY_NET_TIMERS[@]}"
 )
 run "Enable units" -- systemctl enable "${UNITS_TO_ENABLE[@]}"
 
