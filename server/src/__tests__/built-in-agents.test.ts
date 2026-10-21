@@ -169,13 +169,19 @@ describeEmbeddedPostgres("built-in agents", () => {
 
   it("validates the static registry and rejects invalid definitions", () => {
     const definitions = listBuiltInAgentDefinitions();
-    expect(definitions.map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach", "skill-curator", "summarizer"]);
+    expect(definitions.map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "line-namer", "reflection-coach", "skill-curator", "summarizer"]);
     const summarizer = definitions.find((definition) => definition.key === "summarizer");
     expect(summarizer).toMatchObject({
       defaultAdapterType: "claude_local",
       defaultAdapterConfig: { model: "claude-haiku-4-5" },
     });
     expect(summarizer?.defaultRuntimeConfig).toBeUndefined();
+    const lineNamer = definitions.find((definition) => definition.key === "line-namer");
+    expect(lineNamer).toMatchObject({
+      allowedAdapterTypes: ["codex_local"],
+      defaultAdapterType: "codex_local",
+      defaultAdapterConfig: { model: "gpt-5.4-mini", modelReasoningEffort: "low" },
+    });
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",

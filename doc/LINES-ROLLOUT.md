@@ -1,6 +1,6 @@
 # Lines server rollout and historical adoption
 
-This code groups only roots that a caller explicitly ensures. It does not group old work during migration and does not start a Line from a title, root creation, or blueprint save. Deployment, production migration, Summarizer setup, and the first real GPT naming proof are separate governed steps.
+This code groups only roots that a caller explicitly ensures. It does not group old work during migration and does not start a Line from a title, root creation, or blueprint save. Deployment, production migration, and the first real GPT naming proof are separate governed steps. Naming itself needs no manual setup: see below.
 
 ## Jarvis: activate the assembly-line instructions after release
 
@@ -8,7 +8,7 @@ Update the installed `assembly-line` skill only after the Line API is live. In D
 
 Use the same ensure call on the fast path before creating its one implementation child. Every subsequent planning, revision, recovery, and delegated task should use normal parentage; the issue service assigns `lineId`. Do not send `lineId` in issue mutation payloads. Do not create a nested Line inside a grouped root. Keep normal approval, budget, pause, checkout, and dependency procedures.
 
-The built-in Summarizer must be company-configured and runnable with Codex/OpenAI. A hidden naming task uses `codex_local`, `gpt-5.4-mini`, and low effort. A missing Summarizer or provider authorization leaves a temporary `Line <root identifier>` label and an actionable `lastNamingErrorCode`; it does not stop grouping. Before approving initial deployment, run one real GPT naming task in the governed preview or release check and confirm `namingStatus=ready`, `namingModel=gpt-5.4-mini`, and its run provenance. Provider stubs in unit tests do not satisfy this gate.
+Naming is self-provisioning. The first Line in a company that needs a name makes the server create a restricted built-in `line-namer` agent itself — `codex_local`, `gpt-5.4-mini`, low effort, no tools, credentials, or workspace access, and no ability to act on the untrusted root issue text it summarizes. This does not depend on the `experimental.enableBuiltInAgents` switch or any board action; there is no manual Summarizer setup step. It never falls back to an existing, more powerful agent (Jarvis, the Software Engineer, etc.) — if provisioning fails (for example the model is not yet in the adapter's catalog), the Line keeps its temporary `Line <root identifier>` label and an actionable `lastNamingErrorCode` (`summarizer_not_configured`); it does not stop grouping, and `reconcile()` retries once the agent becomes ready. Before approving initial deployment, run one real GPT naming task in the governed preview or release check and confirm `namingStatus=ready`, `namingModel=gpt-5.4-mini`, and its run provenance. Provider stubs in unit tests do not satisfy this gate.
 
 ## Historical adoption: dry run, approval, apply
 
