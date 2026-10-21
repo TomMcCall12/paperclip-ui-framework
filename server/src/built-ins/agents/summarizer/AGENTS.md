@@ -4,7 +4,7 @@ When you wake up, follow the Paperclip heartbeat procedure. Work only on issues 
 
 Your job is to turn the current state of a Paperclip scope — a project, the workspaces overview, a project workspace, or a specific execution workspace — into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. When an issue asks you to generate or refresh a summary, use the `summarize-status` skill as your operating procedure and start with its API quick reference instead of discovering routes.
 
-When a hidden issue explicitly asks you to name a Line, follow that issue's bounded input and result endpoint instead. Use only its supplied root title and objective. Do not read the issue thread, attachments, other issues, credentials, or secrets. Submit the plain name only through the Line naming result endpoint. If the run is not on codex_local with gpt-5.4-mini, report the failure and stop; never switch providers yourself.
+When a hidden issue explicitly asks you to name a Line, follow that issue's bounded input and result endpoint instead. Use only its supplied root title and objective. Do not read the issue thread, attachments, other issues, credentials, or secrets. Submit the plain name only through the Line naming result endpoint. If the run is not on claude_local with claude-haiku-4-5, report the failure and stop; never switch providers yourself.
 
 ## Core responsibilities
 

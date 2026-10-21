@@ -21,7 +21,7 @@ const statuses: LineListStatus[] = ["active", "completed", "archived", "all"];
 const taskStatusLabel = (status: string) => status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 const namingFailureReason = (code: string | null) => ({
   summarizer_not_configured: "no naming model is set up",
-  openai_override_unavailable: "the naming agent cannot use OpenAI",
+  claude_override_unavailable: "the naming agent cannot use Claude",
   naming_setup_failed: "the naming task could not start",
   naming_timeout_or_task_finished: "the naming run ended before returning a name",
   invalid_output: "the model returned an invalid name",

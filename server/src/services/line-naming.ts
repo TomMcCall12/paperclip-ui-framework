@@ -9,7 +9,7 @@ import { lineService, lockLineTree, type LineActor } from "./lines.js";
 import { logActivity } from "./activity-log.js";
 import { lineNamingPrompt, sanitizeLineName } from "./line-naming-prompt.js";
 
-const MODEL = "gpt-5.4-mini";
+const MODEL = "claude-haiku-4-5";
 const MAX_AUTOMATIC_ATTEMPTS = 3;
 const TIMEOUT_MS = 15 * 60_000;
 
@@ -21,9 +21,9 @@ function attribution(actor: LineActor) {
   return { actorType: actor.type, actorId: actor.agentId ?? actor.userId ?? "line_naming", agentId: actor.agentId ?? null, runId: actor.runId ?? null } as const;
 }
 
-// Restricted built-in agent that names Lines: codex_local, gpt-5.4-mini, low
-// effort, no tools/credentials/workspace access. It self-provisions on first
-// use so naming never depends on the enableBuiltInAgents switch or a board
+// Restricted built-in agent that names Lines: claude_local, claude-haiku-4-5,
+// no tools/credentials/workspace access. It self-provisions on first use so
+// naming never depends on the enableBuiltInAgents switch or a board
 // action — see TOM-707.
 const LINE_NAMER_KEY = "line-namer";
 
@@ -76,9 +76,9 @@ export function lineNamingService(db: Db) {
     }
     const [namer] = await db.select({ adapterType: agents.adapterType }).from(agents)
       .where(and(eq(agents.companyId, companyId), eq(agents.id, builtIn.agentId)));
-    if (!namer || namer.adapterType !== "codex_local") {
-      await markFailure(companyId, lineId, current.namingVersion, "openai_override_unavailable", actor, manual);
-      return { queued: false, namingIssueId: null, failureCode: "openai_override_unavailable" };
+    if (!namer || namer.adapterType !== "claude_local") {
+      await markFailure(companyId, lineId, current.namingVersion, "claude_override_unavailable", actor, manual);
+      return { queued: false, namingIssueId: null, failureCode: "claude_override_unavailable" };
     }
     const result = await db.transaction(async (tx) => {
       await lockLineTree(tx, companyId);
@@ -104,7 +104,7 @@ export function lineNamingService(db: Db) {
         originKind: "line_naming", originId: lineId,
         status: "todo", priority: "low", hiddenAt: new Date(),
         assigneeAgentId: builtIn.agentId,
-        assigneeAdapterOverrides: { adapterType: "codex_local", adapterConfig: { model: MODEL, modelReasoningEffort: "low" } },
+        assigneeAdapterOverrides: { adapterType: "claude_local", adapterConfig: { model: MODEL } },
         createdByAgentId: actor.agentId ?? null, createdByUserId: actor.userId ?? null,
         actorRunId: actor.runId ?? null,
       }, tx);
@@ -152,9 +152,9 @@ export function lineNamingService(db: Db) {
       const resolvedAdapter = dispatch.lineNamingResolvedAdapterType;
       if (!task || task.originKind !== "line_naming" || task.originId !== lineId || task.assigneeAgentId !== agentId || !run || run.status !== "running" || run.finishedAt || dispatch.issueId !== task.id || !run.startedAt ||
           (task.checkoutRunId !== run.id && task.executionRunId !== run.id) ||
-          resolvedAdapter !== "codex_local" || dispatch.lineNamingResolvedModel !== MODEL || override.adapterType !== "codex_local" || config.model !== MODEL || config.modelReasoningEffort !== "low" ||
-          (usage.provider !== undefined && usage.provider !== "openai") || (usage.model !== undefined && usage.model !== MODEL) || !observedName)
-        throw forbidden("Verified OpenAI naming provenance required");
+          resolvedAdapter !== "claude_local" || dispatch.lineNamingResolvedModel !== MODEL || override.adapterType !== "claude_local" || config.model !== MODEL ||
+          (usage.provider !== undefined && usage.provider !== "anthropic") || (usage.model !== undefined && usage.model !== MODEL) || !observedName)
+        throw forbidden("Verified Claude naming provenance required");
       if (!name) {
         const attempts = line.namingAttempts + 1;
         const [failed] = await tx.update(lines).set({ namingStatus: "failed", namingAttempts: attempts, lastNamingErrorCode: "invalid_output", nextNamingAttemptAt: attempts < MAX_AUTOMATIC_ATTEMPTS ? new Date(Date.now() + 60_000 * 2 ** Math.max(0, attempts - 1)) : null, updatedAt: new Date() })

@@ -178,9 +178,9 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(summarizer?.defaultRuntimeConfig).toBeUndefined();
     const lineNamer = definitions.find((definition) => definition.key === "line-namer");
     expect(lineNamer).toMatchObject({
-      allowedAdapterTypes: ["codex_local"],
-      defaultAdapterType: "codex_local",
-      defaultAdapterConfig: { model: "gpt-5.4-mini", modelReasoningEffort: "low" },
+      allowedAdapterTypes: ["claude_local"],
+      defaultAdapterType: "claude_local",
+      defaultAdapterConfig: { model: "claude-haiku-4-5" },
     });
     expect(() => validateBuiltInAgentDefinitions([
       {
