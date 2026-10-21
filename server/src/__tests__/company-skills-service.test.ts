@@ -457,6 +457,36 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(await prepare()).toBeUndefined();
   });
 
+  it("records a version when a text file changes in a skill folder that holds binary files", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Binary skill files", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const skill = await svc.createLocalSkill(companyId, { name: "Binary assets", slug: "binary-assets" });
+    const source = skill.sourceLocator!;
+    await fs.mkdir(path.join(source, "assets"), { recursive: true });
+    await fs.writeFile(path.join(source, "assets", "font.woff2"), Buffer.from([0x77, 0x4f, 0x46, 0x32, 0x00, 0x01, 0x00, 0x00, 0xff, 0xfe, 0x00]));
+    await fs.writeFile(path.join(source, "notes.md"), "Original notes");
+
+    await svc.updateFile(companyId, skill.id, "notes.md", "Edited notes", { type: "user", userId: "board" });
+
+    const updated = await svc.getById(companyId, skill.id);
+    expect(updated?.currentVersionId).toBeTruthy();
+    expect(await fs.readFile(path.join(source, "notes.md"), "utf8")).toBe("Edited notes");
+  });
+
+  it("restores the previous file content when the version transaction fails", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Rollback skill files", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const skill = await svc.createLocalSkill(companyId, { name: "Rollback", slug: "rollback-skill" });
+    const source = skill.sourceLocator!;
+    await fs.writeFile(path.join(source, "notes.md"), "Original notes");
+    // Postgres rejects NUL in text, so this actor fails the version insert inside the transaction.
+    await expect(svc.updateFile(companyId, skill.id, "notes.md", "Edited notes", {
+      type: "user",
+      userId: "bad\u0000user",
+    })).rejects.toBeTruthy();
+    expect(await fs.readFile(path.join(source, "notes.md"), "utf8")).toBe("Original notes");
+  });
+
   it("lists skills without exposing markdown content", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();

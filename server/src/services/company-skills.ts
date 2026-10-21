@@ -1894,6 +1894,12 @@ function readSkillStoreMetadata(frontmatter: Record<string, unknown>, metadata: 
   };
 }
 
+// Inventory content is stored in jsonb, which rejects NUL. Binary assets (fonts,
+// images) decode to text containing NULs, so strip them rather than fail the save.
+async function readInventoryFileContent(filePath: string): Promise<string> {
+  return (await fs.readFile(filePath, "utf8")).replaceAll("\u0000", "");
+}
+
 function serializeFileInventory(
   fileInventory: CompanySkillFileInventoryEntry[],
 ): Array<Record<string, unknown>> {
@@ -3027,7 +3033,7 @@ export function companySkillService(db: Db) {
     const inventory = await collectLocalSkillInventory(skillDir);
     return Promise.all(inventory.map(async (entry) => ({
       ...entry,
-      content: await fs.readFile(path.join(skillDir, entry.path), "utf8"),
+      content: await readInventoryFileContent(path.join(skillDir, entry.path)),
     })));
   }
 
@@ -4577,7 +4583,7 @@ export function companySkillService(db: Db) {
         }
         const versionInventory = await Promise.all(inventory.map(async (entry) => ({
           ...entry,
-          content: await fs.readFile(path.join(skillDir, entry.path), "utf8"),
+          content: await readInventoryFileContent(path.join(skillDir, entry.path)),
         })));
         await createVersion(companyId, created.id, { label: "Initial version" }, actor, {
           database: tx,
@@ -4619,7 +4625,7 @@ export function companySkillService(db: Db) {
     const entries = await collectLocalSkillInventory(normalizeSkillDirectory(skill)!, inferLocalSkillInventoryMode(skill));
     const inventory = await Promise.all(entries.map(async (entry) => ({
       ...entry,
-      content: await fs.readFile(path.join(normalizeSkillDirectory(skill)!, entry.path), "utf8"),
+      content: await readInventoryFileContent(path.join(normalizeSkillDirectory(skill)!, entry.path)),
     })));
     await tx.update(companySkills).set({
       fileInventory: serializeFileInventory(inventory),
@@ -4650,39 +4656,45 @@ export function companySkillService(db: Db) {
       const previousContent = await fs.readFile(absolutePath, "utf8").catch(() => null);
       await fs.mkdir(path.dirname(absolutePath), { recursive: true });
       await fs.writeFile(absolutePath, content, "utf8");
+      try {
+        if (normalizedPath === "SKILL.md") {
+          const parsed = parseFrontmatterMarkdown(content);
+          const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, skill.metadata);
+          await tx
+            .update(companySkills)
+            .set({
+              name: asString(parsed.frontmatter.name) ?? skill.name,
+              description: asString(parsed.frontmatter.description) ?? skill.description,
+              markdown: content,
+              ...storeMetadata,
+              categories: categoriesAfterSkillFileEdit(skill.categories, storeMetadata.categories),
+              updatedAt: new Date(),
+            })
+            .where(eq(companySkills.id, skill.id));
+        } else {
+          await tx
+            .update(companySkills)
+            .set({ updatedAt: new Date() })
+            .where(eq(companySkills.id, skill.id));
+        }
 
-      if (normalizedPath === "SKILL.md") {
-        const parsed = parseFrontmatterMarkdown(content);
-        const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, skill.metadata);
-        await tx
-          .update(companySkills)
-          .set({
-            name: asString(parsed.frontmatter.name) ?? skill.name,
-            description: asString(parsed.frontmatter.description) ?? skill.description,
-            markdown: content,
-            ...storeMetadata,
-            categories: categoriesAfterSkillFileEdit(skill.categories, storeMetadata.categories),
-            updatedAt: new Date(),
-          })
-          .where(eq(companySkills.id, skill.id));
-      } else {
-        await tx
-          .update(companySkills)
-          .set({ updatedAt: new Date() })
-          .where(eq(companySkills.id, skill.id));
+        const inventory = await refreshEditedSkillInventory(skill, tx);
+        if (previousContent !== content) {
+          await createVersion(companyId, skillId, {}, actor, {
+            database: tx, skipInventoryRefresh: true, skill, fileInventory: inventory,
+          });
+        }
+
+        const updated = await getById(companyId, skillId, tx);
+        const detail = updated ? await readLoadedSkillFile(updated, normalizedPath) : null;
+        if (!detail) throw notFound("Skill file not found");
+        return detail;
+      } catch (error) {
+        // The transaction rolls back, so put the file back to match the database.
+        if (previousContent === null) await fs.rm(absolutePath, { force: true }).catch(() => {});
+        else await fs.writeFile(absolutePath, previousContent, "utf8").catch(() => {});
+        throw error;
       }
-
-      const inventory = await refreshEditedSkillInventory(skill, tx);
-      if (previousContent !== content) {
-        await createVersion(companyId, skillId, {}, actor, {
-          database: tx, skipInventoryRefresh: true, skill, fileInventory: inventory,
-        });
-      }
-
-      const updated = await getById(companyId, skillId, tx);
-      const detail = updated ? await readLoadedSkillFile(updated, normalizedPath) : null;
-      if (!detail) throw notFound("Skill file not found");
-      return detail;
     });
   }
 
