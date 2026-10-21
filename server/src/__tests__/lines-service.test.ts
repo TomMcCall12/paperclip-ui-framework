@@ -93,7 +93,7 @@ suite("Line membership", () => {
     expect(stored.parentId).toBe(root);
   });
 
-  it("creates one hidden GPT naming task and binds its generation", async () => {
+  it("creates one hidden Claude naming task and binds its generation", async () => {
     const companyId = await company();
     const root = await issue(companyId);
     const agentId = randomUUID();
@@ -106,7 +106,7 @@ suite("Line membership", () => {
     const [task] = await db.select().from(issues).where(eq(issues.id, first.namingIssueId!));
     expect(task.lineId).toBe(line.id);
     expect(task.hiddenAt).not.toBeNull();
-    expect(task.assigneeAdapterOverrides).toEqual({ adapterType: "codex_local", adapterConfig: { model: "gpt-5.4-mini", modelReasoningEffort: "low" } });
+    expect(task.assigneeAdapterOverrides).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-haiku-4-5" } });
   });
 
   it("self-provisions a restricted naming agent instead of an existing powerful agent", async () => {
@@ -122,14 +122,14 @@ suite("Line membership", () => {
     const [task] = await db.select().from(issues).where(eq(issues.id, first.namingIssueId!));
     expect(task.assigneeAgentId).not.toBe(powerfulAgentId);
     const [namer] = await db.select().from(agents).where(eq(agents.id, task.assigneeAgentId!));
-    expect(namer).toMatchObject({ adapterType: "codex_local", permissions: { canCreateAgents: false, canCreateSkills: false } });
-    expect(namer.adapterConfig).toMatchObject({ model: "gpt-5.4-mini", modelReasoningEffort: "low" });
+    expect(namer).toMatchObject({ adapterType: "claude_local", permissions: { canCreateAgents: false, canCreateSkills: false } });
+    expect(namer.adapterConfig).toMatchObject({ model: "claude-haiku-4-5" });
     const second = await builtInAgentService(db).get(companyId, "line-namer");
     expect(second.agentId).toBe(namer.id);
     expect(second.status).toBe("ready");
   });
 
-  it("accepts only the current OpenAI task run and ignores a stale result", async () => {
+  it("accepts only the current Claude task run and ignores a stale result", async () => {
     const companyId = await company();
     const root = await issue(companyId);
     const { line } = await lineService(db).ensure(companyId, root, { type: "system" });
@@ -137,7 +137,7 @@ suite("Line membership", () => {
     const [task] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, namingIssueId!));
     const agentId = task.assigneeAgentId!;
     const runId = randomUUID();
-    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", startedAt: new Date(), contextSnapshot: { issueId: namingIssueId, lineNamingResolvedAdapterType: "claude_local", lineNamingResolvedModel: "gpt-5.4-mini" } });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", startedAt: new Date(), contextSnapshot: { issueId: namingIssueId, lineNamingResolvedAdapterType: "codex_local", lineNamingResolvedModel: "claude-haiku-4-5" } });
     await db.update(issues).set({ checkoutRunId: runId }).where(eq(issues.id, namingIssueId!));
     const input = { namingVersion: 1, namingIssueId: namingIssueId!, runId, name: "Customer Intake Flow" };
     const app = express();
@@ -147,11 +147,11 @@ suite("Line membership", () => {
     app.use(errorHandler);
     const submit = () => request(app).post(`/api/lines/${line.id}/naming/result`).send(input);
     await expect(lineNamingService(db).result(companyId, line.id, input, { type: "agent", agentId, runId })).rejects.toMatchObject({ status: 403 });
-    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: namingIssueId, lineNamingResolvedAdapterType: "codex_local", lineNamingResolvedModel: "gpt-5.4-mini" }, usageJson: { provider: "openai", model: "gpt-5.4-mini" } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: namingIssueId, lineNamingResolvedAdapterType: "claude_local", lineNamingResolvedModel: "claude-haiku-4-5" }, usageJson: { provider: "anthropic", model: "claude-haiku-4-5" } }).where(eq(heartbeatRuns.id, runId));
     expect((await submit()).status).toBe(403);
     expect((await lineService(db).get(companyId, line.id))?.name).toBeNull();
     await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, eventType: "line.naming.provider_message",
-      payload: { textSha256: createHash("sha256").update("Customer Intake Flow").digest("hex"), source: "codex_jsonl" } });
+      payload: { textSha256: createHash("sha256").update("Customer Intake Flow").digest("hex"), source: "claude_stream" } });
     const named = await submit();
     expect(named.status).toBe(200);
     expect(named.body.name).toBe("Customer Intake Flow");
@@ -258,7 +258,7 @@ suite("Line membership", () => {
     expect((await request(app).get(`/api/lines/${line.id}`)).body.pendingApprovals).toEqual([]);
   });
 
-  it("records malformed GPT output as a failed attempt without erasing the prior name", async () => {
+  it("records malformed Claude output as a failed attempt without erasing the prior name", async () => {
     const companyId = await company();
     const root = await issue(companyId);
     const { line } = await lineService(db).ensure(companyId, root, { type: "system" });
@@ -267,7 +267,7 @@ suite("Line membership", () => {
     const [task] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, namingIssueId!));
     const agentId = task.assigneeAgentId!;
     const runId = randomUUID();
-    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", startedAt: new Date(), contextSnapshot: { issueId: namingIssueId, lineNamingResolvedAdapterType: "codex_local", lineNamingResolvedModel: "gpt-5.4-mini" } });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", startedAt: new Date(), contextSnapshot: { issueId: namingIssueId, lineNamingResolvedAdapterType: "claude_local", lineNamingResolvedModel: "claude-haiku-4-5" } });
     await db.update(issues).set({ checkoutRunId: runId }).where(eq(issues.id, namingIssueId!));
     await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, eventType: "item.completed", sourceEventId: randomUUID(),
       payload: { prpEvent: { payload: { kind: "agentMessage", channel: "commentary", text: "https://bad.example" } } } });
@@ -368,7 +368,7 @@ suite("Line membership", () => {
     const first = await lineNamingService(db).start(companyId, line.id, { type: "system" });
     const oldRunId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: oldRunId, companyId, agentId, status: "running", startedAt: new Date(Date.now() - 16 * 60_000),
-      contextSnapshot: { issueId: first.namingIssueId, lineNamingResolvedAdapterType: "codex_local", lineNamingResolvedModel: "gpt-5.4-mini" } });
+      contextSnapshot: { issueId: first.namingIssueId, lineNamingResolvedAdapterType: "claude_local", lineNamingResolvedModel: "claude-haiku-4-5" } });
     await db.update(issues).set({ checkoutRunId: oldRunId }).where(eq(issues.id, first.namingIssueId!));
     await lineNamingService(db).reconcile();
     expect((await lineService(db).get(companyId, line.id))?.namingAttempts).toBe(1);

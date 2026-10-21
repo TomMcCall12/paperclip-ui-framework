@@ -213,7 +213,7 @@ const FALLBACK_SUMMARIZER_INSTRUCTIONS = [
   "",
   "Turn the current state of a Paperclip scope (project, workspaces overview, project workspace, or execution workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
   "",
-  "Read-and-report only: never change issues, workspaces, or code. Cite issue identifiers, never fabricate status, and keep every read company-scoped. A hidden Line naming task may submit only its bounded name to the Line naming result endpoint; it must run on codex_local with gpt-5.4-mini and read no thread, attachments, other issues, credentials, or secrets.",
+  "Read-and-report only: never change issues, workspaces, or code. Cite issue identifiers, never fabricate status, and keep every read company-scoped. A hidden Line naming task may submit only its bounded name to the Line naming result endpoint; it must run on claude_local with claude-haiku-4-5 and read no thread, attachments, other issues, credentials, or secrets.",
   "",
 ].join("\n");
 
@@ -590,7 +590,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     displayName: "Line Namer",
     featureKeys: ["line-naming"],
     shortPurpose:
-      "Generates a short name for a Line from its bounded root context. Restricted to OpenAI/Codex, with no tools, credentials, or workspace access; self-provisions automatically so Line naming never needs manual setup.",
+      "Generates a short name for a Line from its bounded root context. Restricted to Claude/Anthropic, with no tools, credentials, or workspace access; self-provisions automatically so Line naming never needs manual setup.",
     defaultInstructions: LINE_NAMER_INSTRUCTIONS,
     defaultRole: "general",
     defaultTitle: "Line Namer",
@@ -599,11 +599,10 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
       canCreateAgents: false,
       canCreateSkills: false,
     },
-    allowedAdapterTypes: ["codex_local"],
-    defaultAdapterType: "codex_local",
+    allowedAdapterTypes: ["claude_local"],
+    defaultAdapterType: "claude_local",
     defaultAdapterConfig: {
-      model: "gpt-5.4-mini",
-      modelReasoningEffort: "low",
+      model: "claude-haiku-4-5",
     },
     defaultBudgetMonthlyCents: 0,
   },
