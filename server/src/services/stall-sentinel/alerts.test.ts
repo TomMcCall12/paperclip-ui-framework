@@ -13,6 +13,8 @@ describe("time and age wording", () => {
   it("formats ages", () => {
     expect(formatAge(42 * MIN)).toBe("42 minutes");
     expect(formatAge(1 * MIN)).toBe("1 minute");
+    expect(formatAge(0)).toBe("less than a minute");
+    expect(formatAge(59_000)).toBe("less than a minute");
     expect(formatAge(65 * MIN)).toBe("1 hour 5 minutes");
     expect(formatAge(180 * MIN)).toBe("3 hours");
     expect(formatAge(2 * 24 * 60 * MIN)).toBe("2 days");

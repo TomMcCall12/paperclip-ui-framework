@@ -1129,5 +1129,25 @@ describe("rollout flip (would-heal notes never block a real heal)", () => {
     await h.sweepAt(24 * 60 + 1); // self-repair is on; the note is 23 hours old
     expect(mutatingWakes(h.calls)).toHaveLength(1);
     expect(actions(h.calls, "stall_sentinel.healed")).toHaveLength(1);
+    // The alert that follows an unanswered heal no longer says self-repair is off.
+    await h.sweepAt(24 * 60 + 20);
+    const alerts = h.calls.telegrams.filter((t) => t.includes("its run was lost"));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).not.toContain("Self-repair is off");
+    expect(alerts[0]).toContain("restarted it");
+  });
+
+  it("a brand-new stall does not say 'No progress for 0 minutes'", async () => {
+    const world = new World();
+    const root = world.add({ id: id("root"), title: "Fresh", status: "in_progress", assigneeAgentId: JARVIS, createdAt: NOW });
+    world.add({ id: id("step"), title: "S1: New", parentId: root.id, status: "todo", assigneeAgentId: ENGINEER, createdAt: NOW });
+    world.agents.set(ENGINEER, makeAgent({ id: ENGINEER, name: "Tom's Labs Engineer", status: "paused" }));
+    const h = harness(world, { config: { thresholds: { ...readStallSentinelConfig({}).thresholds, agentUnavailableAlertMs: 1 } } });
+    await h.sweepAt(0);
+    await h.sweepAt(0.01);
+    const text = h.calls.telegrams.join("\n");
+    expect(h.calls.telegrams).toHaveLength(1);
+    expect(text).toContain("No progress for less than a minute");
+    expect(text).not.toContain("0 minutes");
   });
 });

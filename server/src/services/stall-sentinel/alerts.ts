@@ -45,6 +45,7 @@ function plural(n: number, unit: string) {
 /** "42 minutes", "1 hour 5 minutes", "3 hours", "2 days", "over 7 days". */
 export function formatAge(ms: number): string {
   const minutes = Math.max(0, Math.floor(ms / 60_000));
+  if (minutes < 1) return "less than a minute";
   if (minutes < 60) return plural(minutes, "minute");
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
