@@ -90,6 +90,19 @@ export function allowsIssueInteractionWake(
 }
 
 /**
+ * Wake reasons the stall sentinel uses to reach the owner of a task that is
+ * blocked on open steps (a finished step not yet checked, a cancelled blocker,
+ * a reroute after an alert). Without these the dependency gate would skip every
+ * one of them and "Jarvis has been asked" would ask nobody. They run in the same
+ * bounded triage mode as comment wakes. Keep this list to exactly these reasons.
+ */
+export const STALL_SENTINEL_DEPENDENCY_BLOCKED_WAKE_REASONS: ReadonlySet<string> = new Set([
+  "stall_sentinel_checkpoint_done",
+  "stall_sentinel_cancelled_blocker",
+  "stall_sentinel_reroute",
+]);
+
+/**
  * A dependency-blocked issue stays idle except for wakes that carry a human
  * decision: a comment or mention, and the continuation of a resolved
  * interaction (an accepted or rejected confirmation, an answered question).
@@ -100,9 +113,11 @@ export function allowsDependencyBlockedWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
   allowedWakeReasons: ReadonlySet<string>,
 ): boolean {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   return (
     allowsIssueInteractionWake(contextSnapshot, allowedWakeReasons) ||
-    isResolvedInteractionContinuationWakeContext(contextSnapshot)
+    isResolvedInteractionContinuationWakeContext(contextSnapshot) ||
+    (wakeReason !== null && STALL_SENTINEL_DEPENDENCY_BLOCKED_WAKE_REASONS.has(wakeReason))
   );
 }
 

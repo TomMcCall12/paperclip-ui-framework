@@ -45,7 +45,7 @@ executions double every time (the unknown-cause backstop is 4 hours).
 | Cause | Detected when | Self-repair (mode `on`) | Board alert |
 |---|---|---|---|
 | P, provider usage | The latest run failed with `provider_quota`, or a queued run waits for a provider that is out | Claude out: never switch provider; one wake at `resetsAt` + 5 min. A task a Claude agent would run on OpenAI (a `codex_local` override or an OpenAI model) is moved back to `claude_local` | Claude out: at once ("waiting for Claude usage, which comes back at HH:MM"). Not out: only if not restarted 15 min after the reset. Codex agent with no Claude override: one message, never repeated |
-| R, stuck run | Running with no output for 30 min, or past `timeoutSec` + 15 min | First time in 24 h: cancel the run and queue a resume wake | Second stuck run |
+| R, stuck run | Running with no output for 60 min (the active-run watchdog's suspicion time, so one long silent tool call is not killed), or past `timeoutSec` + 15 min | First time in 24 h: cancel the run and queue a resume wake | Second stuck run |
 | Q, busy agent | Queued for an agent that is running another issue | None (alert only) | 30 min queued |
 | Q2, idle queued run | Queued for an idle agent | 10 min: re-queue | 15 min after the re-queue |
 | L, lost run | Agent assignee, runnable status, no run and no queued wake | 10 min: re-queue | 15 min after the re-queue |
@@ -72,7 +72,20 @@ Rules that apply to every self-repair:
   state guard, so a wake is dropped if the task changed meanwhile.
 - The sentinel's comments are system comments. The comment service wakes nobody
   for them. When an alert asks Jarvis to act, the comment mentions Jarvis and the
-  sentinel queues one `stall_sentinel_reroute` wake for Jarvis. No mention when
+  sentinel queues one `stall_sentinel_reroute` wake for Jarvis (mode `on` only).
+  A task that still has open blockers normally ignores automatic wakes. Exactly
+  three sentinel wake reasons are let through, in the same bounded triage mode as a
+  comment wake: `stall_sentinel_checkpoint_done`, `stall_sentinel_cancelled_blocker`
+  and `stall_sentinel_reroute` (`allowsDependencyBlockedWake`). Every other
+  automatic wake is still skipped.
+- If a wake is dropped (the port answers "not queued"), the heal is recorded with
+  `asked: false`, the root comment says so, and the later alert says no cause is
+  visible. It never says "woke X, who has not picked it up".
+- A wake only counts as already queued while it is still waiting (`queued`,
+  `claimed`, `deferred_issue_execution`). A finished wake with the same key does
+  not block a new one after the 24 hour cooldown.
+- The 60 second sweep limit stops the sweep: no second sweep starts until the
+  first has stopped, and a late sweep sends and writes nothing more. No mention when
   Jarvis's own provider is out or Jarvis is the stuck or paused agent.
 
 ### Provider rule (board direction, 21 Oct 2026)
@@ -123,8 +136,10 @@ in the activity row and in health (`lastDeliveryError`, never a token).
 
 - `off`: no sweeps, no actions, no alerts. Health shows `mode: "off"` and the
   host check passes.
-- `alert_only`: sweeps, comments, alerts and Jarvis reroute wakes, but no
-  self-repair. No issue field changes (status, assignee, blockers, overrides), no
+- `alert_only`: sweeps, comments and alerts, but no self-repair and no wake at
+  all (not even the Jarvis reroute wake). Alerts come at the cause's own alert
+  time (heal-due time plus the wait that follows a heal), and their text says
+  Jarvis was not woken. No issue field changes (status, assignee, blockers, overrides), no
   run is cancelled, and no repair wake is queued. A would-be repair is logged as
   `stall_sentinel.would_heal` and the alert says "Self-repair is off; I would have
   …. Next: Jarvis has been asked to do this by hand."

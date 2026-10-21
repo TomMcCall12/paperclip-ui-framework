@@ -123,6 +123,27 @@ function coordinatorMention(agent: SnapshotAgent) {
   return `[@${agent.name}](agent://${agent.id})`;
 }
 
+/** A run created or started at or after `at` on this issue (a requeue that worked, even if it already finished). */
+function runStartedSince(snapshot: CompanySnapshot, issueId: string, at: Date): boolean {
+  return snapshot.runs.some(
+    (run) => run.issueId === issueId && (run.createdAt >= at || (run.startedAt != null && run.startedAt >= at)),
+  );
+}
+
+/**
+ * Alert-only mode never heals, so the alert comes at the cause's own alert time:
+ * the fixed alert time, or the heal-due time plus the wait that follows a heal.
+ * A stuck run is already the evidence, so it alerts when it is found.
+ */
+function alertOnlyAlertIsDue(f: StallFinding, now: Date): boolean {
+  if (f.silent || !f.heal || f.heal.kind === "cancel_duplicate") return false;
+  let at = f.alertDueAt;
+  if (!at && f.healDueAt) {
+    at = f.cause === "R" || f.afterHealAlertMs == null ? f.healDueAt : new Date(f.healDueAt.getTime() + f.afterHealAlertMs);
+  }
+  return !!at && now >= at;
+}
+
 export function resolveCoordinator(snapshot: CompanySnapshot, config: StallSentinelConfig): SnapshotAgent | null {
   if (config.coordinatorAgentId) {
     const byId = snapshot.agents.get(config.coordinatorAgentId);
@@ -200,7 +221,12 @@ export function createStallSentinel(deps: StallSentinelDeps) {
     });
   }
 
-  async function sweepCompany(companyId: string, now: Date, totals: SweepResult, opts: { gapFrom: Date | null; suppressed: boolean }) {
+  async function sweepCompany(
+    companyId: string,
+    now: Date,
+    totals: SweepResult,
+    opts: { gapFrom: Date | null; suppressed: boolean; run: { aborted: boolean } },
+  ) {
     const state = await companyState(companyId, now);
     const mem = state.memory;
     const renderBase: RenderContext = { alertOnly: null };
@@ -275,6 +301,8 @@ export function createStallSentinel(deps: StallSentinelDeps) {
 
     const snapshot = await deps.store.loadSnapshot(companyId, now, config.thresholds.progressLookbackMs);
     const quotaMap = await quota(companyId, now);
+    // The 60 second limit passed while this sweep was reading: stop before it acts on old data.
+    if (opts.run.aborted) return;
     const coordinator = resolveCoordinator(snapshot, config);
     const coordinatorOut = (() => {
       if (!coordinator) return false;
@@ -311,20 +339,32 @@ export function createStallSentinel(deps: StallSentinelDeps) {
         const subject = f.data.childId ?? null;
         // A lost run (L) and a queued run that never started (Q2) share one restart:
         // after the wake is queued, the same task looks "queued" and must not be restarted twice.
-        const healCause = f.cause === "L" || f.cause === "Q2" ? "requeue" : f.cause;
+        // A Claude rewrite and a wait for the reset are different heals and keep separate keys.
+        const healCause =
+          f.cause === "L" || f.cause === "Q2"
+            ? "requeue"
+            : f.cause === "P"
+              ? f.heal?.kind === "rewrite_to_claude"
+                ? "P:rewrite"
+                : "P:restart"
+              : f.cause;
         const hk = healKey(f.heal?.issueId ?? f.issueId, healCause, subject);
-        const prior = recentHeal(mem, hk, now, config.thresholds.healCooldownMs);
+        const recorded = recentHeal(mem, hk, now, config.thresholds.healCooldownMs);
+        // A would-have-healed note from the alert-only window never blocks a real heal.
+        const prior = recorded && !recorded.applied && effectiveMode === "on" ? null : recorded;
         let alertNow = false;
         let alertOnlyWording = false;
         let healedAt: Date | null = prior?.at ?? null;
+        const notAsked = !!prior?.applied && prior.asked === false;
 
         if (f.heal) {
           // A scheduled provider restart fires once when its time comes.
           if (f.heal.kind === "restart_after_reset" && prior?.applied && prior.wakeAt && now >= prior.wakeAt) {
             await fireScheduledRestart(companyId, snapshot, f, prior.wakeAt, root.id);
           }
+          const healDue = !!f.healDueAt && now >= f.healDueAt;
           if (!prior) {
-            if (f.healDueAt && now >= f.healDueAt) {
+            if (healDue) {
               stalledRoots.add(f.rootId);
               if (effectiveMode === "on") {
                 await applyHeal(companyId, snapshot, f, root.id, hk, now);
@@ -334,19 +374,28 @@ export function createStallSentinel(deps: StallSentinelDeps) {
               } else {
                 await recordWouldHeal(companyId, snapshot, f, root.id, hk, now, alertOnlyCtx);
                 totals.wouldHeals += 1;
-                alertNow = !f.silent && f.heal.kind !== "cancel_duplicate";
+                alertNow = alertOnlyAlertIsDue(f, now);
                 alertOnlyWording = alertNow;
               }
             }
           } else if (!f.silent) {
-            stalledRoots.add(f.rootId);
             if (!prior.applied) {
-              alertNow = true;
-              alertOnlyWording = true;
+              // Alert-only: nothing was done, so the alert comes at the cause's own alert time.
+              if (healDue) stalledRoots.add(f.rootId);
+              alertNow = alertOnlyAlertIsDue(f, now);
+              alertOnlyWording = alertNow;
             } else if (f.cause === "P") {
+              stalledRoots.add(f.rootId);
               alertNow = !!f.alertDueAt && now >= f.alertDueAt;
-            } else if (f.afterHealAlertMs != null && now.getTime() - prior.at.getTime() >= f.afterHealAlertMs) {
-              alertNow = true;
+            } else if (f.afterHealAlertMs != null && healDue) {
+              // The heal was made, but the condition still holds. A requeue that started a run
+              // (even one that finished) worked: the clock restarts with that run's progress.
+              const requeueWorked =
+                (f.cause === "L" || f.cause === "Q2") && runStartedSince(snapshot, f.heal.issueId, prior.at);
+              if (!requeueWorked) {
+                stalledRoots.add(f.rootId);
+                if (now.getTime() - prior.at.getTime() >= f.afterHealAlertMs) alertNow = true;
+              }
             }
           }
         } else if (f.alertDueAt && now >= f.alertDueAt) {
@@ -360,6 +409,7 @@ export function createStallSentinel(deps: StallSentinelDeps) {
           now,
           healedAt: healedAt ?? now,
           atNext: formatAt(nextAlertTime(f.treeAgeMs, now), now),
+          notAsked,
           leaf,
           ref,
           agentName,
@@ -391,7 +441,7 @@ export function createStallSentinel(deps: StallSentinelDeps) {
       }
     }
 
-    await deliverAlerts(companyId, state, pending, now, totals, { digestSweep, selfRepairAt, alertOnlyCtx, coordinator, renderBase });
+    await deliverAlerts(companyId, state, pending, now, totals, { effectiveMode, digestSweep, selfRepairAt, alertOnlyCtx, coordinator, renderBase });
     await clearMovingRoots(companyId, state, snapshot, progressByRoot, stalledRoots, now, renderBase);
     updateStallSentinelHealth({ effectiveMode });
   }
@@ -409,6 +459,8 @@ export function createStallSentinel(deps: StallSentinelDeps) {
       now: Date;
       healedAt: Date;
       atNext: string;
+      /** The wake for this heal was dropped, so nobody was asked. */
+      notAsked: boolean;
       leaf: (id: string) => string;
       ref: (id: string) => string;
       agentName: (id: string | null | undefined) => string;
@@ -417,6 +469,11 @@ export function createStallSentinel(deps: StallSentinelDeps) {
   ): { build: PendingAlert["build"]; mention: boolean; group?: PendingAlert["group"] } | null {
     const base = { rid: v.ref(f.rootId), age: formatAge(f.treeAgeMs), leaf: v.leaf(f.issueId) };
     const atHealed = formatAt(v.healedAt, v.now);
+    // The heal's wake never reached the agent: say plainly that the cause is unresolved
+    // instead of claiming the agent was woken and has not picked it up.
+    if (v.notAsked && f.heal && f.cause !== "P" && f.cause !== "R") {
+      return { build: templates.T12({ ...base, atNext: v.atNext }), mention: true };
+    }
     switch (f.cause) {
       case "P": {
         if (f.data.lockReason === "codex_agent") {
@@ -533,6 +590,7 @@ export function createStallSentinel(deps: StallSentinelDeps) {
     now: Date,
     totals: SweepResult,
     ctx: {
+      effectiveMode: StallSentinelMode;
       digestSweep: boolean;
       selfRepairAt: Date | null;
       alertOnlyCtx: RenderContext;
@@ -541,6 +599,8 @@ export function createStallSentinel(deps: StallSentinelDeps) {
     },
   ) {
     const mem = state.memory;
+    // While the alarm only reports, its texts must not claim a wake or a fix that did not happen.
+    const textCtx = ctx.effectiveMode === "on" ? ctx.renderBase : ctx.alertOnlyCtx;
     // One message per root per 15 minutes: keep the first alert per root this sweep.
     const accepted: PendingAlert[] = [];
     const rootsThisSweep = new Set<string>();
@@ -595,7 +655,7 @@ export function createStallSentinel(deps: StallSentinelDeps) {
           action: group.action,
         }),
         "",
-        first.alertOnly ? ctx.alertOnlyCtx : ctx.renderBase,
+        textCtx,
         config.groupListLimit,
       );
       groupTexts.push({ alerts, text });
@@ -615,17 +675,18 @@ export function createStallSentinel(deps: StallSentinelDeps) {
     }
     for (const alert of individual) {
       if (grouped.has(alert)) continue;
-      const text = renderAlert(alert.build, alert.rootTitle, alert.alertOnly ? ctx.alertOnlyCtx : ctx.renderBase, config.groupListLimit);
+      const text = renderAlert(alert.build, alert.rootTitle, textCtx, config.groupListLimit);
       sentFor.set(alert, await sendTelegram(companyId, state, text, now));
     }
 
     for (const alert of accepted) {
       const inDigest = digest.includes(alert);
       const result = inDigest ? { sent: true } : sentFor.get(alert) ?? { sent: false, reason: "not_sent" };
-      const text = renderAlert(alert.build, alert.rootTitle, alert.alertOnly ? ctx.alertOnlyCtx : ctx.renderBase, config.groupListLimit);
+      const text = renderAlert(alert.build, alert.rootTitle, textCtx, config.groupListLimit);
       const mention = alert.mentionCoordinator && ctx.coordinator ? ` ${coordinatorMention(ctx.coordinator)}` : "";
       await deps.actions.comment(alert.rootId, `${text}${mention}`);
-      if (alert.mentionCoordinator && ctx.coordinator) {
+      // Alert-only mode creates no wake request at all (design section f).
+      if (alert.mentionCoordinator && ctx.coordinator && ctx.effectiveMode === "on") {
         await deps.actions.wake(ctx.coordinator.id, {
           issueId: alert.rootId,
           reason: "stall_sentinel_reroute",
@@ -743,7 +804,14 @@ export function createStallSentinel(deps: StallSentinelDeps) {
     }
   }
 
-  function healComment(snapshot: CompanySnapshot, f: StallFinding, now: Date, wouldHave: boolean, alertOnlyCtx?: RenderContext): string {
+  function healComment(
+    snapshot: CompanySnapshot,
+    f: StallFinding,
+    now: Date,
+    wouldHave: boolean,
+    alertOnlyCtx?: RenderContext,
+    wake: WakeState = "queued",
+  ): string {
     const row = snapshot.issues.get(f.issueId);
     const leaf = row ? leafLabel(row) : f.issueId.slice(0, 8);
     const agent = (id: string | null | undefined) => (id ? snapshot.agents.get(id)?.name ?? "its agent" : "its agent");
@@ -776,10 +844,23 @@ export function createStallSentinel(deps: StallSentinelDeps) {
               : `a step under ${leaf} finished, so I woke ${agent(heal.agentId)} to pick it up`;
         break;
     }
+    if (!wouldHave && wake === "pending") {
+      did =
+        heal.kind === "requeue"
+          ? `nothing was working on ${leaf}, but a restart was already waiting, so I queued no second one`
+          : `${did}; a wake was already waiting, so I queued no second one`;
+    }
+    if (!wouldHave && wake === "dropped") {
+      did = `I could not wake the agent for ${leaf}: the wake was not accepted (the task changed or is on hold), so nothing was restarted`;
+    }
     if (!wouldHave) return `Stall alarm: ${did}. Nothing needed from you.`;
     const until = alertOnlyCtx?.alertOnly?.selfRepairFrom;
     return `Stall alarm (self-repair is off${until ? ` until ${until}` : ""}): I would have done this: ${did}.`;
   }
+
+  type WakeState = "queued" | "pending" | "dropped";
+  const wakeState = (result: { queued: boolean; reason?: string }): WakeState =>
+    result.queued ? "queued" : result.reason === "already_pending" ? "pending" : "dropped";
 
   async function applyHeal(companyId: string, snapshot: CompanySnapshot, f: StallFinding, rootId: string, hk: string, now: Date) {
     const heal = f.heal!;
@@ -793,14 +874,17 @@ export function createStallSentinel(deps: StallSentinelDeps) {
       rootIssueId: rootId,
       subject: f.data.childId ?? null,
     };
+    let wake: WakeState = "queued";
     switch (heal.kind) {
       case "requeue":
-        await deps.actions.wake(heal.agentId, {
-          issueId: heal.issueId,
-          reason: heal.reason,
-          idempotencyKey: `stall-sentinel:${f.cause}:${heal.issueId}:${statusVersion}`,
-          guard: target ? { statuses: [target.status], assigneeAgentId: heal.agentId, statusVersion } : undefined,
-        });
+        wake = wakeState(
+          await deps.actions.wake(heal.agentId, {
+            issueId: heal.issueId,
+            reason: heal.reason,
+            idempotencyKey: `stall-sentinel:${f.cause}:${heal.issueId}:${statusVersion}`,
+            guard: target ? { statuses: [target.status], assigneeAgentId: heal.agentId, statusVersion } : undefined,
+          }),
+        );
         break;
       case "restart_after_reset":
         details.wakeAt = heal.wakeAt.toISOString();
@@ -820,11 +904,13 @@ export function createStallSentinel(deps: StallSentinelDeps) {
         break;
       case "cancel_stuck_run":
         await deps.actions.cancelRun(heal.runId, "stall_sentinel: stuck run");
-        await deps.actions.wake(heal.agentId, {
-          issueId: heal.issueId,
-          reason: "stall_sentinel_resume",
-          idempotencyKey: `stall-sentinel:R:${heal.issueId}:${heal.runId}`,
-        });
+        wake = wakeState(
+          await deps.actions.wake(heal.agentId, {
+            issueId: heal.issueId,
+            reason: "stall_sentinel_resume",
+            idempotencyKey: `stall-sentinel:R:${heal.issueId}:${heal.runId}`,
+          }),
+        );
         details.runId = heal.runId;
         break;
       case "cancel_duplicate": {
@@ -838,18 +924,24 @@ export function createStallSentinel(deps: StallSentinelDeps) {
         break;
       }
       case "wake":
-        await deps.actions.wake(heal.agentId, {
-          issueId: heal.issueId,
-          reason: heal.reason,
-          idempotencyKey: `stall-sentinel:${f.cause}:${heal.issueId}:${statusVersion}${f.data.childId ? `:${f.data.childId}` : ""}`,
-          payload: { ...heal.payload, ...(heal.message ? { message: heal.message } : {}) },
-          guard: target?.assigneeAgentId === heal.agentId
-            ? { statuses: [target.status], assigneeAgentId: heal.agentId, statusVersion }
-            : undefined,
-        });
+        wake = wakeState(
+          await deps.actions.wake(heal.agentId, {
+            issueId: heal.issueId,
+            reason: heal.reason,
+            idempotencyKey: `stall-sentinel:${f.cause}:${heal.issueId}:${statusVersion}${f.data.childId ? `:${f.data.childId}` : ""}`,
+            payload: { ...heal.payload, ...(heal.message ? { message: heal.message } : {}) },
+            guard: target?.assigneeAgentId === heal.agentId
+              ? { statuses: [target.status], assigneeAgentId: heal.agentId, statusVersion }
+              : undefined,
+          }),
+        );
         break;
     }
-    await deps.actions.comment(rootId, healComment(snapshot, f, now, false));
+    // A dropped wake means nobody was asked: the memory says so, and the later alert says "unresolved",
+    // never "woke X, who has not picked it up".
+    if (wake !== "queued") details.wake = wake;
+    if (wake === "dropped") details.asked = false;
+    await deps.actions.comment(rootId, healComment(snapshot, f, now, false, undefined, wake));
     await deps.actions.activity({
       companyId,
       action: SENTINEL_ACTIONS.healed,
@@ -862,6 +954,7 @@ export function createStallSentinel(deps: StallSentinelDeps) {
       kind: heal.kind,
       applied: true,
       ...(heal.kind === "restart_after_reset" ? { wakeAt: heal.wakeAt } : {}),
+      ...(wake === "dropped" ? { asked: false } : {}),
     });
   }
 
@@ -922,7 +1015,8 @@ export function createStallSentinel(deps: StallSentinelDeps) {
     mem.alertOnlyFixes += 1;
   }
 
-  async function sweep(): Promise<SweepResult> {
+  /** `aborted` is set when the 60 second limit passes: the late sweep stops and writes nothing more. */
+  async function sweep(run: { aborted: boolean } = { aborted: false }): Promise<SweepResult> {
     const now = clock();
     const totals: SweepResult = { skipped: false, companies: 0, heals: 0, wouldHeals: 0, alerts: 0, telegrams: 0 };
     if (config.mode === "off") {
@@ -939,9 +1033,11 @@ export function createStallSentinel(deps: StallSentinelDeps) {
     const companyIds = await deps.store.listCompanyIds();
     knownCompanyIds = companyIds;
     for (const companyId of companyIds) {
-      await sweepCompany(companyId, now, totals, { gapFrom, suppressed });
+      if (run.aborted) return totals;
+      await sweepCompany(companyId, now, totals, { gapFrom, suppressed, run });
       totals.companies += 1;
     }
+    if (run.aborted) return totals;
     deps.persistence.writeLastSweepAt(now);
     let open = 0;
     for (const state of states.values()) open += state.memory.openRoots.size;
@@ -972,12 +1068,19 @@ export function createStallSentinel(deps: StallSentinelDeps) {
     if (lastSweepStartedAt && now.getTime() - lastSweepStartedAt.getTime() < config.sweepIntervalMs) return null;
     sweeping = true;
     lastSweepStartedAt = now;
+    const run = { aborted: false };
     let timer: NodeJS.Timeout | null = null;
+    let timedOut = false;
+    const sweepPromise = sweep(run);
     try {
       const result = await Promise.race([
-        sweep(),
+        sweepPromise,
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("stall sentinel sweep timed out")), config.sweepTimeoutMs);
+          timer = setTimeout(() => {
+            timedOut = true;
+            run.aborted = true;
+            reject(new Error("stall sentinel sweep timed out"));
+          }, config.sweepTimeoutMs);
           timer.unref?.();
         }),
       ]);
@@ -998,7 +1101,15 @@ export function createStallSentinel(deps: StallSentinelDeps) {
       return null;
     } finally {
       if (timer) clearTimeout(timer);
-      sweeping = false;
+      if (timedOut) {
+        // The old sweep is still running: no second sweep may start until it has stopped.
+        const release = () => {
+          sweeping = false;
+        };
+        sweepPromise.then(release, release);
+      } else {
+        sweeping = false;
+      }
     }
   }
 

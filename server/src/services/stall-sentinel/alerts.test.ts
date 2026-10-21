@@ -48,8 +48,18 @@ describe("templates", () => {
       { alertOnly: { selfRepairFrom: "tomorrow at 14:00" } },
     );
     expect(text).toContain("Self-repair is off until tomorrow at 14:00; I would have restarted it.");
-    expect(text).toContain("Next: Jarvis has been asked to do this by hand.");
+    expect(text).toContain("Next: I changed nothing and woke nobody.");
+    expect(text).not.toContain("Jarvis has been asked");
     expect(text).not.toContain("What I did");
+  });
+  it("alert-only wording never says Jarvis was asked, for alerts that have no repair either", () => {
+    const text = renderAlert(
+      templates.T3({ rid: "TOM-1", age: "40 minutes", leaf: "TOM-2", agent: "Engineer", busyOn: "TOM-9", since: "13:00", atCheck: "at 15:00" }),
+      "Root",
+      { alertOnly: { selfRepairFrom: null } },
+    );
+    expect(text).not.toContain("Jarvis has been asked");
+    expect(text).toContain("Jarvis was not woken (self-repair is off)");
   });
 
   // Worst case: 21-character times, 19-character ages and agent names, 5-digit ids.

@@ -53,7 +53,8 @@ const DEFAULT_THRESHOLDS: StallSentinelThresholds = {
   holdAlertMs: 60 * MINUTE,
   providerRestartDelayMs: 5 * MINUTE,
   providerRestartAlertGraceMs: 15 * MINUTE,
-  stuckSilenceMs: 30 * MINUTE,
+  /** Matches the active-run watchdog's suspicion threshold, so a long silent tool call is not killed. */
+  stuckSilenceMs: 60 * MINUTE,
   stuckTimeoutGraceMs: 15 * MINUTE,
   busyQueuedAlertMs: 30 * MINUTE,
   idleQueuedHealMs: 10 * MINUTE,

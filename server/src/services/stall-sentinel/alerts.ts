@@ -98,6 +98,10 @@ export interface RenderContext {
   alertOnly: { selfRepairFrom: string | null } | null;
 }
 
+/** In alert-only mode no wake is queued, so a template must not say Jarvis was asked. */
+const ASKED_JARVIS = /Jarvis has been asked to [^.;]*/;
+const NOT_WOKEN = "Jarvis was not woken (self-repair is off)";
+
 function joinParts(parts: AlertParts, ctx: RenderContext): string {
   const segments = [parts.head];
   if (parts.why) segments.push(parts.why);
@@ -107,10 +111,10 @@ function joinParts(parts: AlertParts, ctx: RenderContext): string {
         ? `Self-repair is off until ${ctx.alertOnly.selfRepairFrom}; I would have ${parts.action}.`
         : `Self-repair is off; I would have ${parts.action}.`,
     );
-    segments.push("Next: Jarvis has been asked to do this by hand.");
+    segments.push("Next: I changed nothing and woke nobody.");
   } else {
     if (parts.did) segments.push(parts.did);
-    if (parts.next) segments.push(parts.next);
+    if (parts.next) segments.push(ctx.alertOnly ? parts.next.replace(ASKED_JARVIS, NOT_WOKEN) : parts.next);
   }
   return segments.join(" ");
 }

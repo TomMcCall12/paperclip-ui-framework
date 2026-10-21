@@ -31,6 +31,8 @@ export interface HealRecord {
   applied: boolean;
   /** Provider restart: when the one wake is due (reset + 5 minutes). */
   wakeAt?: Date;
+  /** False when the wake was dropped or skipped: nobody was asked, so no alert may say so. */
+  asked?: boolean;
 }
 
 export interface AlertRecord {
@@ -155,6 +157,7 @@ export function rebuildMemory(rows: ActivityStateRow[]): CompanyMemory {
         kind: str(d.action) ?? "unknown",
         applied: row.action === SENTINEL_ACTIONS.healed,
         ...(wakeAt ? { wakeAt: new Date(wakeAt) } : {}),
+        ...(d.asked === false ? { asked: false } : {}),
       });
       if (row.action === SENTINEL_ACTIONS.wouldHeal) mem.alertOnlyFixes += 1;
     } else if (row.action === SENTINEL_ACTIONS.alerted) {

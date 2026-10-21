@@ -1,4 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests } from "@paperclipai/db";
 import { logActivity } from "../activity-log.js";
@@ -23,9 +23,22 @@ export interface SentinelWakeOptions {
   guard?: { statuses: string[]; assigneeAgentId: string; statusVersion?: number };
 }
 
+/**
+ * `already_pending`: an earlier wake with the same key is still waiting, so the
+ * agent is already asked. `not_queued`: the wake was dropped or skipped, so
+ * nobody was asked.
+ */
+export interface SentinelWakeResult {
+  queued: boolean;
+  reason?: "already_pending" | "not_queued";
+}
+
+/** Wake request states that mean the agent has been asked and has not answered yet. */
+const IN_FLIGHT_WAKE_STATUSES = ["queued", "claimed", "deferred_issue_execution"];
+
 export interface StallSentinelActions {
   /** Mutating: queue a wake. */
-  wake(agentId: string, opts: SentinelWakeOptions): Promise<{ queued: boolean }>;
+  wake(agentId: string, opts: SentinelWakeOptions): Promise<SentinelWakeResult>;
   /** Mutating: cancel a run. */
   cancelRun(runId: string, reason: string): Promise<void>;
   /** Mutating: replace an issue's task-level adapter overrides (validated like the API). */
@@ -72,8 +85,10 @@ export function createStallSentinelActions(input: {
   const issues = issueService(input.db);
   return {
     async wake(agentId, opts) {
-      if (!input.heartbeat) return { queued: false };
+      if (!input.heartbeat) return { queued: false, reason: "not_queued" };
       // heartbeat.wakeup stores the idempotency key but does not deduplicate on it.
+      // Only a wake that is still waiting counts: a finished one with the same key
+      // (same status version, after the 24 hour cooldown) must not block a new wake.
       const existing = await input.db
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
@@ -81,11 +96,11 @@ export function createStallSentinelActions(input: {
           and(
             eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
-            ne(agentWakeupRequests.status, "skipped"),
+            inArray(agentWakeupRequests.status, IN_FLIGHT_WAKE_STATUSES),
           ),
         )
         .limit(1);
-      if (existing.length > 0) return { queued: false };
+      if (existing.length > 0) return { queued: false, reason: "already_pending" };
       const result = await input.heartbeat.wakeup(agentId, {
         source: "automation",
         triggerDetail: "system",
@@ -97,7 +112,7 @@ export function createStallSentinelActions(input: {
         contextSnapshot: { issueId: opts.issueId, wakeReason: opts.reason },
         ...(opts.guard ? { issueStateGuard: opts.guard } : {}),
       });
-      return { queued: result != null };
+      return result != null ? { queued: true } : { queued: false, reason: "not_queued" };
     },
     async cancelRun(runId, reason) {
       if (!input.heartbeat) return;

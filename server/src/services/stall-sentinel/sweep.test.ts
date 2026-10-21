@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProviderQuotaSummary } from "@paperclipai/shared";
-import type { SentinelWakeOptions, StallSentinelActions } from "./actions.js";
+import type { SentinelWakeOptions, SentinelWakeResult, StallSentinelActions } from "./actions.js";
 import { readStallSentinelConfig } from "./config.js";
 import type { ActivityStateRow, RolloutState } from "./dedupe.js";
 import { getStallSentinelHealth, resetStallSentinelHealthForTests } from "./health-state.js";
@@ -132,6 +132,11 @@ function harness(world: World, opts: {
   lastSweepAt?: Date | null;
   memoryRows?: ActivityStateRow[];
   store?: { fail: boolean };
+  /** Decides what the wake port answers; default: queued. */
+  wakeResult?: (wake: { agentId: string } & SentinelWakeOptions) => SentinelWakeResult;
+  config?: Partial<ReturnType<typeof readStallSentinelConfig>>;
+  /** Replaces the snapshot loader (to hang a sweep). */
+  loadSnapshot?: (companyId: string, now: Date) => Promise<CompanySnapshot>;
 } = {}) {
   const calls: Calls = { wakes: [], cancels: [], overrides: [], cancelledIssues: [], comments: [], activities: [], telegrams: [] };
   let clock = NOW;
@@ -139,6 +144,8 @@ function harness(world: World, opts: {
   const actions: StallSentinelActions = {
     async wake(agentId, wake) {
       calls.wakes.push({ agentId, ...wake });
+      const answer = opts.wakeResult?.({ agentId, ...wake });
+      if (answer && !answer.queued) return answer;
       world.wakes.push({
         id: id("wake"),
         agentId,
@@ -176,14 +183,15 @@ function harness(world: World, opts: {
   };
   const env = { PAPERCLIP_STALL_SENTINEL_MODE: opts.mode ?? "on" };
   const sentinel = createStallSentinel({
-    config: readStallSentinelConfig(env),
+    config: { ...readStallSentinelConfig(env), ...opts.config },
     now: () => clock,
     store: {
       async listCompanyIds() {
         if (opts.store?.fail) throw new Error("database down");
         return [COMPANY];
       },
-      async loadSnapshot(_companyId, now) {
+      async loadSnapshot(companyId, now) {
+        if (opts.loadSnapshot) return opts.loadSnapshot(companyId, now);
         return world.snapshot(now);
       },
       async loadMemoryRows() {
@@ -379,7 +387,7 @@ describe("stuck run (R)", () => {
   it("cancels and resumes the first stuck run, and alerts on the second", async () => {
     const world = new World();
     const { step } = stepTree(world, { status: "in_progress" });
-    const stuck = world.run({ issueId: step.id, agentId: ENGINEER, status: "running", startedAt: ago(100), finishedAt: null, silenceAgeMs: 31 * MIN });
+    const stuck = world.run({ issueId: step.id, agentId: ENGINEER, status: "running", startedAt: ago(100), finishedAt: null, silenceAgeMs: 61 * MIN });
     const h = harness(world);
     await h.sweepAt(0);
     expect(h.calls.cancels).toEqual([stuck.id]);
@@ -387,11 +395,23 @@ describe("stuck run (R)", () => {
     expect(h.calls.telegrams).toEqual([]);
 
     world.wakes = [];
-    world.run({ issueId: step.id, agentId: ENGINEER, status: "running", startedAt: h.at(1), finishedAt: null, silenceAgeMs: 32 * MIN });
-    await h.sweepAt(34);
+    world.run({ issueId: step.id, agentId: ENGINEER, status: "running", startedAt: h.at(1), finishedAt: null, silenceAgeMs: 62 * MIN });
+    await h.sweepAt(64);
     expect(h.calls.cancels).toHaveLength(1);
     expect(h.calls.telegrams).toHaveLength(1);
     expect(h.calls.telegrams[0]).toContain("without saving any work. What I did: stopped and restarted it at 13:00; it got stuck again.");
+  });
+
+  it("leaves a run alone that was silent for 59 minutes (one long tool call) and cancels at 61", async () => {
+    const world = new World();
+    const { step } = stepTree(world, { status: "in_progress" });
+    const run = world.run({ issueId: step.id, agentId: ENGINEER, status: "running", startedAt: ago(100), finishedAt: null, silenceAgeMs: 59 * MIN });
+    const h = harness(world);
+    await h.sweepAt(0);
+    expect(h.calls.cancels).toEqual([]);
+    run.silenceAgeMs = 61 * MIN;
+    await h.sweepAt(2);
+    expect(h.calls.cancels).toEqual([run.id]);
   });
 
   it("treats a run past its timeout plus 15 minutes as stuck", async () => {
@@ -875,5 +895,237 @@ describe("recovery-owned issues", () => {
     const h = harness(world);
     await h.sweepAt(0);
     expect(mutatingWakes(h.calls)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S10: fixes for the S8 review (TOM-723). Each case failed on e72888b3.
+// ---------------------------------------------------------------------------
+
+describe("a requeue that worked (S8 blocking 1)", () => {
+  it("run started and succeeded, task idle for 8 minutes: no T4", async () => {
+    const world = new World();
+    const { root, step } = stepTree(world, { status: "in_progress" });
+    for (const issue of [root, step]) lastProgress(world, issue.id, 11);
+    const h = harness(world);
+
+    await h.sweepAt(0); // lost run for 11 min: re-queued
+    expect(mutatingWakes(h.calls)).toHaveLength(1);
+    expect(h.calls.telegrams).toEqual([]);
+
+    world.wakes = [];
+    world.run({ issueId: step.id, agentId: ENGINEER, status: "succeeded", createdAt: h.at(1), startedAt: h.at(1), finishedAt: h.at(8) });
+    world.latestProgress.set(step.id, h.at(8));
+
+    await h.sweepAt(10);
+    await h.sweepAt(16); // 16 min after the heal, 8 min after real progress
+    await h.sweepAt(60);
+    expect(h.calls.telegrams).toEqual([]);
+    expect(h.calls.wakes.filter((w) => w.reason === "stall_sentinel_reroute")).toEqual([]);
+  });
+
+  it("a requeue whose run starts and finishes sends nothing, then one 'Moving again' after an earlier alert", async () => {
+    const world = new World();
+    const { root, step } = stepTree(world, { status: "in_progress" });
+    for (const issue of [root, step]) lastProgress(world, issue.id, 11);
+    const h = harness(world);
+    await h.sweepAt(0);
+    await h.sweepAt(16); // no run started: T4 is right here
+    expect(h.calls.telegrams).toHaveLength(1);
+    expect(h.calls.telegrams[0]).toContain("its run was lost");
+
+    world.wakes = [];
+    world.run({ issueId: step.id, agentId: ENGINEER, status: "succeeded", createdAt: h.at(17), startedAt: h.at(17), finishedAt: h.at(25) });
+    world.latestProgress.set(step.id, h.at(25));
+    await h.sweepAt(27);
+    await h.sweepAt(80);
+    expect(h.calls.telegrams.filter((t) => t.startsWith("Moving again"))).toHaveLength(1);
+    expect(h.calls.telegrams.filter((t) => t.includes("its run was lost"))).toHaveLength(1);
+  });
+
+  it("still alerts when the requeue produced no run at all", async () => {
+    const world = new World();
+    const { root, step } = stepTree(world, { status: "in_progress" });
+    for (const issue of [root, step]) lastProgress(world, issue.id, 11);
+    const h = harness(world);
+    await h.sweepAt(0);
+    await h.sweepAt(14);
+    expect(h.calls.telegrams).toEqual([]);
+    await h.sweepAt(16);
+    expect(h.calls.telegrams).toHaveLength(1);
+  });
+});
+
+describe("a wake that was dropped is 'not asked' (S8 blocking 2)", () => {
+  function checkpointWorld() {
+    const world = new World();
+    const root = world.add({ id: id("root"), title: "Root", status: "blocked", assigneeAgentId: JARVIS });
+    const done = world.add({ id: id("s1"), title: "S1: First", parentId: root.id, status: "done", completedAt: ago(16), assigneeAgentId: ENGINEER });
+    const open = world.add({ id: id("s2"), title: "S2: Second", parentId: root.id, status: "in_progress", assigneeAgentId: ENGINEER });
+    world.blocks(done.id, root.id);
+    world.blocks(open.id, root.id);
+    world.run({ issueId: open.id, agentId: ENGINEER, status: "running", startedAt: ago(2), finishedAt: null, silenceAgeMs: 0 });
+    return { world, root, done, open };
+  }
+
+  it("K: a dropped checkpoint wake is not reported as 'woke Jarvis, who has not picked it up'", async () => {
+    const { world, root } = checkpointWorld();
+    const h = harness(world, { wakeResult: () => ({ queued: false, reason: "not_queued" }) });
+    await h.sweepAt(0);
+    expect(actions(h.calls, "stall_sentinel.healed")[0]!.details).toMatchObject({ asked: false, wake: "dropped" });
+    const comment = h.calls.comments.find((c) => c.issueId === root.id)!;
+    expect(comment.body).not.toMatch(/I woke|I asked|so I restarted/);
+    expect(comment.body).toContain("not accepted");
+    await h.sweepAt(31);
+    expect(h.calls.telegrams.some((t) => t.includes("has not picked it up"))).toBe(false);
+    expect(h.calls.telegrams).toHaveLength(1);
+    expect(h.calls.telegrams[0]).toContain("I cannot see a cause");
+  });
+
+  it("K: a wake that is queued and picked up (a run starts after the finished step) never alerts", async () => {
+    const { world, root } = checkpointWorld();
+    const h = harness(world);
+    await h.sweepAt(0);
+    expect(mutatingWakes(h.calls)).toHaveLength(1);
+    world.run({ issueId: root.id, agentId: JARVIS, status: "succeeded", createdAt: h.at(3), startedAt: h.at(3), finishedAt: h.at(6) });
+    await h.sweepAt(40);
+    expect(h.calls.telegrams).toEqual([]);
+  });
+
+  it("C: a dropped cancelled-blocker wake is not reported as 'asked to replace the blocker'", async () => {
+    const world = new World();
+    const root = world.add({ id: id("root"), title: "Root", status: "in_progress", assigneeAgentId: JARVIS });
+    const cancelled = world.add({ id: id("s1"), title: "S1: First", parentId: root.id, status: "cancelled", cancelledAt: ago(20), assigneeAgentId: ENGINEER });
+    const blocked = world.add({ id: id("s2"), title: "S2: Second", parentId: root.id, status: "blocked", assigneeAgentId: ENGINEER });
+    world.blocks(cancelled.id, blocked.id);
+    lastProgress(world, root.id, 20);
+    const h = harness(world, { wakeResult: () => ({ queued: false, reason: "not_queued" }) });
+    await h.sweepAt(0);
+    const comment = h.calls.comments.find((c) => c.issueId === root.id)!.body;
+    expect(comment).not.toContain("I asked");
+    expect(comment).toContain("not accepted");
+    await h.sweepAt(31);
+    expect(h.calls.telegrams.join("\n")).not.toContain("asked to replace");
+    expect(h.calls.telegrams).toHaveLength(1);
+    expect(h.calls.telegrams[0]).toContain("I cannot see a cause");
+  });
+
+  it("an earlier wake that is still waiting is reported as waiting, not as 'restarted'", async () => {
+    const world = new World();
+    const { root, step } = stepTree(world, { status: "in_progress" });
+    for (const issue of [root, step]) lastProgress(world, issue.id, 11);
+    const h = harness(world, { wakeResult: () => ({ queued: false, reason: "already_pending" }) });
+    await h.sweepAt(0);
+    const comment = h.calls.comments.find((c) => c.issueId === root.id)!.body;
+    expect(comment).not.toContain("so I restarted it");
+    expect(comment).toContain("already waiting");
+  });
+});
+
+describe("alert-only mode (S8 non-blocking 1)", () => {
+  it("queues no wake at all, not even a reroute wake for Jarvis", async () => {
+    const world = new World();
+    world.agents.set(ENGINEER, makeAgent({ id: ENGINEER, name: "Tom's Labs Engineer", status: "paused" }));
+    const { step } = stepTree(world);
+    lastProgress(world, step.id, 20);
+    const h = harness(world, { mode: "alert_only" });
+    await h.sweepAt(0);
+    await h.sweepAt(60);
+    await h.sweepAt(120);
+    expect(h.calls.wakes).toEqual([]);
+    expect(h.calls.telegrams.length).toBeGreaterThan(0);
+    expect(h.calls.telegrams.join("\n")).not.toContain("Jarvis has been asked");
+  });
+
+  it("alerts at the cause's alert time (heal due + 15 min), not at heal-due time", async () => {
+    const world = new World();
+    const { root, step } = stepTree(world, { status: "in_progress" });
+    for (const issue of [root, step]) lastProgress(world, issue.id, 11);
+    const h = harness(world, { mode: "alert_only" });
+    await h.sweepAt(0); // lost run for 11 min: heal would be due (10 min)
+    expect(actions(h.calls, "stall_sentinel.would_heal")).toHaveLength(1);
+    expect(h.calls.telegrams).toEqual([]);
+    await h.sweepAt(13);
+    expect(h.calls.telegrams).toEqual([]);
+    await h.sweepAt(15);
+    expect(h.calls.telegrams).toHaveLength(1);
+    expect(h.calls.telegrams[0]).toContain("Self-repair is off");
+  });
+});
+
+describe("heal keys (S8 non-blocking 3)", () => {
+  it("a Claude rewrite does not block the wait-for-reset wake on the same task", async () => {
+    const world = new World();
+    const { step } = stepTree(world, {
+      status: "todo",
+      assigneeAdapterOverrides: { adapterType: "codex_local", adapterConfig: { model: "gpt-5" } },
+    });
+    lastProgress(world, step.id, 5);
+    const h = harness(world, { quota: claudeQuota(10, 120) });
+    await h.sweepAt(0);
+    expect(h.calls.overrides).toHaveLength(1); // the OpenAI override was rewritten to Claude
+    world.runs.push({
+      id: id("run"), issueId: step.id, agentId: ENGINEER, status: "failed", errorCode: "provider_quota",
+      createdAt: h.at(1), startedAt: h.at(1), finishedAt: h.at(2), scheduledRetryAt: null, silenceAgeMs: null,
+    });
+    world.wakes = [];
+    await h.sweepAt(4); // Claude is out: the one wake at reset + 5 min must still be scheduled
+    const restart = actions(h.calls, "stall_sentinel.healed").filter((a) => a.details.action === "restart_after_reset");
+    expect(restart).toHaveLength(1);
+  });
+});
+
+describe("sweep time limit (S8 non-blocking 2)", () => {
+  it("a sweep past the limit blocks a second sweep, double-sends nothing and cannot overwrite health", async () => {
+    const world = new World();
+    const { root, step } = stepTree(world, { status: "in_progress" });
+    for (const issue of [root, step]) lastProgress(world, issue.id, 120);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let loads = 0;
+    const h = harness(world, {
+      config: { sweepTimeoutMs: 20, sweepIntervalMs: 1_000 },
+      loadSnapshot: async (_companyId, now) => {
+        loads += 1;
+        if (loads === 1) await gate;
+        return world.snapshot(now);
+      },
+    });
+    h.at(0);
+    expect(await h.sentinel.tick()).toBeNull(); // timed out
+    expect(getStallSentinelHealth()).toMatchObject({ lastSweepOk: false });
+
+    h.at(10); // well past the interval, but the first sweep is still running
+    expect(await h.sentinel.tick()).toBeNull();
+    expect(loads).toBe(1);
+
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The late sweep did nothing and wrote nothing.
+    expect(h.calls.wakes).toEqual([]);
+    expect(h.calls.telegrams).toEqual([]);
+    expect(getStallSentinelHealth()).toMatchObject({ lastSweepOk: false });
+
+    h.at(20); // the old sweep has stopped: a new one may start
+    expect(await h.sentinel.tick()).not.toBeNull();
+    expect(loads).toBe(2);
+    expect(getStallSentinelHealth()).toMatchObject({ lastSweepOk: true });
+  });
+});
+
+describe("rollout flip (would-heal notes never block a real heal)", () => {
+  it("a would-heal recorded in the alert-only window does not stop the real heal once self-repair is on", async () => {
+    const world = new World();
+    const { root, step } = stepTree(world, { status: "in_progress" });
+    for (const issue of [root, step]) lastProgress(world, issue.id, 11);
+    const h = harness(world, { rollout: { startedAt: null, selfRepairOnAt: null } });
+    await h.sweepAt(0);
+    expect(actions(h.calls, "stall_sentinel.would_heal")).toHaveLength(1);
+    expect(mutatingWakes(h.calls)).toEqual([]);
+    await h.sweepAt(24 * 60 + 1);
+    expect(mutatingWakes(h.calls)).toHaveLength(1);
+    expect(actions(h.calls, "stall_sentinel.healed")).toHaveLength(1);
   });
 });

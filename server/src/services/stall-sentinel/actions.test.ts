@@ -122,9 +122,33 @@ describeDb("stall sentinel against a real database", () => {
     const actions = createStallSentinelActions({ db, heartbeat: heartbeat.port, send: null });
     const key = `stall-sentinel:L:${childId}:1`;
     await db.insert(agentWakeupRequests).values({ companyId, agentId: engineerId, source: "automation", triggerDetail: "system", reason: "stall_sentinel_requeue", idempotencyKey: key, payload: { issueId: childId } });
-    expect(await actions.wake(engineerId, { issueId: childId, reason: "stall_sentinel_requeue", idempotencyKey: key })).toEqual({ queued: false });
+    expect(await actions.wake(engineerId, { issueId: childId, reason: "stall_sentinel_requeue", idempotencyKey: key })).toEqual({ queued: false, reason: "already_pending" });
     expect(await actions.wake(engineerId, { issueId: childId, reason: "stall_sentinel_requeue", idempotencyKey: `${key}x` })).toEqual({ queued: true });
     expect(heartbeat.wakes).toHaveLength(1);
+  });
+
+  it("a finished wake with the same key does not block a fresh wake after the cooldown", async () => {
+    const { companyId, engineerId, childId } = await seed();
+    const heartbeat = recordingHeartbeat();
+    const actions = createStallSentinelActions({ db, heartbeat: heartbeat.port, send: null });
+    const key = `stall-sentinel:L:${childId}:1`;
+    for (const status of ["completed", "failed", "skipped", "cancelled"]) {
+      await db.insert(agentWakeupRequests).values({ companyId, agentId: engineerId, source: "automation", triggerDetail: "system", reason: "stall_sentinel_requeue", idempotencyKey: key, status, payload: { issueId: childId } });
+    }
+    expect(await actions.wake(engineerId, { issueId: childId, reason: "stall_sentinel_requeue", idempotencyKey: key })).toEqual({ queued: true });
+    expect(heartbeat.wakes).toHaveLength(1);
+    // Now one is queued again: the same key is blocked.
+    await db.insert(agentWakeupRequests).values({ companyId, agentId: engineerId, source: "automation", triggerDetail: "system", reason: "stall_sentinel_requeue", idempotencyKey: key, status: "queued", payload: { issueId: childId } });
+    expect(await actions.wake(engineerId, { issueId: childId, reason: "stall_sentinel_requeue", idempotencyKey: key })).toEqual({ queued: false, reason: "already_pending" });
+  });
+
+  it("says not_queued when the wake port drops the wake", async () => {
+    const { engineerId, childId } = await seed();
+    const dropping: HeartbeatWakePort = { wakeup: async () => null, cancelRun: async () => undefined };
+    const actions = createStallSentinelActions({ db, heartbeat: dropping, send: null });
+    expect(await actions.wake(engineerId, { issueId: childId, reason: "stall_sentinel_requeue", idempotencyKey: "k-drop" })).toEqual({ queued: false, reason: "not_queued" });
+    const none = createStallSentinelActions({ db, heartbeat: null, send: null });
+    expect(await none.wake(engineerId, { issueId: childId, reason: "stall_sentinel_requeue", idempotencyKey: "k-none" })).toEqual({ queued: false, reason: "not_queued" });
   });
 
   it("loads a real tree; system comments do not count as progress and agent comments do", async () => {

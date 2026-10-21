@@ -84,6 +84,28 @@ describe("wake context", () => {
     expect(allowsDependencyBlockedWake({ wakeReason: "issue_assigned" }, allowed)).toBe(false);
   });
 
+  it.each([
+    "stall_sentinel_checkpoint_done",
+    "stall_sentinel_cancelled_blocker",
+    "stall_sentinel_reroute",
+  ])("lets the stall sentinel wake %s through the dependency gate", (wakeReason) => {
+    expect(allowsDependencyBlockedWake({ wakeReason }, new Set(["issue_commented"]))).toBe(true);
+  });
+
+  it.each([
+    "stall_sentinel_requeue",
+    "stall_sentinel_resume",
+    "stall_sentinel_blocked_without_blocker",
+    "stall_sentinel_provider_reset",
+    "stall_sentinel_provider_rewrite",
+    "issue_assigned",
+    "issue_blockers_resolved",
+    "heartbeat_timer",
+    "stall_sentinel_reroute_extra",
+  ])("still skips the automatic wake %s on a dependency-blocked issue", (wakeReason) => {
+    expect(allowsDependencyBlockedWake({ wakeReason }, new Set(["issue_commented"]))).toBe(false);
+  });
+
   it.each(["accepted", "answered", "cancelled", "rejected"])(
     "recognizes %s issue-comment interaction continuations",
     (interactionStatus) => {

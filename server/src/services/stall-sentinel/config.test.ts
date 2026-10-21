@@ -24,6 +24,9 @@ describe("stall sentinel config", () => {
     expect(resolveEffectiveMode("alert_only", new Date(0), 24 * HOUR, NOW)).toBe("alert_only");
     expect(resolveEffectiveMode("off", new Date(0), 24 * HOUR, NOW)).toBe("off");
   });
+  it("cancels a stuck run only after 60 minutes of silence, like the watchdog's suspicion threshold", () => {
+    expect(readStallSentinelConfig({}).thresholds.stuckSilenceMs).toBe(60 * 60_000);
+  });
   it("reads the rollout length", () => {
     expect(readStallSentinelConfig({ PAPERCLIP_STALL_SENTINEL_ROLLOUT_HOURS: "2" }).rolloutMs).toBe(2 * HOUR);
   });

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { deriveIssueStepKey as sharedDeriveIssueStepKey } from "@paperclipai/shared";
 import { deriveIssueStepKey, stepIdFromTitle } from "./step-key.js";
 
 const PARENT = "fe0189cc-4c8d-4973-988b-44a430720ae4";
 
-describe("stall sentinel deriveIssueStepKey (local copy)", () => {
+describe("stall sentinel deriveIssueStepKey", () => {
+  it("is the shared helper itself, so the two rules cannot drift", () => {
+    expect(deriveIssueStepKey).toBe(sharedDeriveIssueStepKey);
+  });
+
   it.each([
     ["S3: Build the alarm", `${PARENT}:S3`],
     ["S3:Build the alarm", `${PARENT}:S3`],
