@@ -8,6 +8,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { lineService } from "../services/lines.js";
 import { issueService } from "../services/issues.js";
 import { lineNamingService } from "../services/line-naming.js";
+import { builtInAgentService } from "../services/built-in-agents.js";
 import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { lineRoutes } from "../routes/lines.js";
 import { errorHandler } from "../middleware/index.js";
@@ -108,13 +109,33 @@ suite("Line membership", () => {
     expect(task.assigneeAdapterOverrides).toEqual({ adapterType: "codex_local", adapterConfig: { model: "gpt-5.4-mini", modelReasoningEffort: "low" } });
   });
 
+  it("self-provisions a restricted naming agent instead of an existing powerful agent", async () => {
+    const companyId = await company();
+    const root = await issue(companyId);
+    const powerfulAgentId = randomUUID();
+    await db.insert(agents).values({ id: powerfulAgentId, companyId, name: "Jarvis", role: "general", status: "idle",
+      adapterType: "claude_local", adapterConfig: { model: "claude-opus-5-5" }, permissions: { canCreateAgents: true, canCreateSkills: true } });
+    const { line } = await lineService(db).ensure(companyId, root, { type: "system" });
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(1);
+    const first = await lineNamingService(db).start(companyId, line.id, { type: "system" });
+    expect(first.queued).toBe(true);
+    const [task] = await db.select().from(issues).where(eq(issues.id, first.namingIssueId!));
+    expect(task.assigneeAgentId).not.toBe(powerfulAgentId);
+    const [namer] = await db.select().from(agents).where(eq(agents.id, task.assigneeAgentId!));
+    expect(namer).toMatchObject({ adapterType: "codex_local", permissions: { canCreateAgents: false, canCreateSkills: false } });
+    expect(namer.adapterConfig).toMatchObject({ model: "gpt-5.4-mini", modelReasoningEffort: "low" });
+    const second = await builtInAgentService(db).get(companyId, "line-namer");
+    expect(second.agentId).toBe(namer.id);
+    expect(second.status).toBe("ready");
+  });
+
   it("accepts only the current OpenAI task run and ignores a stale result", async () => {
     const companyId = await company();
     const root = await issue(companyId);
-    const agentId = randomUUID();
-    await db.insert(agents).values({ id: agentId, companyId, name: "Summarizer", role: "general", status: "idle", adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" }, metadata: withBuiltInAgentMarker(null, { key: "summarizer", featureKeys: ["summarizer"] }) });
     const { line } = await lineService(db).ensure(companyId, root, { type: "system" });
     const { namingIssueId } = await lineNamingService(db).start(companyId, line.id, { type: "system" });
+    const [task] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, namingIssueId!));
+    const agentId = task.assigneeAgentId!;
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", startedAt: new Date(), contextSnapshot: { issueId: namingIssueId, lineNamingResolvedAdapterType: "claude_local", lineNamingResolvedModel: "gpt-5.4-mini" } });
     await db.update(issues).set({ checkoutRunId: runId }).where(eq(issues.id, namingIssueId!));
@@ -240,11 +261,11 @@ suite("Line membership", () => {
   it("records malformed GPT output as a failed attempt without erasing the prior name", async () => {
     const companyId = await company();
     const root = await issue(companyId);
-    const agentId = randomUUID();
-    await db.insert(agents).values({ id: agentId, companyId, name: "Summarizer", role: "general", status: "idle", adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" }, metadata: withBuiltInAgentMarker(null, { key: "summarizer", featureKeys: ["summarizer"] }) });
     const { line } = await lineService(db).ensure(companyId, root, { type: "system" });
     await db.update(lines).set({ name: "Earlier Valid Name", namingStatus: "ready" }).where(eq(lines.id, line.id));
     const { namingIssueId } = await lineNamingService(db).start(companyId, line.id, { type: "system" }, true);
+    const [task] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, namingIssueId!));
+    const agentId = task.assigneeAgentId!;
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", startedAt: new Date(), contextSnapshot: { issueId: namingIssueId, lineNamingResolvedAdapterType: "codex_local", lineNamingResolvedModel: "gpt-5.4-mini" } });
     await db.update(issues).set({ checkoutRunId: runId }).where(eq(issues.id, namingIssueId!));
@@ -362,17 +383,19 @@ suite("Line membership", () => {
   it("keeps a prior name and parks failed regeneration until setup recovers", async () => {
     const companyId = await company();
     const root = await issue(companyId);
-    const agentId = randomUUID();
-    await db.insert(agents).values({ id: agentId, companyId, name: "Summarizer", role: "general", status: "paused", adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" }, metadata: withBuiltInAgentMarker(null, { key: "summarizer", featureKeys: ["summarizer"] }) });
     const { line } = await lineService(db).ensure(companyId, root, { type: "system" });
     await db.update(lines).set({ name: "Earlier Valid Name", namingStatus: "ready" }).where(eq(lines.id, line.id));
+    // Self-provision the built-in naming agent, then pause it to simulate it being
+    // unavailable (e.g. mid-setup) — naming must park, not fall back to another agent.
+    const provisioned = await builtInAgentService(db).ensure(companyId, "line-namer");
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, provisioned.agentId!));
     await Promise.all([lineNamingService(db).start(companyId, line.id, { type: "system" }, true),
       lineNamingService(db).start(companyId, line.id, { type: "system" }, true)]);
     const failed = await lineService(db).get(companyId, line.id);
     expect(failed).toMatchObject({ name: "Earlier Valid Name", namingStatus: "failed", namingAttempts: 0, lastNamingErrorCode: "summarizer_not_configured" });
     for (let minute = 0; minute < 3; minute++) await lineNamingService(db).reconcile();
     expect((await db.select().from(activityLog).where(eq(activityLog.action, "line.naming_failed"))).length).toBe(1);
-    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, provisioned.agentId!));
     const [first, second] = await Promise.all([lineNamingService(db).start(companyId, line.id, { type: "system" }, true),
       lineNamingService(db).start(companyId, line.id, { type: "system" }, true)]);
     expect([first.queued, second.queued].filter(Boolean)).toHaveLength(1);

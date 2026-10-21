@@ -21,10 +21,29 @@ function attribution(actor: LineActor) {
   return { actorType: actor.type, actorId: actor.agentId ?? actor.userId ?? "line_naming", agentId: actor.agentId ?? null, runId: actor.runId ?? null } as const;
 }
 
+// Restricted built-in agent that names Lines: codex_local, gpt-5.4-mini, low
+// effort, no tools/credentials/workspace access. It self-provisions on first
+// use so naming never depends on the enableBuiltInAgents switch or a board
+// action — see TOM-707.
+const LINE_NAMER_KEY = "line-namer";
+
 export function lineNamingService(db: Db) {
   const lineSvc = lineService(db);
   const issuesSvc = issueService(db);
   const builtIns = builtInAgentService(db);
+
+  async function ensureNamingAgent(companyId: string) {
+    const existing = await builtIns.get(companyId, LINE_NAMER_KEY);
+    if (existing.status !== "not_provisioned") return existing;
+    try {
+      return await builtIns.ensure(companyId, LINE_NAMER_KEY);
+    } catch {
+      // Provisioning failed (e.g. the model is not yet in the adapter's
+      // catalog). Leave the Line on its actionable error code; reconcile()
+      // retries once the built-in agent becomes ready.
+      return existing;
+    }
+  }
 
   async function markFailure(companyId: string, lineId: string, version: number, errorCode: string, actor: LineActor, allowReady = false) {
     await db.transaction(async (tx) => {
@@ -48,16 +67,16 @@ export function lineNamingService(db: Db) {
     const [current] = await db.select().from(lines).where(and(eq(lines.companyId, companyId), eq(lines.id, lineId)));
     if (!current) throw notFound("Line not found");
     if (current.namingStatus === "generating") return { queued: false, namingIssueId: current.namingIssueId, failureCode: null };
-    const builtIn = await builtIns.get(companyId, "summarizer");
+    const builtIn = await ensureNamingAgent(companyId);
     if (builtIn.status !== "ready" || !builtIn.agentId) {
       const [row] = await db.select().from(lines).where(and(eq(lines.companyId, companyId), eq(lines.id, lineId)));
       if (!row) throw notFound("Line not found");
       await markFailure(companyId, lineId, row.namingVersion, "summarizer_not_configured", actor, manual);
       return { queued: false, namingIssueId: null, failureCode: "summarizer_not_configured" };
     }
-    const [summarizer] = await db.select({ adapterType: agents.adapterType }).from(agents)
+    const [namer] = await db.select({ adapterType: agents.adapterType }).from(agents)
       .where(and(eq(agents.companyId, companyId), eq(agents.id, builtIn.agentId)));
-    if (!summarizer || !["codex_local", "claude_local"].includes(summarizer.adapterType)) {
+    if (!namer || namer.adapterType !== "codex_local") {
       await markFailure(companyId, lineId, current.namingVersion, "openai_override_unavailable", actor, manual);
       return { queued: false, namingIssueId: null, failureCode: "openai_override_unavailable" };
     }
@@ -179,7 +198,7 @@ export function lineNamingService(db: Db) {
         }
       } else if (row.namingStatus === "pending" || (row.nextNamingAttemptAt && row.nextNamingAttemptAt <= new Date()) ||
           (row.namingStatus === "failed" && row.lastNamingErrorCode === "summarizer_not_configured" &&
-            (await builtIns.get(row.companyId, "summarizer")).status === "ready")) {
+            (await ensureNamingAgent(row.companyId)).status === "ready")) {
         try {
           const generation = await start(row.companyId, row.id, { type: "system" });
           if (generation.queued && generation.namingIssueId && onQueued) await onQueued(row.companyId, generation.namingIssueId);
