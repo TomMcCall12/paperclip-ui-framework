@@ -11,6 +11,7 @@ import {
   syncPrimaryScheduledCheckFromExecutionPolicy,
 } from "../services/issue-scheduled-checks.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
+import type { IssueCreateDeduplicationReason } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -12164,8 +12165,7 @@ export function issueRoutes(
         },
         actor,
       );
-      let deduplicationReason: "idempotency_key" | "recent_open_title" | null =
-        null;
+      let deduplicationReason: IssueCreateDeduplicationReason | null = null;
       const createInput = {
         ...createBody,
         ...(taskBridgeOriginForActor(req) ?? {}),
@@ -12180,7 +12180,7 @@ export function issueRoutes(
         actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
         trustExplicitResponsibleUserId: actor.actorType === "user",
         watchdogActorRunId: actor.runId,
-        onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
+        onDeduplicated: (reason: IssueCreateDeduplicationReason) => {
           deduplicationReason = reason;
         },
       };

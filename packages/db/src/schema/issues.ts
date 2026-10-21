@@ -99,6 +99,9 @@ export const issues = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
+    // Server-derived from "S<n>:" style titles under a parent (see deriveIssueStepKey in
+    // @paperclipai/shared). Never client-writable; null for every other issue.
+    stepKey: text("step_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -204,6 +207,16 @@ export const issues = pgTable(
       .where(
         sql`${table.originKind} = 'stranded_issue_recovery'
           and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    // At most one open, visible issue per step under a parent. Two creates of the same
+    // "S<n>:" step race on the pre-insert lookup; this index atomically rejects the loser.
+    openStepKeyIdx: uniqueIndex("issues_open_step_key_uq")
+      .on(table.companyId, table.parentId, table.stepKey)
+      .where(
+        sql`${table.stepKey} is not null
+          and ${table.parentId} is not null
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),

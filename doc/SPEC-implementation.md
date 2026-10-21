@@ -247,6 +247,7 @@ See `doc/project-repositories.md` for the API and UI contract.
 - `created_by_user_id` uuid fk `users.id` null
 - identifier fields: `issue_number`, `identifier`
 - origin fields: `origin_kind`, `origin_id`, `origin_run_id`, `origin_fingerprint`
+- `step_key` text null: server-derived identity of an assembly-line step under a parent; see 10.4.2. Never client-writable.
 - Creation stores the actor run in `origin_run_id` unless an explicit origin run is supplied. `GET /api/companies/:companyId/issues?createdFromIssueId=<uuid>` selects tasks created by runs bound to that source task, using native run issue identity or persisted legacy task context. Historical rows without an origin run may use their recorded creation activity; comments and shared creators do not establish provenance. Source, run, activity and result are company-scoped.
 - Relation lists can use `sortField=id&sortDir=asc&afterId=<uuid>` for stable pagination. The cursor excludes earlier IDs and cannot be combined with an offset or activity-based order.
 - The streamlined task page's Tasks tab keeps two independent memberships: the existing subtask tree, and created tasks grouped by their current project (or No project). A created subtask appears in both. Only Subtasks has completion progress; groups collapse independently and unfinished tasks sort above finished tasks.
@@ -392,6 +393,7 @@ Operational policy:
 - `issues(company_id, status)`
 - `issues(company_id, assignee_agent_id, status)`
 - `issues(company_id, parent_id)`
+- `issues(company_id, parent_id, step_key)` unique, partial (`issues_open_step_key_uq`): `step_key` and `parent_id` not null, `hidden_at` null, status not `done` or `cancelled`
 - `issues(company_id, project_id)`
 - `cost_events(company_id, occurred_at)`
 - `cost_events(company_id, agent_id, occurred_at)`
@@ -1076,6 +1078,24 @@ revision, and a negotiated action; they return `202`, replay the original result
 for a duplicate request id, and return `409` with the current projection for a
 stale revision or an unconfirmed unfinished-goal replacement. These controls do
 not create issue comments.
+
+### 10.4.2 Create deduplication and step keys
+
+`POST /companies/:companyId/issues` returns an existing issue with HTTP `200` and `deduplicated: true` instead of creating a new one. `deduplicationReason` says why:
+
+- `idempotency_key`: the optional request `idempotencyKey` was used before in this company (kept for 7 days, replays closed issues too).
+- `recent_open_title`: an open sibling with the same normalized title was created in the last 48 hours. `allowDuplicate: true` bypasses this check only.
+- `step_key`: an open sibling under the same parent already holds the same step key.
+
+The step key is server-derived and callers cannot send it. When the issue has a `parentId` and its trimmed title starts with `S<n>:`, `S<n>-r<k>:` or a lettered step such as `S5e:` (capital `S`, case-sensitive), `step_key` is `<parentId>:S<n>` or `<parentId>:S<n>-r<k>` (`deriveIssueStepKey` in `packages/shared`). Any other title, and any top-level issue, has a null key and behaves as before.
+
+- The partial unique index `issues_open_step_key_uq (company_id, parent_id, step_key)` allows one open, visible issue per step per parent. Cancelled and done copies do not count, so cancelling the old copy, or using the `-r<k>` title, is how to replace a step.
+- Create takes a transaction advisory lock on the company and step key, then returns the existing open sibling. If another path still loses the index race, the create catches the unique violation, selects the winner and returns it the same way. Two simultaneous creates of one step give one row.
+- `allowDuplicate: true` does not bypass the step key. A supplied `idempotencyKey` is recorded against the existing issue.
+- `PATCH /issues/:issueId` recomputes the key when the title or parent changes. If the change, or reopening a done or cancelled issue, would give two open siblings the same key, the response is `409` with `code: "step_key_conflict"` and `details.existingIssueId`.
+- Company import, seeds and routines do not set the key. Existing rows have no key (no backfill).
+
+The stall alarm that detects and repairs stalled work is described in [stall-sentinel.md](stall-sentinel.md). It relies on step keys to stop duplicated steps.
 
 ### 10.4.1 Atomic Checkout Contract
 
