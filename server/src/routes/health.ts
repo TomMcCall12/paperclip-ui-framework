@@ -36,6 +36,10 @@ import {
 } from "../auth/workspace-login-handoff.js";
 import { serverVersion } from "../version.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
+import {
+  getStallSentinelHealth,
+  getStallSentinelHealthDetails,
+} from "../services/stall-sentinel/health-state.js";
 import { nativeRestartRecoverySummary } from "../services/native-runtime/native-restart-recovery.js";
 import {
   removeHotRestartIntent,
@@ -237,6 +241,10 @@ export function healthRoutes(
     );
     const runtimeEnv = opts.runtimeEnv ?? process.env;
     const startupRecovery = getStartupRecoveryState();
+    // The stall sentinel's freshness rides every response, including the
+    // redacted one the host heartbeat reads anonymously. The public part holds
+    // no task data; counts and the last delivery error need full details.
+    const stallSentinel = exposeFullDetails ? getStallSentinelHealthDetails() : getStallSentinelHealth();
     const healthStatus =
       startupRecovery.phase === "ready" ? "ok" : "starting";
     const cloud = getCloudHealthStatus(runtimeEnv);
@@ -279,6 +287,7 @@ export function healthRoutes(
               serverVersion: serverVersion,
               commit,
               serverInfo,
+              stallSentinel,
               ...(cloud ? { cloud } : {}),
               ...(hiddenSettings.length ? { hiddenSettings } : {}),
             }
@@ -286,6 +295,7 @@ export function healthRoutes(
               status: healthStatus,
               deploymentMode: opts.deploymentMode,
               commit,
+              stallSentinel,
               ...(cloud ? { cloud } : {}),
               ...(hiddenSettings.length ? { hiddenSettings } : {}),
             },
@@ -309,6 +319,7 @@ export function healthRoutes(
         serverVersion,
         commit,
         error: "database_unreachable",
+        stallSentinel,
         ...(exposeFullDetails ? { serverInfo } : {}),
         ...(workspace ? { workspace } : {}),
         ...(cloud ? { cloud } : {}),
@@ -396,6 +407,7 @@ export function healthRoutes(
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
+        stallSentinel,
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
@@ -426,6 +438,7 @@ export function healthRoutes(
       serverInfo,
       startupRecovery,
       nativeRecovery,
+      stallSentinel,
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),

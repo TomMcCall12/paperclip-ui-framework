@@ -42,6 +42,7 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
+import { createServerStallSentinel } from "./services/stall-sentinel/index.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
@@ -1291,6 +1292,22 @@ async function startServerWithDatabaseTeardown(
   scheduleGitHubConnectionEventPoll();
   scheduleGitHubConnectionContinuitySweep();
 
+  // Stall sentinel (doc/stall-sentinel.md): rides every scheduler tick, before
+  // the scheduling-suppression check, so it keeps watching while runs are held.
+  // It has its own 2-minute guard and 60 s limit, and calls no model or adapter.
+  // Not tracked as scheduler work: a sweep must never delay shutdown.
+  const stallSentinel = createServerStallSentinel({
+    db: db as any,
+    heartbeat,
+    send: typeof app.locals.sendBoardTelegramNotice === "function" ? app.locals.sendBoardTelegramNotice : null,
+  });
+  const scheduleStallSentinelTick = () => {
+    if (heartbeatSchedulerStopped) return;
+    void stallSentinel.tick().catch((err: unknown) => {
+      logger.error({ err }, "stall sentinel tick failed");
+    });
+  };
+
   if (heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
@@ -1629,6 +1646,7 @@ async function startServerWithDatabaseTeardown(
       // captures the authoritative set of running heartbeat rows.
       trackHeartbeatSchedulerWork((async () => {
         if (heartbeatSchedulerStopped) return;
+        scheduleStallSentinelTick();
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
         }));
@@ -1818,6 +1836,7 @@ async function startServerWithDatabaseTeardown(
     // the enabled path does.
     await runEnvironmentLeaseCleanupSweep(0);
     startHeartbeatSchedulerInterval(() => {
+      scheduleStallSentinelTick();
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
       scheduleGitHubConnectionEventPoll();
