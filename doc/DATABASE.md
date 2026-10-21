@@ -439,3 +439,11 @@ Migration `0286_happy_johnny_blaze.sql` adds the company-scoped `lines` table an
 Line adoption takes a company advisory transaction lock, recomputes the full descendant set under that lock, and compares it with the approved manifest before writing any membership. The approval must be an approved `request_board_approval` row with `payload.kind = "lines_adoption"` and the exact manifest SHA-256, decided by a board user. Activity stores the digest and approval ID. The adoption script checkpoints each root. See [Lines rollout](LINES-ROLLOUT.md) for the dry-run and apply commands.
 
 Application rollback retains the new table and nullable column. Older application SQL can continue to read and write issues without supplying `line_id`; forward recovery restores the same Line rows, names and memberships. Do not drop the new schema or erase memberships as an application rollback step.
+
+## Step key migration and rollback
+
+Migration `0287_busy_the_hood.sql` adds the nullable `issues.step_key` column and the partial unique index `issues_open_step_key_uq` on `(company_id, parent_id, step_key)`. The index covers only rows where `step_key` and `parent_id` are not null, `hidden_at` is null and `status` is not `done` or `cancelled`. The server derives the key from titles that start `S<n>:`, `S<n>-r<k>:` or a lettered step such as `S5e:`; no other path writes it. See [SPEC-implementation 10.4.2](SPEC-implementation.md).
+
+The migration does not backfill. Existing open duplicates (same title prefix under one parent) would make a backfill fail, so old rows keep `step_key = NULL` and only new or renamed issues get a key. A rename or reparent that would give two open siblings one key fails with HTTP `409`, not a database error.
+
+Application rollback retains the column and index. Older application SQL can read and write issues without supplying `step_key`, and a null key never conflicts. Do not drop the column or index as an application rollback step.

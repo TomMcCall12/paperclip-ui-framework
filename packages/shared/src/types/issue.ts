@@ -822,6 +822,9 @@ export interface IssueChangeReceiptEntry {
 
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
+/** Why `POST /companies/:companyId/issues` returned an existing issue (HTTP 200, `deduplicated: true`). */
+export type IssueCreateDeduplicationReason = "idempotency_key" | "recent_open_title" | "step_key";
+
 export interface Issue {
   conversationAgentId?: string | null;
   conversationUserId?: string | null;
@@ -866,6 +869,8 @@ export interface Issue {
   originIdentityContextId?: string | null;
   continuationIdentityContextId?: string | null;
   originFingerprint?: string | null;
+  /** Server-derived from "S<n>:" step titles under a parent; never client-writable. */
+  stepKey?: string | null;
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;

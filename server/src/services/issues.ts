@@ -5,7 +5,7 @@ import { documentService } from "./documents.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import type { ExecutionProjection } from "@paperclipai/shared";
+import type { ExecutionProjection, IssueCreateDeduplicationReason } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -95,6 +95,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   clampIssueRequestDepth,
+  deriveIssueStepKey,
   extractAgentMentionIds,
   extractProjectMentionIds,
   issueCommentAuthorTypeSchema,
@@ -105,7 +106,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { lineDescendantIds, lockLineTree } from "./lines.js";
-import { isForeignKeyViolation } from "../db-errors.js";
+import { isForeignKeyViolation, isUniqueViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -1934,6 +1935,33 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
 }
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+const OPEN_STEP_KEY_INDEX = "issues_open_step_key_uq";
+
+/** The open, visible sibling that holds a step key under `parentId`, matching issues_open_step_key_uq. */
+async function findOpenIssueByStepKey(
+  dbOrTx: Db | DbTransaction,
+  companyId: string,
+  parentId: string | null | undefined,
+  stepKey: string,
+): Promise<typeof issues.$inferSelect | undefined> {
+  if (!parentId) return undefined;
+  const [row] = await dbOrTx
+    .select()
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.parentId, parentId),
+        eq(issues.stepKey, stepKey),
+        isNull(issues.hiddenAt),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ),
+    )
+    .orderBy(asc(issues.createdAt), asc(issues.id))
+    .limit(1);
+  return row;
+}
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "lineId"> & {
   initialPlan?: string | null;
   labelIds?: string[];
@@ -1947,7 +1975,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "lineId">
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
-  onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  onDeduplicated?: (reason: IssueCreateDeduplicationReason) => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -4929,6 +4957,7 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  stepKey: issues.stepKey,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
@@ -9833,8 +9862,7 @@ export function issueService(db: Db) {
         }
 
         let existingIssue: typeof issues.$inferSelect | undefined;
-        let deduplicationReason:
-          "idempotency_key" | "recent_open_title" | null = null;
+        let deduplicationReason: IssueCreateDeduplicationReason | null = null;
         if (idempotencyKey) {
           const idempotencyKeyRetentionCutoff = new Date(
             Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS,
@@ -9868,6 +9896,16 @@ export function issueService(db: Db) {
             .then((rows) => rows.map((row) => row.issues));
           if (existingIssue) deduplicationReason = "idempotency_key";
         }
+        // Server-derived and unconditional: allowDuplicate does not bypass it.
+        // Replace a step by cancelling the old copy or using the "-r<k>" title.
+        const stepKey = deriveIssueStepKey(issueData.parentId, issueData.title);
+        if (!existingIssue && stepKey) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${`issue-create:step:${companyId}:${stepKey}`}, 0))`,
+          );
+          existingIssue = await findOpenIssueByStepKey(tx, companyId, issueData.parentId, stepKey);
+          if (existingIssue) deduplicationReason = "step_key";
+        }
         if (!existingIssue && allowDuplicate === false) {
           [existingIssue] = await tx
             .select()
@@ -9891,22 +9929,26 @@ export function issueService(db: Db) {
             .limit(1);
           if (existingIssue) deduplicationReason = "recent_open_title";
         }
-        if (existingIssue) {
+        const returnDeduplicated = async (
+          existing: typeof issues.$inferSelect,
+          reason: IssueCreateDeduplicationReason | null,
+        ) => {
           if (idempotencyKey) {
             await tx
               .insert(issueCreateIdempotencyKeys)
-              .values({ companyId, idempotencyKey, issueId: existingIssue.id })
+              .values({ companyId, idempotencyKey, issueId: existing.id })
               .onConflictDoNothing();
           }
-          if (deduplicationReason) onDeduplicated?.(deduplicationReason);
-          const [enriched] = await withIssueLabels(tx, [existingIssue]);
+          if (reason) onDeduplicated?.(reason);
+          const [enriched] = await withIssueLabels(tx, [existing]);
           const [withRelations] = await withIssueRelationSummaries(
             companyId,
             [enriched],
             tx,
           );
           return withRelations;
-        }
+        };
+        if (existingIssue) return returnDeduplicated(existingIssue, deduplicationReason);
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -10192,7 +10234,24 @@ export function issueService(db: Db) {
           }),
         );
 
-        const [issue] = await tx.insert(issues).values(values).returning();
+        values.stepKey = stepKey;
+        let issue: typeof issues.$inferSelect;
+        if (stepKey) {
+          // A savepoint keeps the outer transaction usable if another path wins the
+          // issues_open_step_key_uq race, so the loser can return the winner.
+          try {
+            [issue] = await tx.transaction((savepoint) =>
+              savepoint.insert(issues).values(values).returning(),
+            );
+          } catch (error) {
+            if (!isUniqueViolation(error, OPEN_STEP_KEY_INDEX)) throw error;
+            const winner = await findOpenIssueByStepKey(tx, companyId, issueData.parentId, stepKey);
+            if (!winner) throw error;
+            return returnDeduplicated(winner, "step_key");
+          }
+        } else {
+          [issue] = await tx.insert(issues).values(values).returning();
+        }
         if (issue.lineId) {
           const [unarchived] = await tx.update(lines).set({ archivedAt: null, updatedAt: new Date() })
             .where(and(eq(lines.companyId, companyId), eq(lines.id, issue.lineId), sql`${lines.archivedAt} is not null`))
@@ -10671,6 +10730,8 @@ export function issueService(db: Db) {
         companyGuard,
         ...issueData
       } = data;
+      // The step key is server-derived below; a caller-supplied value is ignored.
+      delete issueData.stepKey;
       // Only a real change to the pair is checked, matching the issue routes.
       // System reassignments may defer to the dispatch-time check, which
       // blocks the issue with a notice instead of failing the caller's flow.
@@ -10768,6 +10829,20 @@ export function issueService(db: Db) {
       }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
+      }
+      // Recompute the step key only when the title or parent really changes, so
+      // editing a legacy duplicate without touching them never claims a key.
+      const nextParentId =
+        issueData.parentId !== undefined ? issueData.parentId : existing.parentId;
+      if (
+        (issueData.title !== undefined && issueData.title !== existing.title) ||
+        (issueData.parentId !== undefined && issueData.parentId !== existing.parentId)
+      ) {
+        const nextStepKey = deriveIssueStepKey(
+          nextParentId,
+          issueData.title !== undefined ? issueData.title : existing.title,
+        );
+        if (nextStepKey !== existing.stepKey) patch.stepKey = nextStepKey;
       }
 
       const nextAssigneeAgentId =
@@ -11054,12 +11129,27 @@ export function issueService(db: Db) {
                 (blockedByIssueIds !== undefined || issueData.unblockDescriptor !== undefined)))) {
           patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
         }
+        const nextStepKeyHolder = patch.stepKey ?? existing.stepKey;
         const updated = await tx
           .update(issues)
           .set(patch)
           .where(idPredicate)
           .returning()
-          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null)
+          .catch(async (error: unknown) => {
+            if (!nextStepKeyHolder || !isUniqueViolation(error, OPEN_STEP_KEY_INDEX)) throw error;
+            const holder = await findOpenIssueByStepKey(
+              db,
+              existing.companyId,
+              nextParentId,
+              nextStepKeyHolder,
+            );
+            const step = nextStepKeyHolder.slice(nextStepKeyHolder.lastIndexOf(":") + 1);
+            throw conflict(`Another open task already holds step ${step} under this parent`, {
+              code: "step_key_conflict",
+              existingIssueId: holder?.id ?? null,
+            });
+          });
         if (!updated) return null;
         // An operator explicitly choosing a disposition owns that decision,
         // including choosing In Review while the conversation is Idle.
