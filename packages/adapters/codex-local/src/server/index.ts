@@ -15,6 +15,8 @@ export {
   isManagedCodexHomePath,
   resolveManagedCodexHomeDir,
   evaluateCodexCredentialReadiness,
+  codexHomeHasUsableAuth,
+  resolveSharedCodexHomeDir,
   type ReconcileManagedCodexHomeInput,
   type ReconcileManagedCodexHomeResult,
   type ReconcileManagedCodexHomeStatus,

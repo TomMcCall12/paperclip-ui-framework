@@ -589,7 +589,15 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
-import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import {
+  evaluateCodexCredentialReadiness,
+  resolveManagedCodexHomeDir,
+  resolveSharedCodexHomeDir,
+} from "@paperclipai/adapter-codex-local/server";
+import {
+  createQuotaVaultCredentialResolver,
+  seedManagedCodexHomeFromVault,
+} from "./quota-vault-credential.js";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
@@ -1548,6 +1556,8 @@ function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
 
 export async function resolveExecutionRunAdapterConfig(input: {
   managedAiCredentials?: boolean;
+  /** Writes a vault-saved OpenAI subscription credential into the managed Codex home when no on-disk auth exists. */
+  seedCodexHomeFromVault?: (companyId: string) => Promise<unknown>;
   companyId: string;
   agentId?: string | null;
   adapterType?: string | null;
@@ -1901,6 +1911,13 @@ export async function resolveExecutionRunAdapterConfig(input: {
     (input.environmentDriver ?? null) !== "sandbox"
   ) {
     const resolvedEnv = parseObject(resolvedConfig.env);
+    if (
+      input.seedCodexHomeFromVault &&
+      !readNonEmptyString(resolvedEnv.OPENAI_API_KEY) &&
+      !readNonEmptyString(resolvedEnv.CODEX_HOME)
+    ) {
+      await input.seedCodexHomeFromVault(input.companyId).catch(() => undefined);
+    }
     const readiness = await evaluateCodexCredentialReadiness({
       env: process.env,
       companyId: input.companyId,
@@ -21391,6 +21408,12 @@ export function heartbeatService(
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           managedAiCredentials: Boolean(aiBinding),
+          seedCodexHomeFromVault: (companyId) =>
+            seedManagedCodexHomeFromVault(createQuotaVaultCredentialResolver(db), {
+              companyId,
+              managedHome: resolveManagedCodexHomeDir(process.env, companyId),
+              sharedHome: resolveSharedCodexHomeDir(process.env),
+            }),
           managedGitHubCredentials: !useHostGitHub,
           companyId: agent.companyId,
           agentId: agent.id,
