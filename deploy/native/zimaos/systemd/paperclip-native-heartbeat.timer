@@ -1,0 +1,9 @@
+[Unit]
+Description=Ping the external heartbeat every 5 minutes while Paperclip and the stall alarm are healthy
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

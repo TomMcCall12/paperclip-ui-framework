@@ -279,6 +279,20 @@ seed_env_file "paperclip-native.env" "$PAPERCLIP_ENV_FILE"
 seed_env_file "telegram.env" "$TELEGRAM_ENV_FILE"
 seed_env_file "rclone.env" "$RCLONE_ENV_FILE"
 
+# heartbeat.env holds the Healthchecks.io ping URL (TOM-721). Unlike the
+# files above it is owned by root, not $PAPERCLIP_USER: systemd reads it for
+# paperclip-native-heartbeat.service, which runs as a throwaway user, so agent
+# runs (user $PAPERCLIP_USER) cannot read the URL. Created empty, never
+# overwritten; the URL is written later with `install -m 0600`.
+if [[ "$DRY_RUN" == "1" ]]; then
+  log "[dry-run] would create an empty $ROOT/env/heartbeat.env (root, 0600) if it doesn't exist yet"
+elif [[ -e "$ROOT/env/heartbeat.env" ]]; then
+  log "$ROOT/env/heartbeat.env already exists, leaving it alone."
+else
+  install -m 600 -o root -g root /dev/null "$ROOT/env/heartbeat.env"
+  log "Created an empty $ROOT/env/heartbeat.env (root, 0600); put PAPERCLIP_HEALTHCHECKS_PING_URL in it to turn the external heartbeat on."
+fi
+
 if [[ -n "$DATA_SRC" && "$DRY_RUN" != "1" ]]; then
   log "== Checking the restored data against the paths the installed env file actually resolves =="
   # Paperclip resolves its instance directory as
