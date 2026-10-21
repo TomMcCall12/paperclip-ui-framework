@@ -1119,12 +1119,14 @@ describe("rollout flip (would-heal notes never block a real heal)", () => {
   it("a would-heal recorded in the alert-only window does not stop the real heal once self-repair is on", async () => {
     const world = new World();
     const { root, step } = stepTree(world, { status: "in_progress" });
-    for (const issue of [root, step]) lastProgress(world, issue.id, 11);
+    for (const issue of [root, step]) lastProgress(world, issue.id, 0);
     const h = harness(world, { rollout: { startedAt: null, selfRepairOnAt: null } });
-    await h.sweepAt(0);
+    await h.sweepAt(0); // healthy: the rollout window starts
+    for (const issue of [root, step]) world.latestProgress.set(issue.id, h.at(49));
+    await h.sweepAt(60); // 11 minutes without progress, still alert-only
     expect(actions(h.calls, "stall_sentinel.would_heal")).toHaveLength(1);
     expect(mutatingWakes(h.calls)).toEqual([]);
-    await h.sweepAt(24 * 60 + 1);
+    await h.sweepAt(24 * 60 + 1); // self-repair is on; the note is 23 hours old
     expect(mutatingWakes(h.calls)).toHaveLength(1);
     expect(actions(h.calls, "stall_sentinel.healed")).toHaveLength(1);
   });
