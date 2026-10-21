@@ -181,11 +181,13 @@ export const templates = {
       next: `Next: Jarvis has been asked to move it or wait. I will check again ${v.atCheck}.`,
       action: null,
     }),
-  T4: (v: StallAlertValues & { atHealed: string; atNext: string }) =>
+  T4: (v: StallAlertValues & { atHealed: string; atNext: string; ranAgain?: boolean }) =>
     ({ root }: { root: string }): AlertParts => ({
       head: stalled(root, v.rid, v.age),
       why: `Why: nothing was working on ${v.leaf}; its run was lost.`,
-      did: `What I did: restarted it ${v.atHealed}, but it has not started.`,
+      did: v.ranAgain
+        ? `What I did: restarted it ${v.atHealed}; it ran, then stopped again.`
+        : `What I did: restarted it ${v.atHealed}, but it has not started.`,
       next: `Next: Jarvis has been asked to look; nothing needed from you. I will tell you again ${v.atNext}.`,
       action: "restarted it",
     }),

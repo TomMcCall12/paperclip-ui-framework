@@ -103,6 +103,13 @@ export const STALL_SENTINEL_DEPENDENCY_BLOCKED_WAKE_REASONS: ReadonlySet<string>
 ]);
 
 /**
+ * Set by enqueueWakeup, never by a caller: true only when the stall sentinel
+ * itself requested the wake. Without it, any agent could wake itself with one
+ * of the reasons above and get past the dependency gate.
+ */
+export const STALL_SENTINEL_WAKE_CONTEXT_KEY = "stallSentinelWake";
+
+/**
  * A dependency-blocked issue stays idle except for wakes that carry a human
  * decision: a comment or mention, and the continuation of a resolved
  * interaction (an accepted or rejected confirmation, an answered question).
@@ -117,7 +124,9 @@ export function allowsDependencyBlockedWake(
   return (
     allowsIssueInteractionWake(contextSnapshot, allowedWakeReasons) ||
     isResolvedInteractionContinuationWakeContext(contextSnapshot) ||
-    (wakeReason !== null && STALL_SENTINEL_DEPENDENCY_BLOCKED_WAKE_REASONS.has(wakeReason))
+    (wakeReason !== null &&
+      STALL_SENTINEL_DEPENDENCY_BLOCKED_WAKE_REASONS.has(wakeReason) &&
+      contextSnapshot?.[STALL_SENTINEL_WAKE_CONTEXT_KEY] === true)
   );
 }
 

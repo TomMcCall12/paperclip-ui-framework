@@ -123,11 +123,20 @@ function coordinatorMention(agent: SnapshotAgent) {
   return `[@${agent.name}](agent://${agent.id})`;
 }
 
-/** A run created or started at or after `at` on this issue (a requeue that worked, even if it already finished). */
-function runStartedSince(snapshot: CompanySnapshot, issueId: string, at: Date): boolean {
-  return snapshot.runs.some(
-    (run) => run.issueId === issueId && (run.createdAt >= at || (run.startedAt != null && run.startedAt >= at)),
-  );
+/**
+ * The latest moment of a run on this issue that started at or after `at` (a requeue that worked,
+ * even if it already finished): its finish, start or creation. Null when no such run exists.
+ */
+function lastRunActivitySince(snapshot: CompanySnapshot, issueId: string, at: Date): Date | null {
+  let latest: Date | null = null;
+  for (const run of snapshot.runs) {
+    if (run.issueId !== issueId) continue;
+    if (!(run.createdAt >= at || (run.startedAt != null && run.startedAt >= at))) continue;
+    for (const t of [run.createdAt, run.startedAt, run.finishedAt]) {
+      if (t && (!latest || t > latest)) latest = t;
+    }
+  }
+  return latest;
 }
 
 /**
@@ -354,6 +363,7 @@ export function createStallSentinel(deps: StallSentinelDeps) {
         const prior = recorded && !recorded.applied && effectiveMode === "on" ? null : recorded;
         let alertNow = false;
         let alertOnlyWording = false;
+        let ranAgain = false;
         let healedAt: Date | null = prior?.at ?? null;
         const notAsked = !!prior?.applied && prior.asked === false;
 
@@ -388,13 +398,24 @@ export function createStallSentinel(deps: StallSentinelDeps) {
               stalledRoots.add(f.rootId);
               alertNow = !!f.alertDueAt && now >= f.alertDueAt;
             } else if (f.afterHealAlertMs != null && healDue) {
-              // The heal was made, but the condition still holds. A requeue that started a run
-              // (even one that finished) worked: the clock restarts with that run's progress.
-              const requeueWorked =
-                (f.cause === "L" || f.cause === "Q2") && runStartedSince(snapshot, f.heal.issueId, prior.at);
-              if (!requeueWorked) {
+              // The heal was made, but the condition still holds.
+              const ranSince =
+                f.cause === "L" || f.cause === "Q2" ? lastRunActivitySince(snapshot, f.heal.issueId, prior.at) : null;
+              if (!ranSince) {
                 stalledRoots.add(f.rootId);
                 if (now.getTime() - prior.at.getTime() >= f.afterHealAlertMs) alertNow = true;
+              } else {
+                // The requeue started a run, so it worked, and this is a new stall. The heal limit
+                // stops a second requeue, so the clock restarts with that run and the alert comes
+                // when it would have come after a heal.
+                const stalledFrom = f.healDueAt && f.healDueAt > ranSince ? f.healDueAt : ranSince;
+                if (now >= stalledFrom) {
+                  stalledRoots.add(f.rootId);
+                  if (now.getTime() - stalledFrom.getTime() >= f.afterHealAlertMs) {
+                    alertNow = true;
+                    ranAgain = true;
+                  }
+                }
               }
             }
           }
@@ -410,6 +431,7 @@ export function createStallSentinel(deps: StallSentinelDeps) {
           healedAt: healedAt ?? now,
           atNext: formatAt(nextAlertTime(f.treeAgeMs, now), now),
           notAsked,
+          ranAgain,
           leaf,
           ref,
           agentName,
@@ -461,6 +483,8 @@ export function createStallSentinel(deps: StallSentinelDeps) {
       atNext: string;
       /** The wake for this heal was dropped, so nobody was asked. */
       notAsked: boolean;
+      /** The requeue started a run, and the task stopped again after it. */
+      ranAgain?: boolean;
       leaf: (id: string) => string;
       ref: (id: string) => string;
       agentName: (id: string | null | undefined) => string;
@@ -522,7 +546,7 @@ export function createStallSentinel(deps: StallSentinelDeps) {
       }
       case "Q2":
       case "L":
-        return { build: templates.T4({ ...base, atHealed, atNext: v.atNext }), mention: true };
+        return { build: templates.T4({ ...base, atHealed, atNext: v.atNext, ranAgain: v.ranAgain }), mention: true };
       case "A": {
         if (v.coordinator && f.data.agentId === v.coordinator.id && f.data.agentState === "paused") {
           return { build: templates.T10b({ ...base, atNext: v.atNext }), mention: false };

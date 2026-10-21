@@ -174,6 +174,30 @@ describeDb("stall sentinel wakes and queries on the real server", () => {
     expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)).toHaveLength(0);
   });
 
+  it.each([
+    "stall_sentinel_checkpoint_done",
+    "stall_sentinel_cancelled_blocker",
+    "stall_sentinel_reroute",
+  ])("an agent waking itself with %s (even with a forged marker) is still skipped on a dependency-blocked parent", async (reason) => {
+    const { jarvisId, parentId } = await seed();
+    // What POST /api/agents/:id/wakeup sends for an agent caller.
+    const result = await heartbeat.wakeup(jarvisId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason,
+      payload: { issueId: parentId },
+      requestedByActorType: "agent",
+      requestedByActorId: jarvisId,
+      contextSnapshot: { triggeredBy: "agent", actorId: jarvisId, issueId: parentId, wakeReason: reason, stallSentinelWake: true },
+    });
+    expect(result).toBeNull();
+    const wakes = await db.select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, jarvisId));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ status: "skipped", reason: "issue_dependencies_blocked" });
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)).toHaveLength(0);
+  });
+
   it("control: a human-comment wake on the same blocked parent does start a run", async () => {
     const { companyId, jarvisId, parentId } = await seed();
     const [comment] = await db.insert(issueComments).values({ companyId, issueId: parentId, authorType: "user", body: "Please look." }).returning();

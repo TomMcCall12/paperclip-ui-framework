@@ -66,7 +66,10 @@ Rules that apply to every self-repair:
   the backstop alert applies. The sentinel never writes
   `issue_recovery_actions`.
 - At most once per issue and cause in 24 hours. A lost run and a queued run that
-  never started share one restart. A second occurrence gives an alert.
+  never started share one restart. A second occurrence gives an alert. When the
+  restart did start a run and the task then stops again, that is a new stall: its
+  clock starts from that run, and it alerts at the normal after-restart time with
+  "it ran, then stopped again" instead of a second restart.
 - Wakes use `heartbeat.wakeup` with `source: automation`, a
   `stall-sentinel:<cause>:<issueId>:<statusVersion>` idempotency key and an issue
   state guard, so a wake is dropped if the task changed meanwhile.
@@ -76,8 +79,11 @@ Rules that apply to every self-repair:
   A task that still has open blockers normally ignores automatic wakes. Exactly
   three sentinel wake reasons are let through, in the same bounded triage mode as a
   comment wake: `stall_sentinel_checkpoint_done`, `stall_sentinel_cancelled_blocker`
-  and `stall_sentinel_reroute` (`allowsDependencyBlockedWake`). Every other
-  automatic wake is still skipped.
+  and `stall_sentinel_reroute` (`allowsDependencyBlockedWake`), and only when the
+  wake carries the `stallSentinelWake` marker. `enqueueWakeup` sets that marker
+  itself for system wakes requested by `stall-sentinel` and strips it from every
+  other caller, so an agent cannot wake itself past the gate with these reasons.
+  Every other automatic wake is still skipped.
 - If a wake is dropped (the port answers "not queued"), the heal is recorded with
   `asked: false`, the root comment says so, and the later alert says no cause is
   visible. It never says "woke X, who has not picked it up".

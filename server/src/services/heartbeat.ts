@@ -533,8 +533,10 @@ import {
   extractWakeCommentIds,
   deriveCommentId,
   allowsDependencyBlockedWake,
+  STALL_SENTINEL_WAKE_CONTEXT_KEY,
   isResolvedInteractionContinuationWakeContext,
 } from "../modules/run-dispatch/index.js";
+import { STALL_SENTINEL_ACTOR_ID } from "./stall-sentinel/config.js";
 import {
   createWakeQueue,
   WakeQueueApplicationError,
@@ -26502,6 +26504,11 @@ export function heartbeatService(
     const contextSnapshot: Record<string, unknown> = {
       ...(opts.contextSnapshot ?? {}),
     };
+    // The dependency gate trusts this marker, so only the sentinel's own system wakes carry it.
+    delete contextSnapshot[STALL_SENTINEL_WAKE_CONTEXT_KEY];
+    if (opts.requestedByActorType === "system" && opts.requestedByActorId === STALL_SENTINEL_ACTOR_ID) {
+      contextSnapshot[STALL_SENTINEL_WAKE_CONTEXT_KEY] = true;
+    }
     const reason = opts.reason ?? null;
     let payload = opts.payload ? { ...opts.payload } : null;
     // Only the board queue route can record interruption authority on an

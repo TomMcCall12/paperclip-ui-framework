@@ -89,7 +89,16 @@ describe("wake context", () => {
     "stall_sentinel_cancelled_blocker",
     "stall_sentinel_reroute",
   ])("lets the stall sentinel wake %s through the dependency gate", (wakeReason) => {
-    expect(allowsDependencyBlockedWake({ wakeReason }, new Set(["issue_commented"]))).toBe(true);
+    expect(allowsDependencyBlockedWake({ wakeReason, stallSentinelWake: true }, new Set(["issue_commented"]))).toBe(true);
+  });
+
+  it.each([
+    "stall_sentinel_checkpoint_done",
+    "stall_sentinel_cancelled_blocker",
+    "stall_sentinel_reroute",
+  ])("skips %s on a dependency-blocked issue when the sentinel did not send it", (wakeReason) => {
+    expect(allowsDependencyBlockedWake({ wakeReason }, new Set(["issue_commented"]))).toBe(false);
+    expect(allowsDependencyBlockedWake({ wakeReason, stallSentinelWake: "true" }, new Set(["issue_commented"]))).toBe(false);
   });
 
   it.each([
@@ -103,7 +112,7 @@ describe("wake context", () => {
     "heartbeat_timer",
     "stall_sentinel_reroute_extra",
   ])("still skips the automatic wake %s on a dependency-blocked issue", (wakeReason) => {
-    expect(allowsDependencyBlockedWake({ wakeReason }, new Set(["issue_commented"]))).toBe(false);
+    expect(allowsDependencyBlockedWake({ wakeReason, stallSentinelWake: true }, new Set(["issue_commented"]))).toBe(false);
   });
 
   it.each(["accepted", "answered", "cancelled", "rejected"])(

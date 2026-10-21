@@ -919,7 +919,7 @@ describe("a requeue that worked (S8 blocking 1)", () => {
 
     await h.sweepAt(10);
     await h.sweepAt(16); // 16 min after the heal, 8 min after real progress
-    await h.sweepAt(60);
+    await h.sweepAt(32); // the run's own clock: due at 18, alert 15 minutes later
     expect(h.calls.telegrams).toEqual([]);
     expect(h.calls.wakes.filter((w) => w.reason === "stall_sentinel_reroute")).toEqual([]);
   });
@@ -938,9 +938,79 @@ describe("a requeue that worked (S8 blocking 1)", () => {
     world.run({ issueId: step.id, agentId: ENGINEER, status: "succeeded", createdAt: h.at(17), startedAt: h.at(17), finishedAt: h.at(25) });
     world.latestProgress.set(step.id, h.at(25));
     await h.sweepAt(27);
-    await h.sweepAt(80);
+    await h.sweepAt(49);
     expect(h.calls.telegrams.filter((t) => t.startsWith("Moving again"))).toHaveLength(1);
     expect(h.calls.telegrams.filter((t) => t.includes("its run was lost"))).toHaveLength(1);
+  });
+});
+
+describe("a second stall after a requeue that worked (S8b blocking)", () => {
+  function secondStall() {
+    const world = new World();
+    const { root, step } = stepTree(world, { status: "in_progress" });
+    for (const issue of [root, step]) lastProgress(world, issue.id, 11);
+    const h = harness(world);
+    return { world, root, step, h };
+  }
+
+  it("alerts once the task stops again after the requeued run, without a second requeue", async () => {
+    const { world, step, h } = secondStall();
+    await h.sweepAt(0); // lost run: re-queued
+    expect(mutatingWakes(h.calls)).toHaveLength(1);
+    world.wakes = [];
+    // The requeued run starts and finishes; then the task sits idle, in_progress, with no run.
+    world.run({ issueId: step.id, agentId: ENGINEER, status: "succeeded", createdAt: h.at(1), startedAt: h.at(1), finishedAt: h.at(8) });
+    world.latestProgress.set(step.id, h.at(8));
+    for (let m = 10; m <= 32; m += 2) await h.sweepAt(m);
+    expect(h.calls.telegrams).toEqual([]);
+    await h.sweepAt(33); // progress at 8 + 10 min lost-run wait + 15 min after-heal wait
+    expect(h.calls.telegrams).toHaveLength(1);
+    expect(h.calls.telegrams[0]).toContain("its run was lost");
+    expect(h.calls.telegrams[0]).toContain("What I did: restarted it at 13:00; it ran, then stopped again.");
+    expect(h.calls.telegrams[0]).not.toContain("but it has not started");
+    // The 24-hour heal limit holds: no second requeue, and Jarvis is asked instead.
+    expect(mutatingWakes(h.calls)).toHaveLength(1);
+    expect(h.calls.wakes.filter((w) => w.reason === "stall_sentinel_reroute")).toHaveLength(1);
+  });
+
+  it("the reviewer's case: idle for 23 hours after the requeued run is never silent", async () => {
+    const { world, step, h } = secondStall();
+    await h.sweepAt(0);
+    world.wakes = [];
+    world.run({ issueId: step.id, agentId: ENGINEER, status: "succeeded", createdAt: h.at(1), startedAt: h.at(1), finishedAt: h.at(8) });
+    world.latestProgress.set(step.id, h.at(8));
+    for (let m = 10; m <= 23 * 60; m += 5) await h.sweepAt(m);
+    expect(h.calls.telegrams.length).toBeGreaterThan(0);
+    expect(mutatingWakes(h.calls)).toHaveLength(1);
+  });
+
+  it("a requeued run that ends without progress restarts the clock from the run, not from the old progress", async () => {
+    const { world, step, h } = secondStall();
+    await h.sweepAt(0);
+    world.wakes = [];
+    // The run starts at 1 and fails at 20, which is not progress (last progress still 11 min before the heal).
+    world.run({ issueId: step.id, agentId: ENGINEER, status: "failed", createdAt: h.at(1), startedAt: h.at(1), finishedAt: h.at(20) });
+    await h.sweepAt(21);
+    await h.sweepAt(34);
+    expect(h.calls.telegrams).toEqual([]);
+    await h.sweepAt(35);
+    expect(h.calls.telegrams).toHaveLength(1);
+    expect(h.calls.telegrams[0]).toContain("it ran, then stopped again");
+  });
+
+  it("after a second stall, a new run sends one 'Moving again'", async () => {
+    const { world, step, h } = secondStall();
+    await h.sweepAt(0);
+    world.wakes = [];
+    world.run({ issueId: step.id, agentId: ENGINEER, status: "succeeded", createdAt: h.at(1), startedAt: h.at(1), finishedAt: h.at(8) });
+    world.latestProgress.set(step.id, h.at(8));
+    await h.sweepAt(33);
+    expect(h.calls.telegrams).toHaveLength(1);
+    world.run({ issueId: step.id, agentId: ENGINEER, status: "running", createdAt: h.at(40), startedAt: h.at(40), finishedAt: null, silenceAgeMs: 0 });
+    world.latestProgress.set(step.id, h.at(41));
+    await h.sweepAt(42);
+    await h.sweepAt(44);
+    expect(h.calls.telegrams.filter((t) => t.startsWith("Moving again"))).toHaveLength(1);
   });
 
   it("still alerts when the requeue produced no run at all", async () => {
