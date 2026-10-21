@@ -1,7 +1,7 @@
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import { accessSync, constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
@@ -4750,6 +4750,33 @@ export async function ensureCommandResolvable(
   throw new Error(`Command not found in PATH: "${command}"`);
 }
 
+/**
+ * Host OOM-protection hook (TOM-686/TOM-703). On the native host the server
+ * runs at a protected oom_score_adj and every child inherits it at fork. When
+ * PAPERCLIP_AGENT_EXEC_WRAPPER names an executable (the host installs
+ * paperclip-agent-exec.sh), a local agent child is launched through it so the
+ * value is reset before the agent program starts, not on a later poll. When
+ * the variable is unset, the file is missing or this is not Linux, the
+ * command is returned unchanged; the host's OOM guard still resets it within
+ * one poll.
+ */
+export function wrapForAgentOomReset(
+  command: string,
+  args: string[],
+  hostEnv: NodeJS.ProcessEnv = process.env,
+): { command: string; args: string[] } {
+  const wrapper = hostEnv.PAPERCLIP_AGENT_EXEC_WRAPPER?.trim();
+  if (!wrapper || process.platform !== "linux" || !path.isAbsolute(wrapper)) {
+    return { command, args };
+  }
+  try {
+    accessSync(wrapper, fsConstants.X_OK);
+  } catch {
+    return { command, args };
+  }
+  return { command: wrapper, args: [command, ...args] };
+}
+
 export async function runChildProcess(
   runId: string,
   command: string,
@@ -4810,7 +4837,10 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
-        const child = spawn(target.command, target.args, {
+        const launch = opts.remoteExecution
+          ? { command: target.command, args: target.args }
+          : wrapForAgentOomReset(target.command, target.args);
+        const child = spawn(launch.command, launch.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
           detached: process.platform !== "win32",

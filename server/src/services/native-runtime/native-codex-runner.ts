@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { and, eq } from "drizzle-orm";
 
 import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { wrapForAgentOomReset } from "@paperclipai/adapter-utils/server-utils";
 import type { Db } from "@paperclipai/db";
 import { agentSessionGoalActions, agentTaskSessions } from "@paperclipai/db";
 
@@ -381,7 +382,7 @@ export async function executeNativeCodexRunner(input: {
     prepared.queueCommand("turn.start", { text: input.prompt }, `turn_${input.runId}`);
   }
 
-  const child = spawn(binary, buildNativeRunnerArguments({
+  const launch = wrapForAgentOomReset(binary, buildNativeRunnerArguments({
     connectUrl: prepared.connectUrl,
     stateDirectory: runnerStateDirectory,
     runnerInstanceId: input.runnerInstanceId,
@@ -392,7 +393,8 @@ export async function executeNativeCodexRunner(input: {
     itemId: input.itemId,
     runnerDigest,
     maxRuntimeMs: input.timeoutMs,
-  }), {
+  }));
+  const child = spawn(launch.command, launch.args, {
     cwd: input.cwd,
     detached: process.platform !== "win32",
     env: {

@@ -2,10 +2,14 @@
 # Offline test for the TOM-686 host safety net, no root needed:
 #   A. paperclip-recover.sh: stands back while paperclip-update.sh holds its
 #      lock; leaves a server that answers the second probe alone; restarts a
-#      server that fails it; restarts at most once per 15 minutes.
+#      server that fails it; restarts at most once per 15 minutes; fails
+#      closed (no sweep, no restart, non-zero) when flock is unavailable;
+#      leaves the host tests' paperclip-build-test-* scopes alone.
 #   B. paperclip-oom-guard.sh (one pass, fake /proc and cgroup trees): the
 #      server main process and embedded Postgres get -500; a process that
-#      inherited -500 at fork is raised to 0; nothing is lowered.
+#      inherited -500 at fork is raised to 0; nothing is lowered. B2/B3: the
+#      agent exec wrapper resets the value at spawn, before the agent program
+#      runs, with no guard running (the guard is only the backstop).
 #   C. install_safety_net: renders the units for the given root, installs
 #      only what changed, and runs daemon-reload only when a unit changed.
 # `systemctl` and `curl` are stubs; each child refuses to run unless they
@@ -172,16 +176,53 @@ echo down >"$STUB_DIR/health"; : >"$STUB_DIR/calls.log"
 echo $(($(date +%s) - 901)) >"$ROOT/logs/.paperclip-recover.last-restart"
 printf '%s\n' 'paperclip-build-0123456789ab.scope loaded active running Transient scope' \
   '● paperclip-build-probe-77.scope loaded failed failed Transient scope' \
+  'paperclip-build-test-4242-a.scope loaded active running Transient scope' \
   'something-else.scope loaded active running Other' >"$STUB_DIR/units"
 recover
 rm -f "$STUB_DIR/units"
 grep -q '^systemctl stop paperclip-build-0123456789ab.scope$' "$STUB_DIR/calls.log" || fail "A8: the leftover build scope was not stopped. $(cat "$STUB_DIR/calls.log")"
 grep -q '^systemctl stop paperclip-build-probe-77.scope$' "$STUB_DIR/calls.log" || fail "A8: the leftover (failed) probe scope was not stopped. $(cat "$STUB_DIR/calls.log")"
 grep -q 'stop something-else' "$STUB_DIR/calls.log" && fail "A8: stopped a scope that is not a build scope"
+grep -q 'stop paperclip-build-test-' "$STUB_DIR/calls.log" && fail "A8: stopped a host-test scope (paperclip-build-test-*), which is not an updater's"
 stop_line="$(grep -n '^systemctl stop paperclip-build-0123456789ab.scope$' "$STUB_DIR/calls.log" | head -1 | cut -d: -f1)"
 restart_line="$(grep -n '^systemctl restart paperclip-native.service$' "$STUB_DIR/calls.log" | head -1 | cut -d: -f1)"
 [[ -n "$restart_line" && "$stop_line" -lt "$restart_line" ]] || fail "A8: the scope was not stopped before the restart. $(cat "$STUB_DIR/calls.log")"
 echo "PASS: recover stops build scopes left by a killed updater before it restarts the server"
+
+# A9. No usable flock: recovery cannot prove no update is running, so it
+# fails closed -- no build-scope sweep, no restart, non-zero exit -- even
+# though the server is down and an update holds the lock. flock is hidden by a
+# PATH that holds only the tools the script needs.
+NOFLOCK_BIN="$WORKDIR/noflock-bin"
+mkdir -p "$NOFLOCK_BIN"
+for tool in bash env date sleep head mkdir dirname cat printf; do
+  tool_path="$(command -v "$tool" 2>/dev/null || true)"
+  [[ -n "$tool_path" && "$tool_path" == /* ]] && ln -sf "$tool_path" "$NOFLOCK_BIN/$tool"
+done
+cp "$BIN/curl" "$BIN/systemctl" "$NOFLOCK_BIN/"
+PATH="$NOFLOCK_BIN" command -v flock >/dev/null 2>&1 && fail "A9: test setup: flock is still on the restricted PATH"
+echo down >"$STUB_DIR/health"; : >"$STUB_DIR/calls.log"
+echo $(($(date +%s) - 901)) >"$ROOT/logs/.paperclip-recover.last-restart"
+printf '%s\n' 'paperclip-build-0123456789ab.scope loaded active running Transient scope' >"$STUB_DIR/units"
+( exec 8>"$ROOT/logs/.paperclip-update.lock"; flock 8; exec sleep 60 ) &
+LOCK_HOLDER=$!
+for _ in $(seq 1 50); do
+  flock -n "$ROOT/logs/.paperclip-update.lock" true 2>/dev/null || break
+  sleep 0.1
+done
+set +e
+REC_OUT="$(env -i HOME="$WORKDIR" PATH="$NOFLOCK_BIN" STUB_DIR="$STUB_DIR" STUB_LOCK_FILE="$STUB_LOCK_FILE" \
+  PAPERCLIP_NATIVE_ROOT="$ROOT" PORT=3101 PAPERCLIP_RECOVER_PROBE_DELAY=0 PAPERCLIP_RECOVER_HEALTH_DELAY=0 PAPERCLIP_RECOVER_HEALTH_ATTEMPTS=2 \
+  bash "$SCRIPTS_DIR/paperclip-recover.sh" 2>&1)"
+REC_RC=$?
+set -e
+kill "$LOCK_HOLDER" 2>/dev/null; wait "$LOCK_HOLDER" 2>/dev/null || true; LOCK_HOLDER=""
+rm -f "$STUB_DIR/units"
+[[ "$REC_RC" -ne 0 ]] || fail "A9: recover exited 0 without flock. $REC_OUT"
+[[ "$(restarts)" -eq 0 ]] || fail "A9: recover restarted the server without flock while an update held the lock. $(cat "$STUB_DIR/calls.log")"
+grep -q 'systemctl stop\|systemctl kill\|list-units' "$STUB_DIR/calls.log" && fail "A9: recover swept build scopes without flock. $(cat "$STUB_DIR/calls.log")"
+printf '%s\n' "$REC_OUT" | grep -q "flock is not available" || fail "A9: did not say why it failed. $REC_OUT"
+echo "PASS: recover fails closed without flock: no sweep, no restart, non-zero exit, even with the update lock held"
 
 # --- B. paperclip-oom-guard.sh (one pass) --------------------------------------
 FAKE_PROC="$WORKDIR/proc"
@@ -213,8 +254,48 @@ adj() { cat "$FAKE_PROC/$1/oom_score_adj"; }
 [[ "$(adj 103)" == "300" ]] || fail "B: the guard lowered a process that was already above 0 (got $(adj 103)). $OOM_OUT"
 echo "PASS: OOM guard protects the server and Postgres (-500) and raises agent processes that inherited it back to 0"
 
-# B2. New agents inherit -500 at fork; the running guard (default interval)
-# must reset them within a fraction of a second, not seconds.
+# B2. Spawn-time reset (TOM-703). The server starts local agents through
+# paperclip-agent-exec.sh. A process that inherited -500 must already be at 0
+# when the agent program starts, with NO guard running: the program reads its
+# own oom_score_adj the moment it starts. (Raising needs no privilege; the
+# self-file here is a plain file so the test can start at -500 without root.)
+WRAP="$SCRIPTS_DIR/paperclip-agent-exec.sh"
+[[ -x "$WRAP" ]] || fail "B2: $WRAP is missing or not executable"
+SELF="$WORKDIR/self_oom_score_adj"
+echo -500 >"$SELF"
+AT_SPAWN="$(PAPERCLIP_OOM_SELF_FILE="$SELF" "$WRAP" cat "$SELF")"
+[[ "$AT_SPAWN" == "0" ]] || fail "B2: the agent program started with oom_score_adj $AT_SPAWN; it must already be 0 at exec (the wrapper did not reset it)"
+echo 300 >"$SELF"
+AT_SPAWN="$(PAPERCLIP_OOM_SELF_FILE="$SELF" "$WRAP" cat "$SELF")"
+[[ "$AT_SPAWN" == "300" ]] || fail "B2: the wrapper lowered a value already above 0 (got $AT_SPAWN)"
+echo -500 >"$SELF"
+PAPERCLIP_OOM_SELF_FILE="$SELF" PAPERCLIP_OOM_AGENT_ADJ=200 "$WRAP" true
+[[ "$(cat "$SELF")" == "200" ]] || fail "B2: PAPERCLIP_OOM_AGENT_ADJ was not honoured (got $(cat "$SELF"))"
+echo "PASS: the agent exec wrapper has reset -500 to 0 before the agent program starts (no guard running)"
+
+# B2b. Real kernel path: the wrapper really raises the process's own
+# oom_score_adj and execs the program with its arguments intact.
+if [[ -w /proc/self/oom_score_adj ]]; then
+  base_adj="$(cat /proc/self/oom_score_adj)"
+  # shellcheck disable=SC2016 # the inner bash expands these
+  REAL="$(PAPERCLIP_OOM_AGENT_ADJ=$((base_adj + 100)) "$WRAP" bash -c 'printf "%s|%s" "$(cat /proc/self/oom_score_adj)" "$1"' x "two words")"
+  [[ "$REAL" == "$((base_adj + 100))|two words" ]] || fail "B2b: the wrapper did not set /proc/self/oom_score_adj before exec or mangled the arguments (got $REAL)"
+  echo "PASS: the wrapper raises the real /proc/self/oom_score_adj before exec and passes arguments through"
+fi
+[[ "$("$WRAP" bash -c 'echo ok')" == "ok" ]] || fail "B2b: the wrapper does not run a program when /proc/self/oom_score_adj is the default file"
+set +e; "$WRAP" >/dev/null 2>&1; NOARGS_RC=$?; "$WRAP" /nonexistent-agent-program >/dev/null 2>&1; MISSING_RC=$?; set -e
+[[ "$NOARGS_RC" -eq 2 && "$MISSING_RC" -ne 0 ]] || fail "B2b: wrong exit codes (no args: $NOARGS_RC, missing program: $MISSING_RC)"
+echo "PASS: the wrapper fails clearly with no command or a missing program"
+
+# B2c. The unit hands the server the wrapper, and install_safety_net ships it.
+grep -q 'PAPERCLIP_AGENT_EXEC_WRAPPER=/usr/local/lib/paperclip/scripts/paperclip-agent-exec.sh' "$ZIMAOS_DIR/systemd/paperclip-native.service.d/50-oom-guard.conf" \
+  || fail "B2c: 50-oom-guard.conf does not set PAPERCLIP_AGENT_EXEC_WRAPPER to the installed wrapper"
+printf '%s\n' "${SAFETY_NET_SCRIPTS[@]}" | grep -qx paperclip-agent-exec.sh || fail "B2c: SAFETY_NET_SCRIPTS does not install paperclip-agent-exec.sh"
+echo "PASS: the server unit sets PAPERCLIP_AGENT_EXEC_WRAPPER and the safety net installs the wrapper"
+
+# B3. Backstop: a spawn site that does not use the wrapper inherits -500; the
+# running guard (default interval) must still reset it within a fraction of a
+# second. This is the backstop, not the fix (B2 is the fix).
 fake_proc 103 300 bash /usr/bin/bash
 (
   export PAPERCLIP_PROC_ROOT="$FAKE_PROC" PAPERCLIP_CGROUP_ROOT="$FAKE_CG"
@@ -231,10 +312,10 @@ for _ in $(seq 1 200); do
   sleep 0.01
 done
 kill "$GUARD_PID" 2>/dev/null; wait "$GUARD_PID" 2>/dev/null || true
-[[ -n "$reset_ms" ]] || fail "B2: the running OOM guard never reset a new process that inherited -500. $(cat "$WORKDIR/guard-loop.out")"
-[[ "$reset_ms" -le 1000 ]] || fail "B2: the guard took ${reset_ms}ms to reset a new process that inherited -500 (limit 1000ms). $(cat "$WORKDIR/guard-loop.out")"
-grep -q 'PAPERCLIP_OOM_GUARD_INTERVAL:-0.2' "$SCRIPTS_DIR/paperclip-oom-guard.sh" || fail "B2: the default guard interval is no longer 0.2s"
-echo "PASS: the running OOM guard resets a new process that inherited -500 within ${reset_ms}ms (default interval 0.2s)"
+[[ -n "$reset_ms" ]] || fail "B3: the running OOM guard never reset a new process that inherited -500. $(cat "$WORKDIR/guard-loop.out")"
+[[ "$reset_ms" -le 1000 ]] || fail "B3: the guard took ${reset_ms}ms to reset a new process that inherited -500 (limit 1000ms). $(cat "$WORKDIR/guard-loop.out")"
+grep -q 'PAPERCLIP_OOM_GUARD_INTERVAL:-0.2' "$SCRIPTS_DIR/paperclip-oom-guard.sh" || fail "B3: the default guard interval is no longer 0.2s"
+echo "PASS: backstop: the running OOM guard resets a process that skipped the wrapper within ${reset_ms}ms (default interval 0.2s)"
 
 # --- C. install_safety_net -------------------------------------------------------
 INSTALL_ROOT="$WORKDIR/install root"

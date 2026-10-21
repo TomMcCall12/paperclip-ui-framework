@@ -472,6 +472,12 @@ stop_orphaned_build_scopes() {
     esac
     # shellcheck disable=SC2053 # $pattern is a glob on purpose
     [[ "$unit" == $pattern ]] || continue
+    # The host tests run their own transient scopes (paperclip-build-test-*)
+    # without the update lock; a real build scope is paperclip-build-<hex sha>
+    # and never starts with "test-". Only a pattern that names them reaps them.
+    if [[ "$unit" == paperclip-build-test-* && "$pattern" != paperclip-build-test-* ]]; then
+      continue
+    fi
     log "Found a leftover build scope $unit (its updater was killed); stopping it."
     if stop_scope_unit "$unit"; then
       log "Stopped $unit; no process is left in it."
@@ -548,9 +554,15 @@ build_guard_stop() {
     return 1
   fi
   if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
-    case "$(scope_unit_state "$BUILD_SCOPE_UNIT.scope")" in
+    local final_state
+    # A failed query proves nothing: do not report the scope as gone.
+    if ! final_state="$(scope_unit_state "$BUILD_SCOPE_UNIT.scope")"; then
+      log "ERROR: cannot query the state of $BUILD_SCOPE_UNIT.scope after stopping the build; treating the build as still running."
+      return 1
+    fi
+    case "$final_state" in
       active|activating|deactivating|reloading)
-        log "ERROR: $BUILD_SCOPE_UNIT.scope is still active although its cgroup is empty."
+        log "ERROR: $BUILD_SCOPE_UNIT.scope is still $final_state although its cgroup is empty."
         return 1
         ;;
     esac
@@ -794,7 +806,7 @@ arm_update_exit_trap() {
 # on every update (and install-native-zimaos.sh on a first install). All of
 # them point only at the recovery path and systemctl, never into a release,
 # so they keep working after a rollback to a release that predates them.
-SAFETY_NET_SCRIPTS=(paperclip-recover.sh paperclip-oom-guard.sh)
+SAFETY_NET_SCRIPTS=(paperclip-recover.sh paperclip-oom-guard.sh paperclip-agent-exec.sh)
 SAFETY_NET_UNITS=(
   paperclip-native-recover.service
   paperclip-native-oom-guard.service

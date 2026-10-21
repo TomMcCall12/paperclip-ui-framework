@@ -15,8 +15,11 @@
 #   5. No hard ceiling means no build: auto mode dies when the scope probe
 #      fails or the host cannot make a scope; setsid is refused unless the
 #      test-only switch is set. The build command never runs in these cases.
-#   6. stop_orphaned_build_scopes stops build scopes (not other scopes), and
-#      fails when one cannot be stopped.
+#   6. stop_orphaned_build_scopes stops build scopes (not other scopes, not
+#      the host tests' own paperclip-build-test-* scopes), and fails when one
+#      cannot be stopped.
+#   7. build_guard_stop does not report "Confirmed" when its final state
+#      query of the scope fails.
 #
 # The real-systemd counterpart is test-build-scope-systemd.sh (needs root).
 #
@@ -68,7 +71,12 @@ case "$1" in
   show)
     [[ -e "$STUB_DIR/show-fails" ]] && exit 1
     case "$3" in
-      ActiveState) cat "$STUB_DIR/state.$unit" 2>/dev/null || echo inactive ;;
+      ActiveState)
+        # activestate-fail-from=<n>: the n-th and later state queries fail.
+        n=$(($(cat "$STUB_DIR/activestate-calls" 2>/dev/null || echo 0) + 1))
+        echo "$n" >"$STUB_DIR/activestate-calls"
+        if [[ -e "$STUB_DIR/activestate-fail-from" && "$n" -ge "$(cat "$STUB_DIR/activestate-fail-from")" ]]; then exit 1; fi
+        cat "$STUB_DIR/state.$unit" 2>/dev/null || echo inactive ;;
       ControlGroup) if [[ -e "$STUB_DIR/cg-hidden" ]]; then echo; else cgfile; fi ;;
     esac
     ;;
@@ -265,3 +273,42 @@ touch "$STUB_DIR/stop-ineffective"
 BUILD_KILL_GRACE_SECONDS=0 DRY_RUN=0 stop_orphaned_build_scopes >"$WORKDIR/orphans.out" 2>&1 \
   && fail "6b: stop_orphaned_build_scopes reported success although the scope would not stop"
 echo "PASS: stop_orphaned_build_scopes fails when a leftover scope cannot be stopped"
+
+# --- 6c. The host tests' own scopes are not orphans ---------------------------------
+for pid in $(marker_pids); do kill -KILL "$pid" 2>/dev/null || true; done
+reset_stubs
+printf '%s\n' 'paperclip-build-test-4242-a.scope loaded active running Transient scope' \
+  'paperclip-build-0123456789ab.scope loaded active running Transient scope' >"$STUB_DIR/units"
+for u in paperclip-build-test-4242-a.scope paperclip-build-0123456789ab.scope; do
+  echo active >"$STUB_DIR/state.$u"
+  echo "/fake.slice/$u" >"$STUB_DIR/cg.$u"
+  mkdir -p "$CGROOT/fake.slice/$u"
+  env PAPERCLIP_SCOPE_TEST_MARKER="$MARKER" sleep 300 &
+  echo $! >"$CGROOT/fake.slice/$u/cgroup.procs"
+  disown
+done
+DRY_RUN=0 stop_orphaned_build_scopes >"$WORKDIR/orphans.out" 2>&1 || fail "6c: stop_orphaned_build_scopes failed: $(cat "$WORKDIR/orphans.out")"
+grep -q '^systemctl stop paperclip-build-0123456789ab.scope$' "$STUB_DIR/calls.log" || fail "6c: the real orphan build scope was not stopped"
+grep -q 'systemctl stop paperclip-build-test-' "$STUB_DIR/calls.log" && fail "6c: the sweep stopped a host-test scope (paperclip-build-test-*)"
+[[ "$(marker_pids | wc -l)" -eq 1 ]] || fail "6c: expected exactly the host-test scope's process to survive, found: $(marker_pids | tr '\n' ' ')"
+for pid in $(marker_pids); do kill -KILL "$pid" 2>/dev/null || true; done
+# A pattern that names the test scopes (what the host tests pass) still reaps them.
+echo active >"$STUB_DIR/state.paperclip-build-test-4242-a.scope"
+printf '%s\n' 'paperclip-build-test-4242-a.scope loaded active running Transient scope' >"$STUB_DIR/units"
+DRY_RUN=0 stop_orphaned_build_scopes 'paperclip-build-test-4242-*.scope' >"$WORKDIR/orphans.out" 2>&1 || fail "6c: the narrowed sweep failed: $(cat "$WORKDIR/orphans.out")"
+grep -q '^systemctl stop paperclip-build-test-4242-a.scope$' "$STUB_DIR/calls.log" || fail "6c: a pattern naming the host-test scope did not stop it"
+echo "PASS: the default sweep leaves paperclip-build-test-* scopes alone; real build scopes are still reaped"
+
+# --- 7. A failed final state query is not a confirmed stop ---------------------------
+reset_stubs
+guarded paperclip-build-t7 bash -c 'exit 0'
+[[ "$GUARD_RC" -eq 0 ]] || fail "7: baseline build failed (rc=$GUARD_RC): $GUARD_OUT"
+total_queries="$(cat "$STUB_DIR/activestate-calls")"
+[[ "$total_queries" -ge 1 ]] || fail "7: the baseline run made no ActiveState query"
+reset_stubs
+echo "$total_queries" >"$STUB_DIR/activestate-fail-from"
+guarded paperclip-build-t7 bash -c 'exit 0'
+[[ "$GUARD_RC" -ne 0 ]] || fail "7: build_guard_stop succeeded although its last scope-state query failed: $GUARD_OUT"
+printf '%s\n' "$GUARD_OUT" | grep -q "Confirmed: no build process left" && fail "7: logged Confirmed although the final state query failed: $GUARD_OUT"
+printf '%s\n' "$GUARD_OUT" | grep -q "cannot query the state of paperclip-build-t7.scope" || fail "7: wrong error: $GUARD_OUT"
+echo "PASS: a failed final scope-state query is an error, not a confirmed stop"

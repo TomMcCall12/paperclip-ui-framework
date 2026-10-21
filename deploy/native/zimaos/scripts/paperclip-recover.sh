@@ -4,6 +4,10 @@
 # starts after a failed /api/health probe; the watchdog's own Telegram
 # alert (paperclip-native-alert@) still fires alongside this, unchanged.
 #
+#   0. Fail closed without flock: the update lock is the only thing that keeps
+#      this script from restarting the server (or stopping a build scope)
+#      under a running update, so if flock cannot run, do nothing and exit
+#      non-zero. The next timer tick retries.
 #   1. Skip while paperclip-update.sh holds its lock: the update restarts
 #      the server itself and has its own exit safety net.
 #   2. Probe again after PAPERCLIP_RECOVER_PROBE_DELAY seconds. The
@@ -48,9 +52,10 @@ HEALTH_ATTEMPTS="${PAPERCLIP_RECOVER_HEALTH_ATTEMPTS:-24}"
 HEALTH_DELAY="${PAPERCLIP_RECOVER_HEALTH_DELAY:-5}"
 
 if [[ "$DRY_RUN" == "1" ]]; then
+  log "[dry-run] would exit non-zero without doing anything if flock cannot run (cannot hold the update lock)"
   log "[dry-run] would skip if $LOCK_FILE is locked (an update is running)"
   log "[dry-run] would probe $HEALTH_URL again after ${PROBE_DELAY}s and stop if it answers"
-  log "[dry-run] would then take $LOCK_FILE (skip if an update holds it) and keep it until after the restart's health check; under it: probe once more, stop leftover paperclip-build-*.scope units, restart"
+  log "[dry-run] would then take $LOCK_FILE (skip if an update holds it) and keep it until after the restart's health check; under it: probe once more, stop leftover paperclip-build-*.scope units (not the host tests' paperclip-build-test-*), restart"
   log "[dry-run] would restart $SERVICE at most once per ${MIN_INTERVAL}s (state: $STATE_FILE), then wait for health"
   exit 0
 fi
@@ -59,12 +64,14 @@ health_ok() {
   curl -fsS --max-time 10 "$HEALTH_URL" >/dev/null 2>&1
 }
 
+# Without a working flock this script cannot tell whether an update is
+# running, so it must not sweep build scopes or restart the server.
+flock_usable() {
+  command -v flock >/dev/null 2>&1 && flock --version >/dev/null 2>&1
+}
+
 update_running() {
   [[ -e "$LOCK_FILE" ]] || return 1
-  if ! command -v flock >/dev/null 2>&1; then
-    log "WARNING: flock is not installed; cannot tell whether an update is running."
-    return 1
-  fi
   ! flock -n "$LOCK_FILE" true
 }
 
@@ -83,6 +90,9 @@ stop_leftover_build_scopes() {
       *) unit="$a" ;;
     esac
     [[ "$unit" == paperclip-build-*.scope ]] || continue
+    # The host tests' own scopes (paperclip-build-test-*) are not an
+    # updater's; a real build scope is paperclip-build-<hex sha>.
+    [[ "$unit" != paperclip-build-test-* ]] || continue
     log "Stopping leftover build scope $unit (its updater is gone)."
     systemctl kill --signal=SIGKILL --kill-whom=all "$unit" >/dev/null 2>&1 || true
     systemctl stop "$unit" >/dev/null 2>&1 || true
@@ -94,6 +104,11 @@ stop_leftover_build_scopes() {
   done <<<"$out"
   return 0
 }
+
+if ! flock_usable; then
+  log "ERROR: flock is not available, so this script cannot tell whether an update is running or hold the update lock. Failing closed: no build-scope sweep and no restart of $SERVICE. The next timer tick retries; install util-linux flock if this repeats."
+  exit 1
+fi
 
 if update_running; then
   log "paperclip-update.sh holds $LOCK_FILE; an update is running and owns the restart. Not restarting."
@@ -113,13 +128,9 @@ log "Second consecutive probe failed: $HEALTH_URL."
 # 8>> creates the file if it is missing and never truncates it.
 mkdir -p "$(dirname "$LOCK_FILE")"
 exec 8>>"$LOCK_FILE"
-if command -v flock >/dev/null 2>&1; then
-  if ! flock -n 8; then
-    log "An update started while this check waited; it owns the restart. Not restarting."
-    exit 0
-  fi
-else
-  log "WARNING: flock is not installed; cannot hold the update lock while restarting."
+if ! flock -n 8; then
+  log "An update started while this check waited; it owns the restart. Not restarting."
+  exit 0
 fi
 if health_ok; then
   log "Final probe under the update lock OK: $HEALTH_URL answers. Not restarting."

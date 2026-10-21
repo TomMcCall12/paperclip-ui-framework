@@ -29,6 +29,7 @@ import {
   selectInitialCommunicationGuidance,
   runningProcesses,
   runChildProcess,
+  wrapForAgentOomReset,
   sanitizeSshRemoteEnv,
   signalRunningProcess,
   shapePaperclipWorkspaceEnvForExecution,
@@ -564,6 +565,79 @@ describe("adapter skill snapshots", () => {
       }),
     );
   });
+});
+
+describe("wrapForAgentOomReset", () => {
+  async function makeWrapper(): Promise<{ dir: string; wrapper: string }> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "oom-wrapper-"));
+    const wrapper = path.join(dir, "agent-exec.sh");
+    await fs.writeFile(
+      wrapper,
+      '#!/bin/sh\nPAPERCLIP_TEST_WRAPPED=1\nexport PAPERCLIP_TEST_WRAPPED\nexec "$@"\n',
+      { mode: 0o755 },
+    );
+    return { dir, wrapper };
+  }
+
+  it("runs the command through the wrapper when the host names one", async () => {
+    const { dir, wrapper } = await makeWrapper();
+    try {
+      expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: wrapper })).toEqual(
+        process.platform === "linux"
+          ? { command: wrapper, args: ["claude", "--print"] }
+          : { command: "claude", args: ["--print"] },
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves the command alone when no wrapper is set, or it is missing, relative or not executable", async () => {
+    const { dir, wrapper } = await makeWrapper();
+    try {
+      const plain = { command: "claude", args: ["--print"] };
+      expect(wrapForAgentOomReset("claude", ["--print"], {})).toEqual(plain);
+      expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: "  " })).toEqual(plain);
+      expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: path.join(dir, "nope.sh") })).toEqual(plain);
+      expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: "agent-exec.sh" })).toEqual(plain);
+      await fs.chmod(wrapper, 0o644);
+      expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: wrapper })).toEqual(plain);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "linux")(
+    "starts a local agent child through the wrapper (the reset happens at spawn, before the program runs)",
+    async () => {
+      const { dir, wrapper } = await makeWrapper();
+      const previous = process.env.PAPERCLIP_AGENT_EXEC_WRAPPER;
+      process.env.PAPERCLIP_AGENT_EXEC_WRAPPER = wrapper;
+      try {
+        const result = await runChildProcess(
+          randomUUID(),
+          process.execPath,
+          ["-e", "process.stdout.write(String(process.env.PAPERCLIP_TEST_WRAPPED))"],
+          { cwd: process.cwd(), env: {}, timeoutSec: 10, graceSec: 1, onLog: async () => {} },
+        );
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toBe("1");
+
+        delete process.env.PAPERCLIP_AGENT_EXEC_WRAPPER;
+        const plain = await runChildProcess(
+          randomUUID(),
+          process.execPath,
+          ["-e", "process.stdout.write(String(process.env.PAPERCLIP_TEST_WRAPPED))"],
+          { cwd: process.cwd(), env: {}, timeoutSec: 10, graceSec: 1, onLog: async () => {} },
+        );
+        expect(plain.stdout).toBe("undefined");
+      } finally {
+        if (previous === undefined) delete process.env.PAPERCLIP_AGENT_EXEC_WRAPPER;
+        else process.env.PAPERCLIP_AGENT_EXEC_WRAPPER = previous;
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("runChildProcess", () => {

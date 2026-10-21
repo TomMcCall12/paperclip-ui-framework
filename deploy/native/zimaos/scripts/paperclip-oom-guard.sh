@@ -14,18 +14,19 @@
 #
 # Why a loop and not ExecStartPost=+ alone: agent runs start inside this
 # same unit, forked by the server, and a child inherits its parent's
-# oom_score_adj at fork. Protecting only the main process once would make
-# every later agent run just as protected as the server, i.e. more
-# protected than Tailscale and networking. This loop gives each new child
-# the agent value within one interval. If this guard is not running, nothing
-# is protected (everything stays at 0), which is the safe failure.
+# oom_score_adj at fork. The server therefore launches local agent runs
+# through paperclip-agent-exec.sh (PAPERCLIP_AGENT_EXEC_WRAPPER, set by the
+# unit's 50-oom-guard.conf drop-in), which resets the value in the new process
+# before the agent program starts: that is the fix, with no inherited window
+# (TOM-703). This loop is the backstop for any process that did not go
+# through the wrapper (a spawn site that does not use it, a missing wrapper
+# file): it gives such a child the agent value within one interval. If this
+# guard is not running, nothing is protected (everything stays at 0), which is
+# the safe failure.
 #
-# The interval is 0.2s, not seconds: a new agent process holds the server's
-# -500 only until the next pass, which is a fresh fork that has not yet
-# allocated anything, not the several seconds in which an agent could load
-# a model's worth of memory while more protected than the network stack.
-# A pass reads /proc with shell builtins only (no per-process fork), so it
-# costs a few milliseconds.
+# The interval is 0.2s, not seconds, so that backstop window is as short as a
+# poll can make it. A pass reads /proc with shell builtins only (no
+# per-process fork), so it costs a few milliseconds.
 #
 # Self-contained on purpose (no lib/common.sh): it lives in the recovery
 # path outside every release.
