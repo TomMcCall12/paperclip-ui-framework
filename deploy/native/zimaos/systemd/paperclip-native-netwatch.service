@@ -1,0 +1,19 @@
+[Unit]
+Description=Paperclip native network-path check: LAN address, LAN health, DNS, internet (triggered by paperclip-native-netwatch.timer)
+RequiresMountsFor="/DATA/.media/External SSD"
+After=paperclip-native.service
+# Alert only: no recovery unit. A network fault is not fixed by restarting
+# Paperclip; paperclip-native-net-heal.timer handles a missing address.
+OnFailure=paperclip-native-alert@%n.service
+
+[Service]
+Type=oneshot
+User=paperclip
+Group=paperclip
+EnvironmentFile=/DATA/.media/External SSD/paperclip-native/env/paperclip-native.env
+Environment="PAPERCLIP_NATIVE_ROOT=/DATA/.media/External SSD/paperclip-native"
+ExecStart="/usr/local/lib/paperclip/scripts/paperclip-netwatch.sh"
+TimeoutStartSec=3min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-netwatch

@@ -1,0 +1,19 @@
+[Unit]
+Description=Restart paperclip-native.service in the quiet hours if it has grown too big or run too long (triggered by paperclip-native-quiet-restart.timer)
+RequiresMountsFor="/DATA/.media/External SSD"
+# A failure here means the restart did not bring the server back; the
+# watchdog's recovery unit takes over from there.
+OnFailure=paperclip-native-alert@%n.service
+
+[Service]
+Type=oneshot
+# Root: restarting paperclip-native.service and reading its processes need it.
+EnvironmentFile=/DATA/.media/External SSD/paperclip-native/env/paperclip-native.env
+Environment="PAPERCLIP_NATIVE_ROOT=/DATA/.media/External SSD/paperclip-native"
+ExecStart="/usr/local/lib/paperclip/scripts/paperclip-quiet-restart.sh"
+# Waits up to 90 minutes for agent runs to finish, then the restart.
+TimeoutStartSec=2h
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-quiet-restart

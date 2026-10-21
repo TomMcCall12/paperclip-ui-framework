@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily quiet-hours check: restart Paperclip if it has grown too big or run too long
+
+[Timer]
+# Local time, after the 03:17 backup.
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

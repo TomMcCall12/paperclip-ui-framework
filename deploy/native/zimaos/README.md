@@ -19,8 +19,8 @@ full set of offline checks this directory passes today.
 |---|---|---|
 | `<root>` (default `/DATA/.media/External SSD/paperclip-native`) | Node toolchain, every release, instance data (incl. embedded Postgres), env files, the `paperclip` user's home, logs | Must survive a reboot; `/var`, `/tmp`, `/run` are tmpfs on ZimaOS and are wiped every boot |
 | `/etc/systemd/system/paperclip-native*` | The unit files themselves | `/etc` is `overlayfs rw` (`upperdir=/mnt/overlay/upper_etc` on `/dev/mmcblk0p7`), confirmed persistent across the 14 Sep RAUC 1.7.1 update and every reboot since |
-| `/usr/local/lib/paperclip/{scripts,lib}` (or `<root>/recovery` if that path isn't writable on this ZimaOS) | `paperclip-watchdog.sh`, `telegram-alert.sh`, `lib/common.sh`, and (TOM-686) `paperclip-recover.sh`, `paperclip-oom-guard.sh` | Outside the release tree -- a broken `current` symlink must not be able to break the alert/watchdog path that reports it |
-| `/etc/systemd/system/paperclip-native-{recover,oom-guard}.service`, `paperclip-native.service.d/50-oom-guard.conf`, `paperclip-native-watchdog.service.d/50-recover.conf` | The host safety net (TOM-686, see "Host safety net" below) | Installed and kept current by every `paperclip-update.sh` run; they name only the recovery path and `systemctl`, so they keep working after a rollback |
+| `/usr/local/lib/paperclip/{scripts,lib}` (or `<root>/recovery` if that path isn't writable on this ZimaOS) | `paperclip-watchdog.sh`, `telegram-alert.sh`, `lib/common.sh`, (TOM-686) `paperclip-recover.sh`, `paperclip-oom-guard.sh`, and (TOM-690) `paperclip-net-heal.sh`, `paperclip-netwatch.sh`, `paperclip-quiet-restart.sh` | Outside the release tree -- a broken `current` symlink must not be able to break the alert/watchdog path that reports it |
+| `/etc/systemd/system/paperclip-native-{recover,oom-guard}.service`, `paperclip-native.service.d/50-oom-guard.conf`, `paperclip-native-watchdog.service.d/50-recover.conf`, and (TOM-690) `paperclip-native-{net-heal,netwatch,quiet-restart}.{service,timer}` | The host safety net (TOM-686, TOM-690, see "Host safety net" below) | Installed and kept current by every `paperclip-update.sh` run; they name only the recovery path and `systemctl`, so they keep working after a rollback |
 | ZimaOS / CasaOS / Docker | Untouched | Docker keeps running the existing container on port 3100 throughout the parallel-run proof |
 
 The service listens on the `PORT` set in `<root>/env/paperclip-native.env`
@@ -301,6 +301,53 @@ drop-ins too).
 - **No hardware watchdog** (`RuntimeWatchdogSec` stays off): Jarvis decided
   against it on TOM-685; the 21 Oct freeze was a memory livelock that the
   pre-flight and the ceiling now prevent.
+
+### Network self-heal, network-path check and quiet-hours restart (TOM-690)
+
+On 21 Oct, after the first restart, the wired port had a cable link but no
+DHCP lease for 31 minutes. Paperclip was healthy on loopback, so the
+watchdog stayed green. Swap was also 99% full that morning, after the server
+had run for 4 days. Three more units cover this. `paperclip-update.sh`
+installs them with the rest of the safety net and enables and starts each
+timer the first time it installs it; a timer someone has disabled stays
+disabled on later updates.
+
+- **`paperclip-native-net-heal.timer` / `.service`** (root, every minute,
+  `paperclip-net-heal.sh`). It does nothing while `eth0` has an IPv4
+  address and a default route, and nothing while it has no cable link
+  (carrier 0: the cable, switch or router is off). With a cable link and no
+  address for 5 minutes it takes one step every 5 minutes: `nmcli device
+  connect eth0`; a link bounce (`nmcli device disconnect`, `ip link set
+  down`, `ip link set up`, `nmcli device connect`); `systemctl restart
+  NetworkManager`; then round again. A clean `systemctl reboot` after 30
+  minutes is available but off (`PAPERCLIP_NET_HEAL_REBOOT=1` in the env
+  file turns it on): never during an update, at most once per 6 hours.
+  Every step and the end of every outage go to
+  `<root>/logs/network-heal.log`. A port that has an address is never
+  touched, so a test never needs to drop the live network; the offline test
+  uses stubs and the host test a throwaway dummy interface.
+- **`paperclip-native-netwatch.timer` / `.service`** (paperclip user, every
+  5 minutes, `paperclip-netwatch.sh`): `eth0` has an address and a default
+  route, Paperclip answers `/api/health` on the LAN address (not only
+  127.0.0.1), DNS resolves `api.anthropic.com`, and
+  `https://api.anthropic.com/` gives any HTTP answer. A failed round is
+  tried again after 20 seconds; two failures exit non-zero, so its
+  `OnFailure=` Telegram alert fires (it will reach Telegram only once the
+  internet path is back), and the failure goes to
+  `<root>/logs/network-watch.log`. It never restarts anything: a network
+  fault is not fixed by restarting Paperclip.
+- **`paperclip-native-quiet-restart.timer` / `.service`** (root, daily at
+  about 04:30 local, after the 03:17 backup, `paperclip-quiet-restart.sh`).
+  It restarts `paperclip-native.service` only if its anonymous memory plus
+  swap is at least 6144 MB, host swap is at least 50% used, or it has run
+  for 3 days; most nights it does nothing. It first waits up to 90 minutes
+  for every agent run in the unit to finish (any process other than the
+  server and its embedded Postgres), skips the night if one is still
+  running, and restarts under the update lock. Every decision goes to
+  `<root>/logs/quiet-restart.log`.
+
+Each threshold is an environment variable in the env file; see the header
+of each script for the names and defaults.
 
 ### What agent runs inherit for the OOM score
 
