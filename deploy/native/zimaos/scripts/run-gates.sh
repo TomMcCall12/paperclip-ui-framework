@@ -54,10 +54,10 @@ while IFS= read -r -d '' f; do
 done < <(find "$ZIMAOS_DIR" -name '*.sh' -print0)
 run_gate "bash shebang present on every zimaos script" bash -c "exit $((1 - shebang_ok))"
 
-section "verify-systemd-units.sh --units-dir zimaos/systemd (systemd-analyze verify)"
+section "verify-systemd-units.sh --units-dir zimaos/systemd (systemd-analyze verify, drop-ins included)"
 run_gate "verify-systemd-units.sh (zimaos)" "$NATIVE_DIR/scripts/verify-systemd-units.sh" --units-dir "$ZIMAOS_DIR/systemd"
 
-section "check-no-early-boot-deps.sh --units-dir zimaos/systemd"
+section "check-no-early-boot-deps.sh --units-dir zimaos/systemd (units and drop-ins)"
 run_gate "check-no-early-boot-deps.sh" "$NATIVE_DIR/scripts/check-no-early-boot-deps.sh" --units-dir "$ZIMAOS_DIR/systemd"
 
 section "check-no-state-outside-run-root.sh (zimaos tree)"
@@ -86,6 +86,23 @@ run_gate "test-exclude-broker-no-compiler.sh" bash "$SCRIPT_DIR/tests/test-exclu
 
 section "PNPM_HOME-in-PATH + no-global-store-dir-write offline test"
 run_gate "test-pnpm-store-dir-pin-no-global-refusal.sh" bash "$SCRIPT_DIR/tests/test-pnpm-store-dir-pin-no-global-refusal.sh"
+
+section "memory guard stops the whole build tree offline test (TOM-686)"
+run_gate "test-memory-guard-kills-tree.sh" bash "$SCRIPT_DIR/tests/test-memory-guard-kills-tree.sh"
+
+section "build pre-flight refuses on high swap / low memory offline test (TOM-686)"
+run_gate "test-build-preflight-swap.sh" bash "$SCRIPT_DIR/tests/test-build-preflight-swap.sh"
+
+section "paperclip-update.sh exit trap restarts only a down server offline test (TOM-686)"
+run_gate "test-update-exit-trap.sh" bash "$SCRIPT_DIR/tests/test-update-exit-trap.sh"
+
+section "recover unit, OOM guard and safety-net install offline test (TOM-686)"
+run_gate "test-host-safety-net.sh" bash "$SCRIPT_DIR/tests/test-host-safety-net.sh"
+
+section "recovery-path scripts --dry-run (TOM-686)"
+run_gate "paperclip-recover.sh --dry-run" bash -c \
+  "PAPERCLIP_NATIVE_ROOT=/nonexistent '$SCRIPT_DIR/paperclip-recover.sh' --dry-run >/dev/null 2>&1"
+run_gate "paperclip-oom-guard.sh --dry-run" bash -c "'$SCRIPT_DIR/paperclip-oom-guard.sh' --dry-run >/dev/null 2>&1"
 
 section "install-native-zimaos.sh --dry-run"
 run_gate "install-native-zimaos.sh --dry-run" bash -c \

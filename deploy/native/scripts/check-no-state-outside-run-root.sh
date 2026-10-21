@@ -45,7 +45,7 @@ scan_file() {
 for target in "$@"; do
   if [[ -d "$target" ]]; then
     files=()
-    while IFS= read -r -d '' f; do files+=("$f"); done < <(find "$target" -type f \( -name '*.sh' -o -name '*.service' -o -name '*.timer' \) -print0)
+    while IFS= read -r -d '' f; do files+=("$f"); done < <(find "$target" -type f \( -name '*.sh' -o -name '*.service' -o -name '*.timer' -o -name '*.conf' \) -print0)
   else
     files=("$target")
   fi

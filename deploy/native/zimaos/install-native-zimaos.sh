@@ -228,12 +228,15 @@ require_memory_available_mb "$MIN_BUILD_MEMORY_MB" "building release $COMMIT"
 # $REPO_SRC may be a root-owned checkout; the build runs as $PAPERCLIP_USER,
 # so git would otherwise refuse it as "dubious ownership". Trust that one
 # path for this single invocation only -- never chown the source, write a
-# global git config, or remount it writable.
-run_memory_guarded "Build release $COMMIT as $PAPERCLIP_USER" "$MIN_BUILD_MEMORY_MB" "$BUILD_MEMORY_POLL_SECONDS" -- \
-  drop_priv_run "$PAPERCLIP_USER" -- env "${BUILD_ENV[@]}" \
+# global git config, or remount it writable. The build runs contained in
+# its own scope and process group (TOM-686; see run_memory_guarded).
+BUILD_SCOPE_UNIT="paperclip-build-${COMMIT:0:12}"
+drop_priv_argv "$PAPERCLIP_USER" -- env "${BUILD_ENV[@]}" \
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$REPO_SRC" \
   "$NATIVE_DIR/scripts/build-release.sh" --commit "$COMMIT" --dest "$RELEASE_DIR" --repo-src "$REPO_SRC" \
-  "${BUILD_EXCLUDE_ARGS[@]}"
+  --workspace-concurrency 2 "${BUILD_EXCLUDE_ARGS[@]}"
+run_memory_guarded "Build release $COMMIT as $PAPERCLIP_USER" "$MIN_BUILD_MEMORY_MB" "$BUILD_MEMORY_POLL_SECONDS" -- \
+  "${DROP_PRIV_ARGV[@]}"
 
 log "== Restoring the data directory =="
 if [[ -n "$DATA_SRC" ]]; then
@@ -325,6 +328,10 @@ else
   for f in paperclip-watchdog.sh telegram-alert.sh; do
     install -m 755 "$NATIVE_DIR/scripts/$f" "$RECOVERY_BASE/scripts/$f"
   done
+  # The TOM-686 safety net: root recovery unit and OOM guard (see README.md).
+  for f in "${SAFETY_NET_SCRIPTS[@]}"; do
+    install -m 755 "$ZIMAOS_DIR/scripts/$f" "$RECOVERY_BASE/scripts/$f"
+  done
   install -m 644 "$NATIVE_DIR/lib/common.sh" "$RECOVERY_BASE/lib/common.sh"
 fi
 
@@ -346,12 +353,14 @@ if [[ "$DRY_RUN" == "1" ]]; then
   log "[dry-run]   '$DEFAULT_RECOVERY_BASE' -> '$RECOVERY_BASE'"
 else
   mkdir -p "$RENDERED_UNITS_DIR"
-  rm -f "$RENDERED_UNITS_DIR"/*.service "$RENDERED_UNITS_DIR"/*.timer
-  for f in "$ZIMAOS_DIR"/systemd/*.service "$ZIMAOS_DIR"/systemd/*.timer; do
+  rm -rf "$RENDERED_UNITS_DIR"/*.service "$RENDERED_UNITS_DIR"/*.timer "$RENDERED_UNITS_DIR"/*.d
+  for f in "$ZIMAOS_DIR"/systemd/*.service "$ZIMAOS_DIR"/systemd/*.timer "$ZIMAOS_DIR"/systemd/*.d/*.conf; do
+    rel="${f#"$ZIMAOS_DIR"/systemd/}"
+    mkdir -p "$RENDERED_UNITS_DIR/$(dirname "$rel")"
     sed -e "s#${DEFAULT_ROOT}#${ROOT}#g" \
         -e "s#${DEFAULT_MOUNT_PATH}#${MOUNT_PATH}#g" \
         -e "s#${DEFAULT_RECOVERY_BASE}#${RECOVERY_BASE}#g" \
-        "$f" > "$RENDERED_UNITS_DIR/$(basename "$f")"
+        "$f" > "$RENDERED_UNITS_DIR/$rel"
   done
 fi
 
@@ -368,7 +377,7 @@ else
 fi
 
 log "== Installing the verified units (into /etc/systemd/system -- overlayfs rw, persistent) =="
-run "Copy rendered unit files" -- bash -c "cp '$RENDERED_UNITS_DIR'/*.service '$RENDERED_UNITS_DIR'/*.timer /etc/systemd/system/"
+run "Copy rendered unit files and drop-in directories" -- bash -c "cp -r '$RENDERED_UNITS_DIR'/*.service '$RENDERED_UNITS_DIR'/*.timer '$RENDERED_UNITS_DIR'/*.d /etc/systemd/system/"
 run "Reload systemd unit files" -- systemctl daemon-reload
 
 log "== Enabling units (not starting -- start paperclip-native.service explicitly once the env file is filled in) =="

@@ -1,0 +1,20 @@
+[Unit]
+Description=Keep paperclip-native's server and Postgres, not its agent runs, out of the OOM killer's way
+# Started by paperclip-native.service (Wants= in its 50-oom-guard.conf
+# drop-in) and stopped or restarted together with it.
+PartOf=paperclip-native.service
+After=paperclip-native.service
+RequiresMountsFor="/DATA/.media/External SSD"
+# No Before=, no early-boot target, no casaos-/zimaos- dependency (see
+# paperclip-native.service for the 5 Oct ordering-cycle outage this avoids).
+
+[Service]
+Type=simple
+# Root: lowering another process's oom_score_adj needs CAP_SYS_RESOURCE.
+ExecStart=/usr/local/lib/paperclip/scripts/paperclip-oom-guard.sh
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-oom-guard

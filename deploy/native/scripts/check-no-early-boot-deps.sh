@@ -29,7 +29,11 @@ done
 [[ -d "$UNITS_DIR" ]] || die "--units-dir '$UNITS_DIR' is not a directory."
 
 # Each pattern below is a lesson already paid for -- see the file header.
+# Any Before= at all (not just the two targets that bit on 5 Oct): these
+# units start late, after the things they need, and order nothing else.
 FORBIDDEN_PATTERNS=(
+  '^[[:space:]]*Before='
+  '^[[:space:]]*DefaultDependencies=no'
   'Before=sysinit\.target'
   'Before=local-fs\.target'
   'casaos-'
@@ -41,9 +45,11 @@ status=0
 shopt -s nullglob
 unit_files=("$UNITS_DIR"/*.service "$UNITS_DIR"/*.timer)
 [[ ${#unit_files[@]} -gt 0 ]] || die "No *.service/*.timer files found under $UNITS_DIR"
+# Drop-ins (<unit>.d/*.conf) change their unit's dependencies just as much.
+unit_files+=("$UNITS_DIR"/*.d/*.conf)
 
 for unit_path in "${unit_files[@]}"; do
-  unit="$(basename "$unit_path")"
+  unit="${unit_path#"$UNITS_DIR"/}"
   # systemd unit files treat a line starting with '#' or ';' as a comment;
   # strip those before matching so an explanatory comment naming one of
   # these patterns (to say why the unit avoids it) doesn't trip this check.

@@ -19,7 +19,8 @@ full set of offline checks this directory passes today.
 |---|---|---|
 | `<root>` (default `/DATA/.media/External SSD/paperclip-native`) | Node toolchain, every release, instance data (incl. embedded Postgres), env files, the `paperclip` user's home, logs | Must survive a reboot; `/var`, `/tmp`, `/run` are tmpfs on ZimaOS and are wiped every boot |
 | `/etc/systemd/system/paperclip-native*` | The unit files themselves | `/etc` is `overlayfs rw` (`upperdir=/mnt/overlay/upper_etc` on `/dev/mmcblk0p7`), confirmed persistent across the 14 Sep RAUC 1.7.1 update and every reboot since |
-| `/usr/local/lib/paperclip/{scripts,lib}` (or `<root>/recovery` if that path isn't writable on this ZimaOS) | `paperclip-watchdog.sh`, `telegram-alert.sh`, `lib/common.sh` | Outside the release tree -- a broken `current` symlink must not be able to break the alert/watchdog path that reports it |
+| `/usr/local/lib/paperclip/{scripts,lib}` (or `<root>/recovery` if that path isn't writable on this ZimaOS) | `paperclip-watchdog.sh`, `telegram-alert.sh`, `lib/common.sh`, and (TOM-686) `paperclip-recover.sh`, `paperclip-oom-guard.sh` | Outside the release tree -- a broken `current` symlink must not be able to break the alert/watchdog path that reports it |
+| `/etc/systemd/system/paperclip-native-{recover,oom-guard}.service`, `paperclip-native.service.d/50-oom-guard.conf`, `paperclip-native-watchdog.service.d/50-recover.conf` | The host safety net (TOM-686, see "Host safety net" below) | Installed and kept current by every `paperclip-update.sh` run; they name only the recovery path and `systemctl`, so they keep working after a rollback |
 | ZimaOS / CasaOS / Docker | Untouched | Docker keeps running the existing container on port 3100 throughout the parallel-run proof |
 
 The service listens on the `PORT` set in `<root>/env/paperclip-native.env`
@@ -114,6 +115,28 @@ first, build, switch `current`, restart, health-check, and on failure
 switch `current` back (restoring the DB dump too, if a migration ran) and
 restart again.
 
+Since TOM-686 every run also:
+
+- takes an exclusive `flock` on `<root>/logs/.paperclip-update.lock`
+  (a second update is refused; the recovery unit stands back while it is
+  held);
+- arms an **exit trap** (EXIT, INT, TERM, HUP): after any failure, abort or
+  signal, at any stage, it stops the build scope, points `current` back if
+  the update had already switched it, probes `/api/health`, and restarts
+  `paperclip-native.service` and waits for health **only if the server is
+  down**. A healthy server is never restarted;
+- installs the host safety net units, drop-ins and scripts (only the files
+  that changed; `daemon-reload` only if a unit changed) before the build,
+  and starts the OOM guard;
+- runs the build pre-flight and the contained build described in "Build
+  memory safety" below.
+
+`--root` must be given on the live board (`/DATA/fastdrive/paperclip-native`);
+the default above is the original install's path. `--mount-path` defaults
+to the parent of `--root` and `--recovery-base` to
+`/usr/local/lib/paperclip` if the watchdog script is installed there, else
+`<root>/recovery`.
+
 **Build time:** not yet measured on the real board -- this task is
 repository-only and never touched the board (see the top of this file).
 The existing Docker route's image build has taken roughly an hour on this
@@ -167,20 +190,117 @@ defaults:
   too, or the migrated instance will start with the wrong attachments
   path, the wrong decrypt-strictness, or the wrong data directory.
 
-## Memory-guarded build
+## Build memory safety
 
-Both `install-native-zimaos.sh` and `paperclip-update.sh` call
-`require_memory_available_mb` (pre-flight: refuses to start the build if
-`MemAvailable` is already too low -- a `BUILD_EXIT=90`-class failure,
-caught before any work starts) and `run_memory_guarded` (polls
-`MemAvailable` while the build runs and cancels it if memory drops too low
-mid-build -- a `BUILD_EXIT=91`-class failure), both in
-`deploy/native/lib/common.sh`. Tune with `--min-build-memory-mb` and
-`--build-memory-poll-seconds`. Native Node/pnpm builds have aborted on
-this board for memory before; this is the same class of guard, reasoned
-from that history, not a port of an existing script (no prior
-memory-guarded build script exists elsewhere in this repository to
-retarget).
+On 21 Oct a release build took the board down for over two hours (TOM-683,
+diagnosis on TOM-685). Swap was already 5209MB of 5248MB used before the
+build; `pnpm -r build` ran four packages at once with no limit; the host
+live-locked about two minutes into the build, before the old 1200MB guard
+fired; and the guard's `kill` reached only a bash subshell, so `tsc` kept
+writing files for 41 more minutes. The pieces below, all in
+`deploy/native/lib/common.sh`, close each of those gaps.
+
+1. **Pre-flight** (`require_build_preflight`, `BUILD_EXIT=90`-class): the
+   update refuses to start the build if swap use is above
+   `--max-swap-used-pct`, or if `MemAvailable` is below
+   `--host-memory-reserve-mb` + `--min-build-ceiling-mb`. Otherwise it
+   clamps the build's ceiling to `MemAvailable - reserve`, so the build
+   alone can never take the host below the reserve.
+2. **Contained build** (`run_memory_guarded`): as root on systemd the build
+   runs in its own transient scope, `paperclip-build-<sha12>.scope`
+   (`systemd-run --scope` with `MemoryMax`, `MemorySwapMax`, `CPUWeight`,
+   `IOWeight`, `--nice`), and in its own process group (`setsid`). If the
+   build outgrows `MemoryMax`, the kernel OOM-kills a process **inside the
+   scope**; the build fails and the rest of the host is not touched. Every
+   build process also gets `oom_score_adj` 1000, so if the kernel ever has
+   to kill something host-wide, the build goes first. If `systemd-run`
+   cannot create such a scope (checked with a throwaway probe scope first),
+   it falls back to the process group alone, with a warning.
+3. **Mid-build guard** (`BUILD_EXIT=91`-class): `MemAvailable` is polled
+   every `--build-memory-poll-seconds`; below `--min-build-memory-mb`
+   (something else on the host is growing) the guard stops the build:
+   SIGTERM to the whole scope and process group, SIGKILL after 10 seconds,
+   then it **confirms the cgroup and the process group are empty** before
+   it reports the abort. The same stop runs from the update's exit trap.
+4. **Capped parallelism**: `pnpm -r --workspace-concurrency=<n>`
+   (`build-release.sh --workspace-concurrency`), and per-process caps:
+   `NODE_OPTIONS=--max-old-space-size` for Node (pnpm, vite) and
+   `GOMEMLIMIT` for TypeScript 7's `tsc`, which is a Go binary and ignores
+   `NODE_OPTIONS`.
+5. **Peak report**: at the end of the build the scope prints its exact
+   `memory.peak` (`[build-scope] ... memory.peak=<n>MB`), and the update
+   logs the sampled peak against the ceiling. Use it to tune the flags.
+
+| Flag (`paperclip-update.sh`) | Default | Why this value |
+|---|---|---|
+| `--build-memory-max <size>` | `8G` | Measured on this board (21 Oct, TypeScript 7.0.2): the server `tsc` alone peaks at ~6.6GB RSS, ~5.5GB with `GOMEMLIMIT`; the UI typecheck at ~2.8GB. With two packages at once, 8GB fits the server compile plus one smaller package. The pre-flight clamp lowers it on a busier host. |
+| `--build-swap-max <size>` | `256M` | Small on purpose: the build must not fill swap that the live server needs. Swap time in a build is thrash time. |
+| `--host-memory-reserve-mb <n>` | `4096` | What the host keeps for everything else: the live server (3.3-4GB after a restart, 10GB peak seen after 4 days), the Kasm browser (capped at 3GiB), Tailscale, Docker and the OS. Jarvis set ~4GB on TOM-685. |
+| `--min-build-ceiling-mb <n>` | `6144` | Below this the server `tsc` (~5.5GB) cannot finish, so the build would only die of its own OOM; refusing up front is cheaper. Together with the reserve: the build starts only with >= 10240MB available. |
+| `--max-swap-used-pct <n>` | `50` | A host already deep in swap thrashes instead of OOM-killing (21 Oct: 99%). |
+| `--min-build-memory-mb <n>` | `2048` | Mid-build trip level (was 1200, which fired after the host had already stalled). |
+| `--build-memory-poll-seconds <n>` | `10` | Unchanged. |
+| `--build-concurrency <n>` | `2` | pnpm's default is 4; 2 bounds the peak to about two packages. |
+| `--build-node-heap-mb <n>` | `3072` | Node heap cap for pnpm/vite processes; well above what the UI build needs. |
+| `--build-go-memory-limit-mb <n>` | `4096` | `GOMEMLIMIT` for `tsc`: a soft cap that makes Go collect garbage harder near it. Measured on the server typecheck: no limit ~6.6GB peak RSS; 4GiB ~5.7GB; 2.5GiB ~5.5GB but about twice as slow. `--checkers 1` (~4.8GB) or `--singleThreaded` (~4.4GB) would cut more, but those are `tsc` flags in the packages' own build scripts, outside `deploy/native`. |
+
+CPUWeight 20, IOWeight 20 and nice 10 are fixed (`BUILD_CPU_WEIGHT`,
+`BUILD_IO_WEIGHT`, `BUILD_NICE` in `lib/common.sh`): the live server and
+agent runs always win CPU and disk contention against a build.
+
+**If the pre-flight refuses**, the message gives the numbers. Usually the
+long-running server has grown or filled swap: restart
+`paperclip-native.service` in a quiet window (or stop the `hermes-browser`
+container for the build), then run the update again. Lower
+`--host-memory-reserve-mb` only with a reason. `install-native-zimaos.sh`
+uses the same contained build with its own `--min-build-memory-mb`
+(default 1200) and no clamp, because a first install runs on an idle board.
+
+## Host safety net
+
+Installed by `paperclip-update.sh` (and `install-native-zimaos.sh`), all in
+`deploy/native/zimaos/systemd/` and `deploy/native/zimaos/scripts/`. No
+`Before=`, no early-boot target, no CasaOS/ZimaOS dependency (the 5 Oct
+rule; `check-no-early-boot-deps.sh` now rejects any `Before=` and checks
+drop-ins too).
+
+- **`paperclip-native-recover.service`** (root, oneshot), started by
+  `paperclip-native-watchdog.service`'s `OnFailure=` (drop-in
+  `50-recover.conf`; the existing Telegram alert still fires next to it).
+  It does nothing while `paperclip-update.sh` holds its lock. Otherwise it
+  probes `/api/health` again after 30 seconds -- two consecutive failed
+  probes -- and only then restarts `paperclip-native.service` and waits for
+  health. At most one restart per 15 minutes
+  (`<root>/logs/.paperclip-recover.last-restart`); a rate-limited or failed
+  recovery exits non-zero, so its own `OnFailure=` alert tells a person.
+- **`paperclip-native-oom-guard.service`** (root), pulled in by
+  `paperclip-native.service` (drop-in `50-oom-guard.conf`, `Wants=`) and
+  stopped with it (`PartOf=`). Every 5 seconds it sets `oom_score_adj` to
+  -500 on the server's main process and its embedded Postgres, and raises
+  every other process in the unit that is below 0 back to 0.
+- **No hardware watchdog** (`RuntimeWatchdogSec` stays off): Jarvis decided
+  against it on TOM-685; the 21 Oct freeze was a memory livelock that the
+  pre-flight and the ceiling now prevent.
+
+### What agent runs inherit for the OOM score
+
+Agent runs start inside `paperclip-native.service`: the server forks them,
+and a child inherits its parent's `oom_score_adj` at fork. So:
+
+| Process | `oom_score_adj` |
+|---|---|
+| Server main process, embedded Postgres | -500 (same as dockerd) |
+| An agent run (or git, or any other child of the server) | -500 for at most 5 seconds after it starts, then 0 |
+| Anything an agent run starts after that | 0 (inherited from the agent) |
+| Release build (inside its scope) | 1000 |
+| For comparison on this board (21 Oct): `sshd` -1000, `containerd` -999, `dockerd` -500, `systemd-journald` -250, `tailscaled` 0, `NetworkManager` 0 | |
+
+Agent runs therefore end up exactly as protected as Tailscale and
+networking (0), never more. This is why the protection is a loop and not
+`OOMScoreAdjust=` (that applies to every process of the unit) or a one-off
+`ExecStartPost=+` on the main PID (every later agent run would inherit
+-500). If the guard is not running, nothing is protected and everything in
+the unit stays at 0 -- the safe way to fail.
 
 ## Mount safety
 
@@ -257,9 +377,10 @@ package manager, so these are never assumed to exist on the host:
    running under this native service can reach every mounted drive, not
    just a container's bind mounts. Tom has accepted this explicitly as
    part of this design (TOM-256).
-3. **Native builds have hit memory limits on this board before.** See
-   "Memory-guarded build" above -- this is why that guard exists, not an
-   optional nicety.
+3. **Native builds have hit memory limits on this board before**, and on
+   21 Oct one took the whole board down. See "Build memory safety" above --
+   this is why the pre-flight, ceiling and guard exist, not an optional
+   nicety.
 4. **PostgreSQL refuses to run as root.** The embedded Postgres under
    `<root>/data` requires the dedicated `paperclip` system user -- this is
    why `install-native-zimaos.sh` creates it rather than running everything
@@ -284,6 +405,10 @@ bash deploy/native/zimaos/scripts/tests/test-copy-tree-rsync-fallback.sh
 bash deploy/native/zimaos/scripts/tests/test-port-no-ambient-override.sh
 bash deploy/native/zimaos/scripts/tests/test-drop-priv-helper-fallback.sh
 bash deploy/native/zimaos/scripts/tests/test-recovery-base-fallback.sh
+bash deploy/native/zimaos/scripts/tests/test-memory-guard-kills-tree.sh
+bash deploy/native/zimaos/scripts/tests/test-build-preflight-swap.sh
+bash deploy/native/zimaos/scripts/tests/test-update-exit-trap.sh
+bash deploy/native/zimaos/scripts/tests/test-host-safety-net.sh
 deploy/native/zimaos/install-native-zimaos.sh --commit <sha> --repo-src <path> --dry-run
 deploy/native/zimaos/paperclip-update.sh --commit <sha> --repo-src <path> --dry-run
 ```

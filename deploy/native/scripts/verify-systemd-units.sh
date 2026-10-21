@@ -74,6 +74,11 @@ done
 
 mkdir -p "$FAKEROOT/etc/systemd/system"
 cp "$UNITS_DIR"/*.service "$UNITS_DIR"/*.timer "$FAKEROOT/etc/systemd/system/" 2>/dev/null || true
+# Drop-in directories (<unit>.d/*.conf) too: systemd-analyze verify merges
+# them into their unit, so a broken drop-in fails its unit's check below.
+for d in "$UNITS_DIR"/*.d; do
+  [[ -d "$d" ]] && cp -r "$d" "$FAKEROOT/etc/systemd/system/"
+done
 cp /etc/passwd "$FAKEROOT/etc/passwd"
 echo "paperclip:x:2000:2000::/srv/paperclip:/usr/sbin/nologin" >> "$FAKEROOT/etc/passwd"
 cp /etc/group "$FAKEROOT/etc/group"
@@ -104,8 +109,9 @@ touch_path_in_fakeroot() {
 shopt -s nullglob
 unit_files=("$UNITS_DIR"/*.service "$UNITS_DIR"/*.timer)
 [[ ${#unit_files[@]} -gt 0 ]] || die "No *.service/*.timer files found under $UNITS_DIR"
+dropin_files=("$UNITS_DIR"/*.d/*.conf)
 
-for unit_path in "${unit_files[@]}"; do
+for unit_path in "${unit_files[@]}" "${dropin_files[@]}"; do
   while IFS= read -r line; do
     case "$line" in
       ExecStart=*|ExecStartPre=*|ExecStartPost=*|ExecStop=*)

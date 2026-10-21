@@ -173,6 +173,17 @@ make_exec_capable_tempdir() {
   printf '%s\n' "$dir"
 }
 
+# meminfo_kb <field>
+# One /proc/meminfo field in kB (MemAvailable, SwapTotal, SwapFree, ...).
+# PAPERCLIP_MEMINFO_PATH lets the offline tests point this at a fake file;
+# nothing on a real host sets it.
+meminfo_kb() {
+  local field="$1" kb
+  kb="$(awk -v f="${field}:" '$1 == f {print $2}' "${PAPERCLIP_MEMINFO_PATH:-/proc/meminfo}")"
+  [[ -n "$kb" ]] || die "Could not read $field from ${PAPERCLIP_MEMINFO_PATH:-/proc/meminfo}."
+  printf '%s\n' "$kb"
+}
+
 # mem_available_mb
 # Reads /proc/meminfo's MemAvailable directly (kB -> MB), never `free`'s
 # output: MemAvailable already excludes reclaimable-but-unusable memory, and
@@ -180,8 +191,7 @@ make_exec_capable_tempdir() {
 # build that only "fits" in swap thrashes instead of finishing.
 mem_available_mb() {
   local kb
-  kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
-  [[ -n "$kb" ]] || die "Could not read MemAvailable from /proc/meminfo."
+  kb="$(meminfo_kb MemAvailable)"
   echo $((kb / 1024))
 }
 
@@ -203,12 +213,261 @@ require_memory_available_mb() {
   log "Memory pre-flight OK: ${avail}MB available (need >= ${min_mb}MB) before: $what"
 }
 
+# --- Build containment (TOM-686) --------------------------------------------
+# On 21 Oct a release build took the ZimaBoard down: swap was already 99%
+# full, `pnpm -r build` ran unbounded, the host live-locked before the old
+# 1200MB guard fired, and the guard's `kill` reached only a bash subshell, so
+# tsc kept running for 41 more minutes. The settings below are the fix. Every
+# one is a default the calling script may override (paperclip-update.sh maps
+# its flags onto them); see deploy/native/zimaos/README.md for why each
+# value is what it is.
+#
+# BUILD_SCOPE_MODE: auto | systemd | setsid. auto picks systemd when this
+# runs as root on a systemd host with systemd-run, else setsid.
+: "${BUILD_SCOPE_MODE:=auto}"
+# Transient unit name (without .scope); callers set paperclip-build-<sha>.
+: "${BUILD_SCOPE_UNIT:=paperclip-build-$$}"
+# Hard ceiling (MemoryMax) and swap allowance (MemorySwapMax) of the scope.
+: "${BUILD_MEMORY_MAX_MB:=8192}"
+: "${BUILD_SWAP_MAX_MB:=256}"
+# Low CPU and IO priority, so the live server and agent runs win contention.
+: "${BUILD_CPU_WEIGHT:=20}"
+: "${BUILD_IO_WEIGHT:=20}"
+: "${BUILD_NICE:=10}"
+# SIGTERM-to-SIGKILL grace when the guard trips or the update aborts.
+: "${BUILD_KILL_GRACE_SECONDS:=10}"
+
+# Runtime state of the one build run_memory_guarded() is supervising, read
+# by build_guard_stop() (also called from paperclip-update.sh's exit trap).
+BUILD_GUARD_MODE=""
+BUILD_GUARD_LEADER=""
+BUILD_GUARD_CGROUP=""
+BUILD_GUARD_PEAK_BYTES=0
+
+# require_build_preflight <what> <reserve-mb> <min-ceiling-mb> <max-swap-used-pct>
+# Refuses to start <what> on a host that is already under memory pressure,
+# then clamps BUILD_MEMORY_MAX_MB so the build can never take MemAvailable
+# below <reserve-mb>:
+#   - swap use above <max-swap-used-pct>% of SwapTotal: refuse. The 21 Oct
+#     host had 5209MB of 5248MB swap in use two hours before the build; with
+#     swap that full the kernel thrashes instead of OOM-killing anything.
+#   - MemAvailable below <reserve-mb> + <min-ceiling-mb>: refuse. Clamping
+#     the ceiling under <min-ceiling-mb> would only make the build die of
+#     its own OOM a few minutes in.
+#   - otherwise BUILD_MEMORY_MAX_MB = min(BUILD_MEMORY_MAX_MB,
+#     MemAvailable - <reserve-mb>).
+# Dies with a BUILD_EXIT=90-class message on refusal.
+require_build_preflight() {
+  local what="$1" reserve_mb="$2" min_ceiling_mb="$3" max_swap_pct="$4"
+  local avail swap_total_kb swap_free_kb swap_used_mb swap_total_mb swap_pct=0 headroom
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "[dry-run] pre-flight: would refuse to start ($what) if swap use is above ${max_swap_pct}% of SwapTotal (the 21 Oct host had 5209MB of 5248MB in use)"
+    log "[dry-run] pre-flight: would refuse if MemAvailable < ${reserve_mb}MB reserve + ${min_ceiling_mb}MB minimum build ceiling = $((reserve_mb + min_ceiling_mb))MB"
+    log "[dry-run] pre-flight: would clamp the build's MemoryMax to min(${BUILD_MEMORY_MAX_MB}MB, MemAvailable - ${reserve_mb}MB) so the host keeps >= ${reserve_mb}MB available"
+    return 0
+  fi
+  swap_total_kb="$(meminfo_kb SwapTotal)"
+  swap_free_kb="$(meminfo_kb SwapFree)"
+  swap_total_mb=$((swap_total_kb / 1024))
+  swap_used_mb=$(((swap_total_kb - swap_free_kb) / 1024))
+  if [[ "$swap_total_kb" -gt 0 ]]; then
+    swap_pct=$(((swap_total_kb - swap_free_kb) * 100 / swap_total_kb))
+  fi
+  if [[ "$swap_pct" -gt "$max_swap_pct" ]]; then
+    die "Refusing to start ($what): swap is already ${swap_used_mb}MB of ${swap_total_mb}MB used (${swap_pct}%, limit ${max_swap_pct}%). The host is under memory pressure and a build now can freeze it, as on 21 Oct. Find what holds the swap (often a long-running paperclip-native.service; restart it in a quiet window) and retry (BUILD_EXIT=90-class failure)."
+  fi
+  avail="$(mem_available_mb)"
+  if [[ "$avail" -lt $((reserve_mb + min_ceiling_mb)) ]]; then
+    die "Refusing to start ($what): only ${avail}MB available, need >= $((reserve_mb + min_ceiling_mb))MB (${reserve_mb}MB kept for the host + ${min_ceiling_mb}MB minimum for the build). Free memory first (for example stop the hermes-browser container for the build), then retry (BUILD_EXIT=90-class failure)."
+  fi
+  headroom=$((avail - reserve_mb))
+  if [[ "$headroom" -lt "$BUILD_MEMORY_MAX_MB" ]]; then
+    log "Clamping the build ceiling from ${BUILD_MEMORY_MAX_MB}MB to ${headroom}MB so MemAvailable stays >= ${reserve_mb}MB"
+    BUILD_MEMORY_MAX_MB="$headroom"
+  fi
+  log "Memory pre-flight OK: ${avail}MB available, swap ${swap_used_mb}/${swap_total_mb}MB (${swap_pct}%), build ceiling ${BUILD_MEMORY_MAX_MB}MB, host reserve ${reserve_mb}MB: $what"
+}
+
+# build_scope_probe
+# Starts and collects a throwaway scope with the same properties the build
+# scope uses, so a systemd that rejects one of them (or a host where
+# transient scopes are not allowed) is caught before the build, not as an
+# unexplained instant build failure.
+build_scope_probe() {
+  systemd-run --scope --quiet --collect --unit="paperclip-build-probe-$$" \
+    -p "MemoryMax=${BUILD_MEMORY_MAX_MB}M" -p "MemorySwapMax=${BUILD_SWAP_MAX_MB}M" \
+    -p "CPUWeight=$BUILD_CPU_WEIGHT" -p "IOWeight=$BUILD_IO_WEIGHT" --nice="$BUILD_NICE" \
+    -- true >/dev/null 2>&1
+}
+
+# build_scope_mode
+# Resolves BUILD_SCOPE_MODE=auto to systemd or setsid (run_memory_guarded
+# caches the answer in BUILD_GUARD_MODE).
+build_scope_mode() {
+  if [[ -n "$BUILD_GUARD_MODE" ]]; then
+    printf '%s\n' "$BUILD_GUARD_MODE"
+    return 0
+  fi
+  case "$BUILD_SCOPE_MODE" in
+    systemd|setsid) printf '%s\n' "$BUILD_SCOPE_MODE" ;;
+    auto)
+      # A --dry-run plans the real run, which is root; so it ignores EUID.
+      if [[ ("${EUID:-$(id -u)}" -eq 0 || "$DRY_RUN" == "1") && -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1; then
+        if [[ "$DRY_RUN" == "1" ]] || build_scope_probe; then
+          echo systemd
+        else
+          log "WARNING: systemd-run cannot create a transient scope with the build's limits on this host; falling back to a setsid process group (no MemoryMax ceiling)."
+          echo setsid
+        fi
+      else
+        echo setsid
+      fi
+      ;;
+    *) die "BUILD_SCOPE_MODE must be auto, systemd or setsid (got: $BUILD_SCOPE_MODE)" ;;
+  esac
+}
+
+# process_group_members <pgid>
+# Prints the PID of every live (non-zombie) process whose process group is
+# <pgid>. Reads /proc directly so it needs no pgrep.
+process_group_members() {
+  local pgid="$1" f stat rest state pgrp
+  for f in /proc/[0-9]*/stat; do
+    { stat="$(<"$f")"; } 2>/dev/null || continue
+    rest="${stat##*) }"
+    read -r state _ pgrp _ <<<"$rest"
+    [[ "$pgrp" == "$pgid" && "$state" != "Z" ]] && printf '%s\n' "$(basename "$(dirname "$f")")"
+  done
+  return 0
+}
+
+# build_guard_cgroup_procs
+# Prints the PIDs still in the build scope's cgroup (nothing once the scope
+# is gone -- systemd removes the cgroup when its last process exits).
+build_guard_cgroup_procs() {
+  [[ -n "$BUILD_GUARD_CGROUP" && -r "/sys/fs/cgroup$BUILD_GUARD_CGROUP/cgroup.procs" ]] || return 0
+  cat "/sys/fs/cgroup$BUILD_GUARD_CGROUP/cgroup.procs" 2>/dev/null || true
+}
+
+# build_guard_survivors
+# Every process the supervised build still has: its process group, plus
+# (systemd mode) its cgroup, which also catches a process that left the
+# group with its own setsid.
+build_guard_survivors() {
+  [[ -n "$BUILD_GUARD_LEADER" ]] || return 0
+  { process_group_members "$BUILD_GUARD_LEADER"; build_guard_cgroup_procs; } | sort -u
+}
+
+# build_guard_signal <signal>
+# Sends <signal> to the whole build: the process group, every PID in the
+# scope's cgroup, and (systemd mode) the scope itself via systemctl kill.
+build_guard_signal() {
+  local sig="$1" pid
+  kill "-$sig" -- "-$BUILD_GUARD_LEADER" 2>/dev/null || true
+  kill "-$sig" "$BUILD_GUARD_LEADER" 2>/dev/null || true
+  for pid in $(build_guard_cgroup_procs); do
+    kill "-$sig" "$pid" 2>/dev/null || true
+  done
+  if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
+    systemctl kill --signal="SIG$sig" "$BUILD_SCOPE_UNIT.scope" >/dev/null 2>&1 || true
+  fi
+}
+
+# build_guard_stop
+# Stops every process of the supervised build: SIGTERM, up to
+# BUILD_KILL_GRACE_SECONDS for it to exit, SIGKILL, then confirms that no
+# process is left in its process group or cgroup. Returns 0 when the build
+# is fully gone (or there was none), 1 if anything survived SIGKILL.
+# Idempotent; safe to call from an exit trap.
+build_guard_stop() {
+  local i survivors
+  [[ -n "$BUILD_GUARD_LEADER" ]] || return 0
+  survivors="$(build_guard_survivors)"
+  if [[ -n "$survivors" ]]; then
+    log "Stopping the build ($BUILD_GUARD_MODE mode, process group $BUILD_GUARD_LEADER${BUILD_GUARD_CGROUP:+, cgroup $BUILD_GUARD_CGROUP}): SIGTERM, then SIGKILL after ${BUILD_KILL_GRACE_SECONDS}s"
+    build_guard_signal TERM
+    for ((i = 0; i < BUILD_KILL_GRACE_SECONDS * 4; i++)); do
+      [[ -z "$(build_guard_survivors)" ]] && break
+      sleep 0.25
+    done
+    if [[ -n "$(build_guard_survivors)" ]]; then
+      build_guard_signal KILL
+      for ((i = 0; i < 40; i++)); do
+        [[ -z "$(build_guard_survivors)" ]] && break
+        sleep 0.25
+      done
+    fi
+  fi
+  if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
+    systemctl stop "$BUILD_SCOPE_UNIT.scope" >/dev/null 2>&1 || true
+  fi
+  wait "$BUILD_GUARD_LEADER" 2>/dev/null || true
+  survivors="$(build_guard_survivors)"
+  if [[ -n "$survivors" ]]; then
+    log "ERROR: build processes survived SIGKILL: ${survivors//$'\n'/ }"
+    return 1
+  fi
+  log "Confirmed: no build process left (process group $BUILD_GUARD_LEADER is empty${BUILD_GUARD_CGROUP:+, cgroup.procs is empty})"
+  BUILD_GUARD_LEADER=""
+  return 0
+}
+
+# build_guard_sample_cgroup
+# systemd mode only: records the scope's cgroup path and its memory.peak.
+build_guard_sample_cgroup() {
+  local line peak
+  [[ "$BUILD_GUARD_MODE" == "systemd" ]] || return 0
+  if [[ -z "$BUILD_GUARD_CGROUP" && -r "/proc/$BUILD_GUARD_LEADER/cgroup" ]]; then
+    line="$(grep -m1 '^0::' "/proc/$BUILD_GUARD_LEADER/cgroup" 2>/dev/null || true)"
+    [[ "${line#0::}" == *"/$BUILD_SCOPE_UNIT.scope" ]] && BUILD_GUARD_CGROUP="${line#0::}"
+  fi
+  if [[ -n "$BUILD_GUARD_CGROUP" && -r "/sys/fs/cgroup$BUILD_GUARD_CGROUP/memory.peak" ]]; then
+    peak="$(cat "/sys/fs/cgroup$BUILD_GUARD_CGROUP/memory.peak" 2>/dev/null || echo 0)"
+    [[ "$peak" =~ ^[0-9]+$ && "$peak" -gt "$BUILD_GUARD_PEAK_BYTES" ]] && BUILD_GUARD_PEAK_BYTES="$peak"
+  fi
+  return 0
+}
+
+# The first process inside the scope. It raises its own oom_score_adj to
+# 1000 (allowed unprivileged), so if the kernel ever has to OOM-kill
+# anything host-wide the build goes first; runs the build; then, still
+# inside the scope, prints the scope's exact memory.peak before it exits
+# (systemd removes the cgroup, and memory.peak with it, once it is empty).
+# shellcheck disable=SC2016 # expanded by the inner bash, not here
+BUILD_SCOPE_WRAPPER='echo 1000 > /proc/self/oom_score_adj 2>/dev/null; "$@"; rc=$?; cg="$(sed -n "s/^0:://p" /proc/self/cgroup 2>/dev/null)"; if [[ "$cg" == *.scope && -r "/sys/fs/cgroup$cg/memory.peak" ]]; then echo "[build-scope] ${cg##*/} memory.peak=$(( $(cat "/sys/fs/cgroup$cg/memory.peak") / 1048576 ))MB" >&2; fi; exit "$rc"'
+
+# build_guard_launch_argv <mode> <command...>
+# Sets BUILD_GUARD_ARGV to the full argv that runs <command...> contained:
+# systemd mode: systemd-run --scope with MemoryMax/MemorySwapMax/CPUWeight/
+# IOWeight/--nice, then setsid; setsid mode: nice + setsid only.
+build_guard_launch_argv() {
+  local mode="$1"
+  shift
+  if [[ "$mode" == "systemd" ]]; then
+    BUILD_GUARD_ARGV=(systemd-run --scope --quiet --collect --unit="$BUILD_SCOPE_UNIT"
+      -p "MemoryMax=${BUILD_MEMORY_MAX_MB}M" -p "MemorySwapMax=${BUILD_SWAP_MAX_MB}M"
+      -p "CPUWeight=$BUILD_CPU_WEIGHT" -p "IOWeight=$BUILD_IO_WEIGHT" --nice="$BUILD_NICE"
+      -- setsid bash -c "$BUILD_SCOPE_WRAPPER" paperclip-build "$@")
+  else
+    BUILD_GUARD_ARGV=(nice -n "$BUILD_NICE" setsid bash -c "$BUILD_SCOPE_WRAPPER" paperclip-build "$@")
+  fi
+}
+
 # run_memory_guarded <description> <min-mb> <poll-seconds> -- <command...>
-# Runs <command...> in the background and polls MemAvailable every
+# Runs <command...> contained, and polls host MemAvailable every
 # <poll-seconds>; if it drops below <min-mb> while the command is still
-# running, kills the command and dies (BUILD_EXIT=91-class failure: the
+# running, stops the whole build and dies (BUILD_EXIT=91-class failure: the
 # build started fine but the host ran low partway through, e.g. another
-# process competing for RAM). Honors DRY_RUN via run().
+# process competing for RAM). Honors DRY_RUN.
+#
+# Containment (see build_guard_launch_argv): as root on systemd, the build
+# runs in its own transient scope $BUILD_SCOPE_UNIT.scope with a hard
+# MemoryMax, so its own OOM happens inside the scope instead of across the
+# host; everywhere it also runs in its own process group (setsid). On a trip
+# or an abort the whole group and cgroup get SIGTERM, then SIGKILL, and the
+# guard confirms nothing is left before it dies. <command...> must be an
+# external command: a shell function would run in a subshell outside any of
+# that (the 21 Oct bug), so it is refused.
 run_memory_guarded() {
   local desc="$1" min_mb="$2" poll_seconds="$3"
   shift 3
@@ -217,27 +476,242 @@ run_memory_guarded() {
   fi
   shift
   if [[ "$DRY_RUN" == "1" ]]; then
-    print_dry_run_command "$desc (memory-guarded: abort if MemAvailable < ${min_mb}MB, checked every ${poll_seconds}s)" "$@"
+    local planned_mode
+    planned_mode="$(build_scope_mode)"
+    build_guard_launch_argv "$planned_mode" "$@"
+    print_dry_run_command "$desc (contained: $planned_mode mode, scope $BUILD_SCOPE_UNIT.scope MemoryMax=${BUILD_MEMORY_MAX_MB}M MemorySwapMax=${BUILD_SWAP_MAX_MB}M; abort if host MemAvailable < ${min_mb}MB, checked every ${poll_seconds}s; on abort SIGTERM then SIGKILL the whole scope/process group and confirm it is empty)" "${BUILD_GUARD_ARGV[@]}"
     return 0
   fi
-  log "$desc (memory-guarded: abort if MemAvailable < ${min_mb}MB)"
-  "$@" &
-  local cmd_pid=$! watchdog_tripped=0 avail
-  while kill -0 "$cmd_pid" 2>/dev/null; do
+  if declare -F "$1" >/dev/null 2>&1; then
+    die "run_memory_guarded(): '$1' is a shell function; pass an external command (see drop_priv_argv) so the build runs in its own scope and process group."
+  fi
+  BUILD_GUARD_MODE="$(build_scope_mode)"
+  build_guard_launch_argv "$BUILD_GUARD_MODE" "$@"
+  BUILD_GUARD_CGROUP=""
+  BUILD_GUARD_PEAK_BYTES=0
+  if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
+    # A scope left over from an earlier aborted attempt still holds its
+    # processes (and its unit name); stop it before reusing the name.
+    systemctl stop "$BUILD_SCOPE_UNIT.scope" >/dev/null 2>&1 || true
+  fi
+  if [[ "$BUILD_GUARD_MODE" == "systemd" ]]; then
+    log "$desc (contained: scope $BUILD_SCOPE_UNIT.scope, MemoryMax=${BUILD_MEMORY_MAX_MB}M, MemorySwapMax=${BUILD_SWAP_MAX_MB}M, CPUWeight=$BUILD_CPU_WEIGHT, IOWeight=$BUILD_IO_WEIGHT, nice $BUILD_NICE, own process group; abort if MemAvailable < ${min_mb}MB)"
+  else
+    log "$desc (contained: own process group only, nice $BUILD_NICE, no MemoryMax ceiling; abort if MemAvailable < ${min_mb}MB)"
+  fi
+  # 9>&-: never hand paperclip-update.sh's lock descriptor to the build.
+  "${BUILD_GUARD_ARGV[@]}" 9>&- &
+  BUILD_GUARD_LEADER=$!
+  local watchdog_tripped=0 avail rc=0
+  while kill -0 "$BUILD_GUARD_LEADER" 2>/dev/null; do
+    build_guard_sample_cgroup
     avail="$(mem_available_mb)"
     if [[ "$avail" -lt "$min_mb" ]]; then
       log "WATCHDOG: avail=${avail}MB < ${min_mb}MB, cancelling: $desc"
-      kill "$cmd_pid" 2>/dev/null || true
       watchdog_tripped=1
       break
     fi
     sleep "$poll_seconds"
   done
   if [[ "$watchdog_tripped" == "1" ]]; then
-    wait "$cmd_pid" 2>/dev/null || true
-    die "$desc aborted: memory dropped below ${min_mb}MB mid-run (BUILD_EXIT=91-class failure). Free memory and retry."
+    build_guard_stop || die "$desc aborted: memory dropped below ${min_mb}MB mid-run, and some build processes survived SIGKILL (see above). Investigate before retrying (BUILD_EXIT=91-class failure)."
+    die "$desc aborted: memory dropped below ${min_mb}MB mid-run (BUILD_EXIT=91-class failure). Every build process is confirmed stopped. Free memory and retry."
   fi
-  wait "$cmd_pid"
+  wait "$BUILD_GUARD_LEADER" || rc=$?
+  if [[ -n "$(build_guard_survivors)" ]]; then
+    log "The build's main process exited but left processes behind; stopping them."
+  fi
+  build_guard_stop || true
+  if [[ "$BUILD_GUARD_MODE" == "systemd" && "$BUILD_GUARD_PEAK_BYTES" -gt 0 ]]; then
+    log "Build scope $BUILD_SCOPE_UNIT.scope memory.peak (sampled every ${poll_seconds}s; the exact value is the [build-scope] line above): $((BUILD_GUARD_PEAK_BYTES / 1048576))MB of ${BUILD_MEMORY_MAX_MB}MB MemoryMax"
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    if [[ "$BUILD_GUARD_MODE" == "systemd" && $((BUILD_GUARD_PEAK_BYTES / 1048576)) -ge $((BUILD_MEMORY_MAX_MB * 95 / 100)) ]]; then
+      log "The build reached its ${BUILD_MEMORY_MAX_MB}MB MemoryMax ceiling, so the kernel most likely OOM-killed a build process inside the scope (the host was not affected)."
+    fi
+    return "$rc"
+  fi
+  return 0
+}
+
+# health_ok <url>
+# One /api/health probe: exit 0 if it answers 2xx within 5 seconds.
+health_ok() {
+  curl -fsS --max-time 5 "$1" >/dev/null 2>&1
+}
+
+# wait_for_health_url <url> <attempts> <delay-seconds>
+wait_for_health_url() {
+  local url="$1" attempts="$2" delay="$3" i
+  for ((i = 1; i <= attempts; i++)); do
+    if health_ok "$url"; then
+      log "Health check OK (attempt $i/$attempts)"
+      return 0
+    fi
+    log "Health check not ready yet (attempt $i/$attempts)"
+    sleep "$delay"
+  done
+  return 1
+}
+
+# --- paperclip-update.sh exit safety net (TOM-686) ---------------------------
+# State the update script keeps current as it goes, read by the trap below.
+# UPDATE_PHASE: init -> snapshot -> build -> switched (current points at the
+# new release, no restart yet) -> restarted -> rollback -> done (verified).
+UPDATE_PHASE="init"
+UPDATE_SERVICE="paperclip-native.service"
+UPDATE_HEALTH_URL=""
+UPDATE_CURRENT_LINK=""
+UPDATE_PREV_RELEASE=""
+UPDATE_MIGRATION_RAN=0
+: "${UPDATE_HEALTH_ATTEMPTS:=12}"
+: "${UPDATE_HEALTH_DELAY:=5}"
+
+# update_exit_safety_net <exit-code>
+# The EXIT trap of paperclip-update.sh. After a successful update
+# (UPDATE_PHASE=done) it only makes sure no build process is left. After any
+# failure, abort or signal, at any stage, it:
+#   1. stops the build scope / process group (build_guard_stop);
+#   2. points `current` back at the previous release if the update had
+#      already switched it (the server may run that release next restart);
+#   3. probes /api/health and restarts the service, then waits for health,
+#      ONLY if the server is down. A healthy server is never restarted.
+# Then exits with the original exit code.
+update_exit_safety_net() {
+  local rc="$1"
+  trap - EXIT INT TERM HUP
+  set +e
+  if [[ "$DRY_RUN" == "1" ]]; then
+    if [[ "$rc" -ne 0 ]]; then
+      log "[dry-run] exit trap: the update stopped with exit code $rc during '$UPDATE_PHASE'; a real run would now stop $BUILD_SCOPE_UNIT.scope, check $UPDATE_HEALTH_URL and restart $UPDATE_SERVICE only if it is down"
+    fi
+    exit "$rc"
+  fi
+  if [[ "$UPDATE_PHASE" == "done" ]]; then
+    build_guard_stop >/dev/null 2>&1
+    exit "$rc"
+  fi
+  log "== Exit safety net: the update stopped with exit code $rc during '$UPDATE_PHASE' =="
+  build_guard_stop || log "WARNING: some build processes could not be stopped (see above)."
+  local revert=0
+  case "$UPDATE_PHASE" in
+    switched|restarted) [[ -n "$UPDATE_PREV_RELEASE" && -n "$UPDATE_CURRENT_LINK" ]] && revert=1 ;;
+  esac
+  if [[ "$revert" == "1" && "$UPDATE_PHASE" == "switched" ]]; then
+    # Nothing was restarted yet, so the running server is still the previous
+    # release; only the symlink has to go back.
+    ln -sfn "$UPDATE_PREV_RELEASE" "$UPDATE_CURRENT_LINK" && log "Pointed $UPDATE_CURRENT_LINK back at $UPDATE_PREV_RELEASE (it had not been restarted onto the new release yet)."
+  fi
+  if health_ok "$UPDATE_HEALTH_URL"; then
+    log "Server is healthy at $UPDATE_HEALTH_URL; not restarting it."
+  else
+    log "Server is DOWN at $UPDATE_HEALTH_URL; restarting $UPDATE_SERVICE."
+    if [[ "$revert" == "1" ]]; then
+      ln -sfn "$UPDATE_PREV_RELEASE" "$UPDATE_CURRENT_LINK" && log "Pointed $UPDATE_CURRENT_LINK back at $UPDATE_PREV_RELEASE before the restart."
+      [[ "$UPDATE_MIGRATION_RAN" == "1" ]] && log "WARNING: migrations differ for this update and the exit trap does not restore the DB snapshot; check the database once the server is up."
+    fi
+    systemctl restart "$UPDATE_SERVICE" || log "ERROR: systemctl restart $UPDATE_SERVICE failed."
+    if wait_for_health_url "$UPDATE_HEALTH_URL" "$UPDATE_HEALTH_ATTEMPTS" "$UPDATE_HEALTH_DELAY"; then
+      log "Server is healthy again after the safety-net restart."
+    else
+      log "ERROR: server still unhealthy after the safety-net restart. Manual intervention required."
+    fi
+  fi
+  exit "$rc"
+}
+
+# arm_update_exit_trap
+# Installs update_exit_safety_net on EXIT, and turns SIGINT/SIGTERM/SIGHUP
+# into an exit (128+signal) so the same trap runs for them too.
+arm_update_exit_trap() {
+  trap 'update_exit_safety_net "$?"' EXIT
+  trap 'log "Received SIGINT"; exit 130' INT
+  trap 'log "Received SIGTERM"; exit 143' TERM
+  trap 'log "Received SIGHUP"; exit 129' HUP
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "[dry-run] exit trap armed (EXIT, INT, TERM, HUP): after any failure or signal it stops $BUILD_SCOPE_UNIT.scope, points current back if the update had switched it, checks $UPDATE_HEALTH_URL and restarts $UPDATE_SERVICE only if the server is down -- never a healthy server"
+  fi
+}
+
+# --- Host safety net units (TOM-686) -----------------------------------------
+# Recovery-path scripts, units and drop-ins that paperclip-update.sh installs
+# on every update (and install-native-zimaos.sh on a first install). All of
+# them point only at the recovery path and systemctl, never into a release,
+# so they keep working after a rollback to a release that predates them.
+SAFETY_NET_SCRIPTS=(paperclip-recover.sh paperclip-oom-guard.sh)
+SAFETY_NET_UNITS=(
+  paperclip-native-recover.service
+  paperclip-native-oom-guard.service
+  paperclip-native.service.d/50-oom-guard.conf
+  paperclip-native-watchdog.service.d/50-recover.conf
+)
+# The checked-in units use these documented defaults as literal paths (so
+# systemd-analyze can verify them as-is); install renders them per host.
+UNIT_DEFAULT_ROOT="/DATA/.media/External SSD/paperclip-native"
+UNIT_DEFAULT_MOUNT_PATH="/DATA/.media/External SSD"
+UNIT_DEFAULT_RECOVERY_BASE="/usr/local/lib/paperclip"
+
+# render_unit_file <src> <dst> <root> <mount-path> <recovery-base>
+render_unit_file() {
+  local src="$1" dst="$2" root="$3" mount="$4" recovery="$5"
+  sed -e "s#${UNIT_DEFAULT_ROOT}#${root}#g" \
+      -e "s#${UNIT_DEFAULT_MOUNT_PATH}#${mount}#g" \
+      -e "s#${UNIT_DEFAULT_RECOVERY_BASE}#${recovery}#g" \
+      "$src" >"$dst"
+}
+
+# install_if_changed <mode> <src> <dst>
+# Copies <src> to <dst> only when the content differs; returns 0 if it
+# wrote, 1 if <dst> was already identical.
+install_if_changed() {
+  local mode="$1" src="$2" dst="$3"
+  if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    return 1
+  fi
+  mkdir -p "$(dirname "$dst")"
+  install -m "$mode" "$src" "$dst"
+  return 0
+}
+
+# install_safety_net <zimaos-dir> <root> <mount-path> <recovery-base>
+# Idempotent: copies each recovery script and rendered unit/drop-in only if
+# it changed, runs `systemctl daemon-reload` only if a unit changed, then
+# starts the OOM guard (a no-op if it already runs). Never restarts
+# paperclip-native.service. PAPERCLIP_SYSTEMD_DIR overrides
+# /etc/systemd/system for the offline tests.
+install_safety_net() {
+  local zimaos_dir="$1" root="$2" mount="$3" recovery="$4"
+  local systemd_dir="${PAPERCLIP_SYSTEMD_DIR:-/etc/systemd/system}" f staged changed_units=0 changed=()
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "[dry-run] would install (only if changed) into $recovery/scripts: ${SAFETY_NET_SCRIPTS[*]}"
+    log "[dry-run] would install (only if changed) into $systemd_dir, rendered for root=$root mount=$mount recovery=$recovery: ${SAFETY_NET_UNITS[*]}"
+    log "[dry-run] would run systemctl daemon-reload only if a unit changed, then: systemctl start paperclip-native-oom-guard.service (never restarts paperclip-native.service)"
+    return 0
+  fi
+  staged="$(mktemp -d "$root/logs/.safety-net.XXXXXX")"
+  for f in "${SAFETY_NET_SCRIPTS[@]}"; do
+    if install_if_changed 755 "$zimaos_dir/scripts/$f" "$recovery/scripts/$f"; then
+      changed+=("$recovery/scripts/$f")
+    fi
+  done
+  for f in "${SAFETY_NET_UNITS[@]}"; do
+    mkdir -p "$staged/$(dirname "$f")"
+    render_unit_file "$zimaos_dir/systemd/$f" "$staged/$f" "$root" "$mount" "$recovery"
+    if install_if_changed 644 "$staged/$f" "$systemd_dir/$f"; then
+      changed+=("$systemd_dir/$f")
+      changed_units=1
+    fi
+  done
+  rm -rf "$staged"
+  if [[ ${#changed[@]} -eq 0 ]]; then
+    log "Safety-net scripts and units already up to date; nothing to install."
+  else
+    log "Installed or updated: ${changed[*]}"
+  fi
+  if [[ "$changed_units" == "1" ]]; then
+    systemctl daemon-reload
+  fi
+  systemctl start paperclip-native-oom-guard.service || log "WARNING: could not start paperclip-native-oom-guard.service; the server is unprotected from the OOM killer until it starts."
 }
 
 # mount_source_uuid <path>
@@ -442,23 +916,30 @@ resolve_drop_privileges_helper() {
   log "Privilege-drop helper resolved: $DROP_PRIV_HELPER"
 }
 
-# drop_priv_run <user> -- <command...>
-# Runs <command...> as <user>, using whichever helper
-# resolve_drop_privileges_helper() picked (called here if not already
-# resolved). The `su -c` branch takes a single string, not argv, so each
-# argument is quoted with `printf '%q'` and joined -- never spliced
-# unescaped into the string -- before being handed to `su -c`.
-drop_priv_run() {
+# drop_priv_argv <user> -- <command...>
+# Sets DROP_PRIV_ARGV to an external argv that runs <command...> as <user>,
+# using whichever helper resolve_drop_privileges_helper() picked (called
+# here if not already resolved). An argv, not a function call, so
+# run_memory_guarded() can start it inside its own scope and process group.
+# The `su -c` branch takes a single string, not argv, so each argument is
+# quoted with `printf '%q'` and joined -- never spliced unescaped into the
+# string -- before being handed to `su -c`. Under --dry-run it only records
+# a readable placeholder, so a plan never depends on this host's helpers.
+drop_priv_argv() {
   local user="$1"
   shift
   if [[ "${1:-}" != "--" ]]; then
-    die "drop_priv_run(): expected '--' before the command, got '${1:-}'"
+    die "drop_priv_argv(): expected '--' before the command, got '${1:-}'"
   fi
   shift
+  if [[ "$DRY_RUN" == "1" ]]; then
+    DROP_PRIV_ARGV=("<run-as:$user>" "$@")
+    return 0
+  fi
   resolve_drop_privileges_helper
   case "$DROP_PRIV_HELPER" in
     runuser)
-      runuser -u "$user" -- "$@"
+      DROP_PRIV_ARGV=(runuser -u "$user" -- "$@")
       ;;
     setpriv)
       local target_uid target_gid
@@ -467,14 +948,14 @@ drop_priv_run() {
       # --inh-caps=-all (not --inherit-caps, which util-linux does not
       # implement as a flag name on any version checked) drops inheritable
       # capabilities for defense in depth once uid/gid have already dropped.
-      setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups --inh-caps=-all "$@"
+      DROP_PRIV_ARGV=(setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups --inh-caps=-all "$@")
       ;;
     su)
       local quoted_cmd="" arg
       for arg in "$@"; do
         quoted_cmd+="$(printf '%q ' "$arg")"
       done
-      su -s /bin/bash -c "$quoted_cmd" "$user"
+      DROP_PRIV_ARGV=(su -s /bin/bash -c "$quoted_cmd" "$user")
       ;;
     python3)
       # Unlike the `su` branch above, this hands "$@" to python3 as discrete
@@ -484,19 +965,32 @@ drop_priv_run() {
       # quoting here would corrupt the argv instead of protecting it: the
       # escaped text (e.g. a literal `\ ` for a space) would reach the
       # command as-is, which is exactly the bug this script exists to avoid.
-      python3 -c '
+      DROP_PRIV_ARGV=(python3 -c '
 import os, pwd, sys
 pw = pwd.getpwnam(sys.argv[1])
 os.setgid(pw.pw_gid)
 os.initgroups(pw.pw_name, pw.pw_gid)
 os.setuid(pw.pw_uid)
 os.execvp(sys.argv[2], sys.argv[2:])
-' "$user" "$@"
+' "$user" "$@")
       ;;
     *)
-      die "drop_priv_run(): unknown DROP_PRIV_HELPER '$DROP_PRIV_HELPER'"
+      die "drop_priv_argv(): unknown DROP_PRIV_HELPER '$DROP_PRIV_HELPER'"
       ;;
   esac
+}
+
+# drop_priv_run <user> -- <command...>
+# Runs <command...> as <user> in the foreground (see drop_priv_argv).
+drop_priv_run() {
+  local user="$1"
+  shift
+  if [[ "${1:-}" != "--" ]]; then
+    die "drop_priv_run(): expected '--' before the command, got '${1:-}'"
+  fi
+  shift
+  DRY_RUN=0 drop_priv_argv "$user" -- "$@"
+  "${DROP_PRIV_ARGV[@]}"
 }
 
 # resolve_recovery_base <preferred> <fallback>

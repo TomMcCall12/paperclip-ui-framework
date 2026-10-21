@@ -1,0 +1,22 @@
+[Unit]
+Description=Restart paperclip-native.service after two consecutive failed health probes (started by the watchdog's OnFailure=)
+RequiresMountsFor="/DATA/.media/External SSD"
+# No Before=, no early-boot target, no casaos-/zimaos- dependency (see
+# paperclip-native.service for the 5 Oct ordering-cycle outage this avoids).
+# A failure here means the server is down and was NOT restarted (rate
+# limit hit, or the restart did not bring it back), so it alerts too. The
+# alert unit has no OnFailure= of its own, so this cannot loop.
+OnFailure=paperclip-native-alert@%n.service
+
+[Service]
+Type=oneshot
+# Runs as root: restarting paperclip-native.service needs it. The script
+# lives in the recovery path outside every release (see README.md), so it
+# works whichever release is current, including after a rollback.
+EnvironmentFile=/DATA/.media/External SSD/paperclip-native/env/paperclip-native.env
+Environment="PAPERCLIP_NATIVE_ROOT=/DATA/.media/External SSD/paperclip-native"
+ExecStart=/usr/local/lib/paperclip/scripts/paperclip-recover.sh
+TimeoutStartSec=5min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-recover
