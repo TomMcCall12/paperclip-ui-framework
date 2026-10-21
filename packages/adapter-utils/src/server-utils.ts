@@ -4755,10 +4755,12 @@ export async function ensureCommandResolvable(
  * runs at a protected oom_score_adj and every child inherits it at fork. When
  * PAPERCLIP_AGENT_EXEC_WRAPPER names an executable (the host installs
  * paperclip-agent-exec.sh), a local agent child is launched through it so the
- * value is reset before the agent program starts, not on a later poll. When
- * the variable is unset, the file is missing or this is not Linux, the
- * command is returned unchanged; the host's OOM guard still resets it within
- * one poll.
+ * value is reset before the agent program starts, not on a later poll.
+ *
+ * Fails closed: when the variable is set, this host configures the protection,
+ * so a wrapper that is relative, missing or not executable refuses the launch
+ * instead of running the agent with the inherited protected value. Only an
+ * unset (or blank) variable, or a non-Linux platform, keeps the plain command.
  */
 export function wrapForAgentOomReset(
   command: string,
@@ -4766,13 +4768,20 @@ export function wrapForAgentOomReset(
   hostEnv: NodeJS.ProcessEnv = process.env,
 ): { command: string; args: string[] } {
   const wrapper = hostEnv.PAPERCLIP_AGENT_EXEC_WRAPPER?.trim();
-  if (!wrapper || process.platform !== "linux" || !path.isAbsolute(wrapper)) {
+  if (!wrapper || process.platform !== "linux") {
     return { command, args };
   }
+  const refuse = (reason: string): never => {
+    throw new Error(
+      `Refusing to start "${command}": PAPERCLIP_AGENT_EXEC_WRAPPER is set to "${wrapper}" but ${reason}. ` +
+        "The agent OOM reset cannot run, so the agent would keep the server's protected oom_score_adj.",
+    );
+  };
+  if (!path.isAbsolute(wrapper)) return refuse("it is not an absolute path");
   try {
     accessSync(wrapper, fsConstants.X_OK);
   } catch {
-    return { command, args };
+    return refuse("it is missing or not executable");
   }
   return { command: wrapper, args: [command, ...args] };
 }

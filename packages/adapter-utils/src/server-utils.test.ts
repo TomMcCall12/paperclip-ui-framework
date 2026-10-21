@@ -592,20 +592,61 @@ describe("wrapForAgentOomReset", () => {
     }
   });
 
-  it("leaves the command alone when no wrapper is set, or it is missing, relative or not executable", async () => {
-    const { dir, wrapper } = await makeWrapper();
-    try {
-      const plain = { command: "claude", args: ["--print"] };
-      expect(wrapForAgentOomReset("claude", ["--print"], {})).toEqual(plain);
-      expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: "  " })).toEqual(plain);
-      expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: path.join(dir, "nope.sh") })).toEqual(plain);
-      expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: "agent-exec.sh" })).toEqual(plain);
-      await fs.chmod(wrapper, 0o644);
-      expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: wrapper })).toEqual(plain);
-    } finally {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
+  it("leaves the command alone only when the variable is unset or blank", () => {
+    const plain = { command: "claude", args: ["--print"] };
+    expect(wrapForAgentOomReset("claude", ["--print"], {})).toEqual(plain);
+    expect(wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: "  " })).toEqual(plain);
   });
+
+  it.runIf(process.platform === "linux")(
+    "refuses to launch when the configured wrapper is missing, relative or not executable (fail closed)",
+    async () => {
+      const { dir, wrapper } = await makeWrapper();
+      try {
+        const missing = path.join(dir, "nope.sh");
+        expect(() => wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: missing })).toThrow(
+          /Refusing to start "claude".*missing or not executable/,
+        );
+        expect(() => wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: "agent-exec.sh" })).toThrow(
+          /not an absolute path/,
+        );
+        await fs.chmod(wrapper, 0o644);
+        expect(() => wrapForAgentOomReset("claude", ["--print"], { PAPERCLIP_AGENT_EXEC_WRAPPER: wrapper })).toThrow(
+          /missing or not executable/,
+        );
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "does not run the agent program when the configured wrapper is missing or not executable",
+    async () => {
+      const { dir, wrapper } = await makeWrapper();
+      const marker = path.join(dir, "agent-ran");
+      const previous = process.env.PAPERCLIP_AGENT_EXEC_WRAPPER;
+      const run = () =>
+        runChildProcess(
+          randomUUID(),
+          process.execPath,
+          ["-e", `require("fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+          { cwd: process.cwd(), env: {}, timeoutSec: 10, graceSec: 1, onLog: async () => {} },
+        );
+      try {
+        process.env.PAPERCLIP_AGENT_EXEC_WRAPPER = path.join(dir, "nope.sh");
+        await expect(run()).rejects.toThrow(/Refusing to start/);
+        await fs.chmod(wrapper, 0o644);
+        process.env.PAPERCLIP_AGENT_EXEC_WRAPPER = wrapper;
+        await expect(run()).rejects.toThrow(/Refusing to start/);
+        await expect(fs.access(marker)).rejects.toThrow();
+      } finally {
+        if (previous === undefined) delete process.env.PAPERCLIP_AGENT_EXEC_WRAPPER;
+        else process.env.PAPERCLIP_AGENT_EXEC_WRAPPER = previous;
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.runIf(process.platform === "linux")(
     "starts a local agent child through the wrapper (the reset happens at spawn, before the program runs)",

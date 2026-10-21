@@ -273,6 +273,57 @@ PAPERCLIP_OOM_SELF_FILE="$SELF" PAPERCLIP_OOM_AGENT_ADJ=200 "$WRAP" true
 [[ "$(cat "$SELF")" == "200" ]] || fail "B2: PAPERCLIP_OOM_AGENT_ADJ was not honoured (got $(cat "$SELF"))"
 echo "PASS: the agent exec wrapper has reset -500 to 0 before the agent program starts (no guard running)"
 
+# B2d. Fail closed (TOM-710). When the reset cannot be proven, the wrapper must
+# print a reason to stderr, exit non-zero and NOT start the agent program: a
+# failed safety mechanism must not restore the inherited-protection window.
+# Each case asserts the marker command did not run and the exit is non-zero.
+MARK="$WORKDIR/agent-ran"
+expect_refused() { # <label> <env assignments...> -- (runs the wrapper with the marker program)
+  local label="$1" rc err
+  shift
+  rm -f "$MARK"
+  set +e
+  # shellcheck disable=SC2016 # the inner bash expands $1
+  err="$(env "$@" "$WRAP" bash -c 'echo ran >"$1"' x "$MARK" 2>&1 >/dev/null)"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "B2d ($label): the wrapper exited 0 instead of refusing"
+  [[ ! -e "$MARK" ]] || fail "B2d ($label): the agent program ran even though the OOM reset failed"
+  [[ -n "$err" ]] || fail "B2d ($label): the wrapper refused without printing a reason to stderr"
+}
+
+# Read-only score file at -500: the write is rejected, the current value is unsafe.
+# (Root ignores file modes, so this case needs a non-root user, as in the review.)
+RO="$WORKDIR/ro_oom_score_adj"
+echo -500 >"$RO"
+chmod 0444 "$RO"
+if [[ "$(id -u)" -ne 0 ]]; then
+  expect_refused "read-only score file at -500" PAPERCLIP_OOM_SELF_FILE="$RO"
+  [[ "$(cat "$RO")" == "-500" ]] || fail "B2d: the read-only score file changed"
+  echo "PASS: a read-only score file at -500 refuses to start the agent"
+else
+  echo "SKIP: B2d read-only score file case needs a non-root user (running as root)"
+fi
+# A read-only file that is already safe (>= target) must still start the agent.
+echo 0 >"$WORKDIR/ro_safe" && chmod 0444 "$WORKDIR/ro_safe"
+[[ "$(PAPERCLIP_OOM_SELF_FILE="$WORKDIR/ro_safe" "$WRAP" bash -c 'echo started')" == "started" ]] \
+  || fail "B2d: a score that is already safe must not block the agent"
+
+# Target value rejected (above the kernel's 1000 limit) or not a number.
+echo -500 >"$SELF"
+expect_refused "target 1001" PAPERCLIP_OOM_SELF_FILE="$SELF" PAPERCLIP_OOM_AGENT_ADJ=1001
+expect_refused "target not a number" PAPERCLIP_OOM_SELF_FILE="$SELF" PAPERCLIP_OOM_AGENT_ADJ=abc
+[[ "$(cat "$SELF")" == "-500" ]] || fail "B2d: an invalid target still wrote the score file"
+# Unreadable / missing / non-numeric score file.
+printf 'garbage\n' >"$WORKDIR/bad_oom"
+expect_refused "missing score file" PAPERCLIP_OOM_SELF_FILE="$WORKDIR/does-not-exist"
+expect_refused "non-numeric score file" PAPERCLIP_OOM_SELF_FILE="$WORKDIR/bad_oom"
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo -500 >"$WORKDIR/unreadable_oom" && chmod 0000 "$WORKDIR/unreadable_oom"
+  expect_refused "unreadable score file" PAPERCLIP_OOM_SELF_FILE="$WORKDIR/unreadable_oom"
+fi
+echo "PASS: the agent exec wrapper fails closed (read-only file, bad target, missing/unreadable/garbled score file) and never starts the agent"
+
 # B2b. Real kernel path: the wrapper really raises the process's own
 # oom_score_adj and execs the program with its arguments intact.
 if [[ -w /proc/self/oom_score_adj ]]; then
