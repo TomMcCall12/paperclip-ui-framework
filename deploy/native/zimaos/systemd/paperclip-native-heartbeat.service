@@ -1,0 +1,27 @@
+[Unit]
+Description=Paperclip native external heartbeat: ping Healthchecks.io when Paperclip and the stall alarm are healthy (triggered by paperclip-native-heartbeat.timer)
+RequiresMountsFor="/DATA/.media/External SSD"
+After=paperclip-native.service
+# Alert only: no recovery unit. This unit never restarts anything. A stale
+# stall alarm is not fixed by restarting Paperclip, which would kill every
+# running agent run. With a ping URL set, a failed check is reported to
+# Healthchecks.io (a /fail ping) and this unit exits 0; the host alert below
+# fires only when no URL is set or a ping cannot be sent, at most once an hour.
+OnFailure=paperclip-native-alert@%n.service
+
+[Service]
+Type=oneshot
+# A throwaway user, not "paperclip": agent runs use that user, so they can
+# neither read heartbeat.env nor see this script's environment.
+DynamicUser=yes
+StateDirectory=paperclip-heartbeat
+EnvironmentFile=/DATA/.media/External SSD/paperclip-native/env/paperclip-native.env
+# Root-only (mode 0600), one line: PAPERCLIP_HEALTHCHECKS_PING_URL=...
+# Optional: the "-" lets the unit run before the file exists.
+EnvironmentFile=-/DATA/.media/External SSD/paperclip-native/env/heartbeat.env
+ExecStart="/usr/local/lib/paperclip/scripts/paperclip-heartbeat.sh"
+# Three ping attempts with a 5 second pause and a 10 second limit each.
+TimeoutStartSec=3min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-native-heartbeat

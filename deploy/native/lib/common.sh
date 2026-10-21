@@ -809,6 +809,7 @@ arm_update_exit_trap() {
 SAFETY_NET_SCRIPTS=(
   paperclip-recover.sh paperclip-oom-guard.sh paperclip-agent-exec.sh
   paperclip-net-heal.sh paperclip-netwatch.sh paperclip-quiet-restart.sh
+  paperclip-heartbeat.sh paperclip-heartbeat-check.py
 )
 SAFETY_NET_UNITS=(
   paperclip-native-recover.service
@@ -821,6 +822,8 @@ SAFETY_NET_UNITS=(
   paperclip-native-netwatch.timer
   paperclip-native-quiet-restart.service
   paperclip-native-quiet-restart.timer
+  paperclip-native-heartbeat.service
+  paperclip-native-heartbeat.timer
 )
 # Timers from the list above (TOM-690: network self-heal, network-path
 # check, quiet-hours restart). install_safety_net enables and starts each
@@ -830,6 +833,7 @@ SAFETY_NET_TIMERS=(
   paperclip-native-net-heal.timer
   paperclip-native-netwatch.timer
   paperclip-native-quiet-restart.timer
+  paperclip-native-heartbeat.timer
 )
 # The checked-in units use these documented defaults as literal paths (so
 # systemd-analyze can verify them as-is); install renders them per host.

@@ -19,8 +19,8 @@ full set of offline checks this directory passes today.
 |---|---|---|
 | `<root>` (default `/DATA/.media/External SSD/paperclip-native`) | Node toolchain, every release, instance data (incl. embedded Postgres), env files, the `paperclip` user's home, logs | Must survive a reboot; `/var`, `/tmp`, `/run` are tmpfs on ZimaOS and are wiped every boot |
 | `/etc/systemd/system/paperclip-native*` | The unit files themselves | `/etc` is `overlayfs rw` (`upperdir=/mnt/overlay/upper_etc` on `/dev/mmcblk0p7`), confirmed persistent across the 14 Sep RAUC 1.7.1 update and every reboot since |
-| `/usr/local/lib/paperclip/{scripts,lib}` (or `<root>/recovery` if that path isn't writable on this ZimaOS) | `paperclip-watchdog.sh`, `telegram-alert.sh`, `lib/common.sh`, (TOM-686) `paperclip-recover.sh`, `paperclip-oom-guard.sh`, and (TOM-690) `paperclip-net-heal.sh`, `paperclip-netwatch.sh`, `paperclip-quiet-restart.sh` | Outside the release tree -- a broken `current` symlink must not be able to break the alert/watchdog path that reports it |
-| `/etc/systemd/system/paperclip-native-{recover,oom-guard}.service`, `paperclip-native.service.d/50-oom-guard.conf`, `paperclip-native-watchdog.service.d/50-recover.conf`, and (TOM-690) `paperclip-native-{net-heal,netwatch,quiet-restart}.{service,timer}` | The host safety net (TOM-686, TOM-690, see "Host safety net" below) | Installed and kept current by every `paperclip-update.sh` run; they name only the recovery path and `systemctl`, so they keep working after a rollback |
+| `/usr/local/lib/paperclip/{scripts,lib}` (or `<root>/recovery` if that path isn't writable on this ZimaOS) | `paperclip-watchdog.sh`, `telegram-alert.sh`, `lib/common.sh`, (TOM-686) `paperclip-recover.sh`, `paperclip-oom-guard.sh`, and (TOM-690) `paperclip-net-heal.sh`, `paperclip-netwatch.sh`, `paperclip-quiet-restart.sh`, and (TOM-721) `paperclip-heartbeat.sh`, `paperclip-heartbeat-check.py` | Outside the release tree -- a broken `current` symlink must not be able to break the alert/watchdog path that reports it |
+| `/etc/systemd/system/paperclip-native-{recover,oom-guard}.service`, `paperclip-native.service.d/50-oom-guard.conf`, `paperclip-native-watchdog.service.d/50-recover.conf`, and (TOM-690) `paperclip-native-{net-heal,netwatch,quiet-restart}.{service,timer}`, and (TOM-721) `paperclip-native-heartbeat.{service,timer}` | The host safety net (TOM-686, TOM-690, TOM-721, see "Host safety net" below) | Installed and kept current by every `paperclip-update.sh` run; they name only the recovery path and `systemctl`, so they keep working after a rollback |
 | ZimaOS / CasaOS / Docker | Untouched | Docker keeps running the existing container on port 3100 throughout the parallel-run proof |
 
 The service listens on the `PORT` set in `<root>/env/paperclip-native.env`
@@ -348,6 +348,68 @@ disabled on later updates.
 
 Each threshold is an environment variable in the env file; see the header
 of each script for the names and defaults.
+
+### External heartbeat and stall-alarm check (TOM-713)
+
+The stall alarm runs inside the server and shows its last check time on
+`/api/health` (`stallSentinel.lastSweepAt`). It cannot report that the
+server, the alarm or the whole board has stopped. This unit and an outside
+service do.
+
+- **`paperclip-native-heartbeat.timer` / `.service`** (a throwaway
+  `DynamicUser`, every 5 minutes, `paperclip-heartbeat.sh`, with the helper
+  `paperclip-heartbeat-check.py` when `jq` is missing). It asks
+  `http://127.0.0.1:$PORT/api/health` and passes only when the status is
+  `ok` and the alarm swept in the last 10 minutes and that sweep worked.
+  Also a pass: the alarm is switched off (`mode: "off"`), or the server
+  started less than 10 minutes ago and has not swept yet. A missing
+  `stallSentinel` field fails: the server runs an older build.
+  - Both pass and a URL is set: it pings Healthchecks.io. When the pings
+    stop for 15 minutes (check period 5 minutes plus grace 10 minutes),
+    Healthchecks.io messages Tom on Telegram. This is the only alert that
+    works when the board itself is down.
+  - A check fails and a URL is set: it pings `<URL>/fail` with a short
+    reason, so Healthchecks.io alerts at once, and exits 0. One alert
+    channel, no second host alert.
+  - A check fails and no URL is set: it exits 1, so the unit's `OnFailure=`
+    Telegram alert (`paperclip-native-alert@`) fires, at most once an hour
+    while the failure lasts.
+  - Both pass and no URL is set: it logs "Heartbeat URL not configured"
+    once a day and exits 0.
+  - A ping that cannot be sent, or a URL that is not an http(s) URL, exits 1
+    at most once an hour (a check that never gets a ping never alerts, so a
+    wrong URL must not stay silent).
+  - It **never restarts anything**. It is not part of `paperclip-native-watchdog`
+    on purpose: that unit's failure restarts the server and kills every
+    running agent run, and a stale alarm is not fixed that way.
+- **The ping URL** is a secret. It lives only in `<root>/env/heartbeat.env`,
+  owner `root`, mode `0600`, one line:
+  `PAPERCLIP_HEALTHCHECKS_PING_URL=https://hc-ping.com/<uuid>`. systemd reads
+  the file; the script runs as a different user, so agent runs (user
+  `paperclip`) can neither read the file nor see the script's environment.
+  `install-native-zimaos.sh` creates it empty if it does not exist and never
+  overwrites it. The script gives the URL to `curl` on standard input, not as
+  an argument, and never prints it; logs say only `ping sent` or
+  `ping failed (curl exit N)`. Check the file with `wc -c` and `sha256sum`,
+  never `cat`. The hourly-alert stamps sit in the unit's systemd state
+  directory, which is wiped on reboot; the worst case is one extra alert.
+- **Install:** `paperclip-update.sh` installs the script, the helper and both
+  units with the rest of the safety net (the `SAFETY_NET_*` lists in
+  `lib/common.sh`) and enables the timer the first time. Nothing is
+  installed by hand. Until a URL is in `heartbeat.env` the unit only logs.
+- **Tuning** (optional, in `paperclip-native.env`):
+  `PAPERCLIP_HEARTBEAT_MAX_AGE` (seconds, default 600) and
+  `PAPERCLIP_HEARTBEAT_ALERT_EVERY` (seconds between host alerts, default
+  3600).
+- **Emergency stop for the stall alarm:** set
+  `PAPERCLIP_STALL_SENTINEL_MODE=off` (no checks, no actions, no alerts) or
+  `alert_only` (alerts only, no repair) in `paperclip-native.env` (a
+  commented example is in `env/paperclip-native.env.example`) and restart
+  `paperclip-native.service` in a quiet moment. With `off`, this unit keeps
+  passing.
+- Offline test: `scripts/tests/test-heartbeat-ping.sh` (stubbed `curl`, no
+  network).
+
 
 ### What agent runs inherit for the OOM score
 
