@@ -308,7 +308,14 @@ function classifyFrontierIssue(
     });
   }
 
-  if (agent && UNAVAILABLE_AGENT_STATUSES.has(agent.status)) {
+  // An agent in `error` (for example after a deploy restart killed its run) still starts its
+  // retry run. Do not alert while it has a run or wake waiting for this issue, or runs elsewhere.
+  const errorAgentWillRun =
+    agent?.status === "error" &&
+    (runs.some((run) => PENDING_RUN_STATUSES.has(run.status)) ||
+      snapshot.wakes.some((wake) => wake.issueId === issue.id && wake.status === "queued") ||
+      snapshot.runs.some((run) => run.agentId === agent.id && ACTIVE_RUN_STATUSES.has(run.status)));
+  if (agent && UNAVAILABLE_AGENT_STATUSES.has(agent.status) && !errorAgentWillRun) {
     return finding(base, issue.id, "A", {
       alertDueAt: addMs(since, t.agentUnavailableAlertMs * m),
       reasonKey: `paused:${agent.id}`,

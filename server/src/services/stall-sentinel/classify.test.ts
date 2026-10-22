@@ -56,4 +56,41 @@ describe("classifyTree", () => {
     const s = snapshot([issue("root", { status: "in_progress" }), issue("leaf", { parentId: "root", assigneeUserId: "tom" })]);
     expect(classifyTree(s, tree("root", ["root", "leaf"]), ctx).findings).toEqual([]);
   });
+
+  describe("agent in error", () => {
+    const stalled = () => {
+      const s = snapshot([issue("root", { status: "in_progress" }), issue("leaf", { parentId: "root" })]);
+      s.agents.get("eng")!.status = "error";
+      return s;
+    };
+    const run = (id: string, partial: Record<string, unknown>) =>
+      ({ id, agentId: "eng", issueId: "leaf", createdAt: ago(1), startedAt: null, finishedAt: null, scheduledRetryAt: null, ...partial }) as never;
+
+    it("alerts when the agent is in error and nothing is waiting to run", () => {
+      expect(classifyTree(stalled(), tree("root", ["root", "leaf"]), ctx).findings[0]).toMatchObject({ cause: "A" });
+    });
+
+    it("does not alert when a due scheduled retry waits (deploy restart case)", () => {
+      const s = stalled();
+      s.runs.push(run("r1", { status: "scheduled_retry", scheduledRetryAt: ago(1) }));
+      const causes = classifyTree(s, tree("root", ["root", "leaf"]), ctx).findings.map((f) => f.cause);
+      expect(causes).not.toContain("A");
+    });
+
+    it("does not alert when the agent has a queued run or is already running", () => {
+      const queued = stalled();
+      queued.runs.push(run("r1", { status: "queued" }));
+      expect(classifyTree(queued, tree("root", ["root", "leaf"]), ctx).findings.map((f) => f.cause)).not.toContain("A");
+      const busy = stalled();
+      busy.runs.push(run("r2", { status: "running", issueId: "other", startedAt: ago(1) }));
+      expect(classifyTree(busy, tree("root", ["root", "leaf"]), ctx).findings.map((f) => f.cause)).not.toContain("A");
+    });
+
+    it("still alerts for a paused agent with a queued run", () => {
+      const s = stalled();
+      s.agents.get("eng")!.status = "paused";
+      s.runs.push(run("r1", { status: "queued" }));
+      expect(classifyTree(s, tree("root", ["root", "leaf"]), ctx).findings[0]).toMatchObject({ cause: "A" });
+    });
+  });
 });
