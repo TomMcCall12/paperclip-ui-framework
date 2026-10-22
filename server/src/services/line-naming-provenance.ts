@@ -35,3 +35,53 @@ export function namingProvenancePayloads(event: Record<string, unknown>) {
   }
   return payloads;
 }
+
+/**
+ * ACPX (the persistent-mode engine used by claude_local, among others) streams
+ * assistant text as many `acpx.text_delta` records rather than one whole
+ * message, so provenance needs an accumulating buffer instead of a
+ * per-record extractor. Only the "output" channel is accumulated; "thought"
+ * is reasoning, never a candidate name.
+ */
+export interface AcpxNamingTextBuffer {
+  text: string;
+}
+
+export function createAcpxNamingTextBuffer(): AcpxNamingTextBuffer {
+  return { text: "" };
+}
+
+export function accumulateAcpxTextDelta(buffer: AcpxNamingTextBuffer, event: Record<string, unknown>): void {
+  if (event.type !== "acpx.text_delta" || event.channel !== "output" || typeof event.text !== "string") return;
+  buffer.text += event.text;
+}
+
+const ACPX_NAMING_FLUSH_TYPES = new Set(["acpx.tool_call", "acpx.result", "acpx.error"]);
+
+export function isAcpxNamingFlushTrigger(event: Record<string, unknown>): boolean {
+  return typeof event.type === "string" && ACPX_NAMING_FLUSH_TYPES.has(event.type);
+}
+
+/**
+ * Flushes the accumulated output text into provenance payloads and resets the
+ * buffer. Hashes the whole trimmed text and each non-empty trimmed line
+ * separately, since the model may send narration on one line and the bare
+ * name on another within the same buffered span.
+ */
+export function flushAcpxNamingBuffer(buffer: AcpxNamingTextBuffer): Array<{ textSha256: string; source: string }> {
+  const text = buffer.text;
+  buffer.text = "";
+  const candidates = new Set<string>();
+  const whole = text.trim();
+  if (whole) candidates.add(whole);
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed) candidates.add(trimmed);
+  }
+  const payloads: Array<{ textSha256: string; source: string }> = [];
+  for (const candidate of candidates) {
+    if (candidate.length > 80) continue;
+    payloads.push({ textSha256: createHash("sha256").update(candidate).digest("hex"), source: "acpx_text_delta" });
+  }
+  return payloads;
+}

@@ -1,4 +1,10 @@
-import { namingProvenancePayloads } from "./line-naming-provenance.js";
+import {
+  namingProvenancePayloads,
+  createAcpxNamingTextBuffer,
+  accumulateAcpxTextDelta,
+  isAcpxNamingFlushTrigger,
+  flushAcpxNamingBuffer,
+} from "./line-naming-provenance.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
@@ -23093,10 +23099,14 @@ export function heartbeatService(
         // so the thread shows which skills were actually used (not just suggested).
         const runToolTracker = createRunToolTracker();
         let namingJsonlBuffer = "";
+        const acpxNamingTextBuffer = createAcpxNamingTextBuffer();
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
           if (isolatedLineNamingPrompt) {
-            // Codex JSONL and Claude stream-json are observed at the adapter boundary. Persist only a
-            // digest of assistant output, never tool output or unrelated data.
+            // Codex JSONL, Claude stream-json, and ACPX records (the persistent-mode
+            // engine, which streams assistant text as many acpx.text_delta records
+            // instead of one whole message) are observed at the adapter boundary.
+            // Persist only a digest of assistant output, never tool output or
+            // unrelated data.
             if (stream === "stdout") {
               namingJsonlBuffer = (namingJsonlBuffer + chunk).slice(-65_536);
               const records = namingJsonlBuffer.split("\n");
@@ -23106,6 +23116,10 @@ export function heartbeatService(
                 try { event = JSON.parse(raw) as Record<string, unknown>; } catch { continue; }
                 for (const payload of namingProvenancePayloads(event))
                   await appendRunEvent(currentRun, { eventType: "line.naming.provider_message", stream: "system", level: "info", payload });
+                accumulateAcpxTextDelta(acpxNamingTextBuffer, event);
+                if (isAcpxNamingFlushTrigger(event))
+                  for (const payload of flushAcpxNamingBuffer(acpxNamingTextBuffer))
+                    await appendRunEvent(currentRun, { eventType: "line.naming.provider_message", stream: "system", level: "info", payload });
               }
             }
             return;
@@ -24730,6 +24744,13 @@ export function heartbeatService(
               );
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
+          }
+          if (isolatedLineNamingPrompt) {
+            // A buffered ACPX output span that never hit a tool_call/result/error
+            // trigger (e.g. the run ended right after the last delta) still needs
+            // its provenance recorded.
+            for (const payload of flushAcpxNamingBuffer(acpxNamingTextBuffer))
+              await appendRunEvent(currentRun, { eventType: "line.naming.provider_message", stream: "system", level: "info", payload });
           }
           adapterResult = applyWorkspaceRestoreFailure(adapterResult);
           // A returned result can include a failed restore. Keep the workspace
