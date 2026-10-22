@@ -129,6 +129,24 @@ suite("Line membership", () => {
     expect(second.status).toBe("ready");
   });
 
+  it("self-heals a pre-existing Line Namer left on an incomplete adapter config", async () => {
+    const companyId = await company();
+    const root = await issue(companyId);
+    const staleAgentId = randomUUID();
+    await db.insert(agents).values({ id: staleAgentId, companyId, name: "Line Namer", role: "general", status: "error",
+      adapterType: "codex_local", adapterConfig: {},
+      metadata: withBuiltInAgentMarker(null, { key: "line-namer", featureKeys: ["line-naming"] }) });
+    expect((await builtInAgentService(db).get(companyId, "line-namer")).status).toBe("needs_setup");
+    const { line } = await lineService(db).ensure(companyId, root, { type: "system" });
+    const first = await lineNamingService(db).start(companyId, line.id, { type: "system" });
+    expect(first.queued).toBe(true);
+    const [task] = await db.select().from(issues).where(eq(issues.id, first.namingIssueId!));
+    expect(task.assigneeAgentId).toBe(staleAgentId);
+    const [namer] = await db.select().from(agents).where(eq(agents.id, staleAgentId));
+    expect(namer.adapterType).toBe("claude_local");
+    expect(namer.adapterConfig).toMatchObject({ model: "claude-haiku-4-5" });
+  });
+
   it("accepts only the current Claude task run and ignores a stale result", async () => {
     const companyId = await company();
     const root = await issue(companyId);

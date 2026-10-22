@@ -34,7 +34,12 @@ export function lineNamingService(db: Db) {
 
   async function ensureNamingAgent(companyId: string) {
     const existing = await builtIns.get(companyId, LINE_NAMER_KEY);
-    if (existing.status !== "not_provisioned") return existing;
+    // Only a row that is already usable (`ready`) or deliberately held
+    // (`paused`, `pending_approval`) should be left untouched. A row stuck on
+    // an incomplete adapter config (`needs_setup` — e.g. left behind by an
+    // adapter swap like the OpenAI-to-Claude migration in TOM-707) must still
+    // go through ensure() so it self-heals onto the current definition.
+    if (existing.status === "ready" || existing.status === "paused" || existing.status === "pending_approval") return existing;
     try {
       return await builtIns.ensure(companyId, LINE_NAMER_KEY);
     } catch {
