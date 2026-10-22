@@ -1,3 +1,4 @@
+import { namingProvenancePayloads } from "./line-naming-provenance.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
@@ -23094,7 +23095,7 @@ export function heartbeatService(
         let namingJsonlBuffer = "";
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
           if (isolatedLineNamingPrompt) {
-            // Codex JSONL is observed at the adapter boundary. Persist only a
+            // Codex JSONL and Claude stream-json are observed at the adapter boundary. Persist only a
             // digest of assistant output, never tool output or unrelated data.
             if (stream === "stdout") {
               namingJsonlBuffer = (namingJsonlBuffer + chunk).slice(-65_536);
@@ -23103,12 +23104,8 @@ export function heartbeatService(
               for (const raw of records) {
                 let event: Record<string, unknown>;
                 try { event = JSON.parse(raw) as Record<string, unknown>; } catch { continue; }
-                const item = parseObject(event.item);
-                if (event.type !== "item.completed" || item.type !== "agent_message" || typeof item.text !== "string") continue;
-                const name = item.text.trim();
-                if (!name || name.length > 80) continue;
-                await appendRunEvent(currentRun, { eventType: "line.naming.provider_message", stream: "system", level: "info",
-                  payload: { textSha256: createHash("sha256").update(name).digest("hex"), source: "codex_jsonl" } });
+                for (const payload of namingProvenancePayloads(event))
+                  await appendRunEvent(currentRun, { eventType: "line.naming.provider_message", stream: "system", level: "info", payload });
               }
             }
             return;
