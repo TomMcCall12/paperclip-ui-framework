@@ -735,6 +735,37 @@ UPDATE_MIGRATION_RAN=0
 : "${UPDATE_HEALTH_ATTEMPTS:=12}"
 : "${UPDATE_HEALTH_DELAY:=5}"
 
+# pause_heartbeat
+# Stops the heartbeat timer (and any ping in flight) before the restart, so a
+# restart window is never reported to Healthchecks.io as "down".
+pause_heartbeat() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "[dry-run] would stop $HEARTBEAT_TIMER (if active) until health passes"
+    return 0
+  fi
+  if systemctl is-active --quiet "$HEARTBEAT_TIMER"; then
+    HEARTBEAT_RESUME=1
+    if systemctl stop "$HEARTBEAT_TIMER" "${HEARTBEAT_TIMER%.timer}.service"; then
+      log "Stopped $HEARTBEAT_TIMER until the server is healthy."
+    else
+      log "WARNING: could not stop $HEARTBEAT_TIMER; a ping may land in the restart window."
+    fi
+  fi
+}
+
+# resume_heartbeat
+# Starts the heartbeat timer again if the updater stopped it or deferred its
+# first start. Call it only after the health check has passed.
+resume_heartbeat() {
+  [[ "$HEARTBEAT_RESUME" == "1" ]] || return 0
+  HEARTBEAT_RESUME=0
+  if systemctl start "$HEARTBEAT_TIMER"; then
+    log "Started $HEARTBEAT_TIMER (server healthy)."
+  else
+    log "WARNING: could not start $HEARTBEAT_TIMER; no heartbeat pings until it runs."
+  fi
+}
+
 # update_exit_safety_net <exit-code>
 # The EXIT trap of paperclip-update.sh. After a successful update
 # (UPDATE_PHASE=done) it only makes sure no build process is left. After any
@@ -772,6 +803,7 @@ update_exit_safety_net() {
   fi
   if health_ok "$UPDATE_HEALTH_URL"; then
     log "Server is healthy at $UPDATE_HEALTH_URL; not restarting it."
+    resume_heartbeat
   else
     log "Server is DOWN at $UPDATE_HEALTH_URL; restarting $UPDATE_SERVICE."
     if [[ "$revert" == "1" ]]; then
@@ -781,6 +813,7 @@ update_exit_safety_net() {
     systemctl restart "$UPDATE_SERVICE" || log "ERROR: systemctl restart $UPDATE_SERVICE failed."
     if wait_for_health_url "$UPDATE_HEALTH_URL" "$UPDATE_HEALTH_ATTEMPTS" "$UPDATE_HEALTH_DELAY"; then
       log "Server is healthy again after the safety-net restart."
+      resume_heartbeat
     else
       log "ERROR: server still unhealthy after the safety-net restart. Manual intervention required."
     fi
@@ -825,6 +858,13 @@ SAFETY_NET_UNITS=(
   paperclip-native-heartbeat.service
   paperclip-native-heartbeat.timer
 )
+# The heartbeat ping must stay quiet while a deploy restarts the server, or
+# Healthchecks.io sees a false "down" (TOM-782). paperclip-update.sh stops
+# the timer before the switch and starts it again only after health passes.
+HEARTBEAT_TIMER="paperclip-native-heartbeat.timer"
+# Set to 1 when the timer must be started once the new build is healthy:
+# either the updater stopped it, or it was enabled without --now on first install.
+HEARTBEAT_RESUME=0
 # Timers from the list above (TOM-690: network self-heal, network-path
 # check, quiet-hours restart). install_safety_net enables and starts each
 # one only when it installs the timer file for the first time, so a timer
@@ -876,7 +916,7 @@ install_safety_net() {
   if [[ "$DRY_RUN" == "1" ]]; then
     log "[dry-run] would install (only if changed) into $recovery/scripts: ${SAFETY_NET_SCRIPTS[*]}"
     log "[dry-run] would install (only if changed) into $systemd_dir, rendered for root=$root mount=$mount recovery=$recovery: ${SAFETY_NET_UNITS[*]}"
-    log "[dry-run] would run systemctl daemon-reload only if a unit changed, then: systemctl enable --now for each of ${SAFETY_NET_TIMERS[*]} installed for the first time; systemctl start paperclip-native-oom-guard.service (never restarts paperclip-native.service)"
+    log "[dry-run] would run systemctl daemon-reload only if a unit changed, then: systemctl enable --now for each of ${SAFETY_NET_TIMERS[*]} installed for the first time (the heartbeat timer is enabled without --now); systemctl start paperclip-native-oom-guard.service (never restarts paperclip-native.service)"
     return 0
   fi
   staged="$(mktemp -d "$root/logs/.safety-net.XXXXXX")"
@@ -906,7 +946,15 @@ install_safety_net() {
     systemctl daemon-reload
   fi
   for f in "${new_timers[@]}"; do
-    if systemctl enable --now "$f"; then
+    if [[ "$f" == "$HEARTBEAT_TIMER" ]]; then
+      # Do not start it yet: its first run would hit the old build and ping /fail.
+      if systemctl enable "$f"; then
+        HEARTBEAT_RESUME=1
+        log "Enabled $f without starting it (first install); the updater starts it once health passes."
+      else
+        log "WARNING: could not enable $f; its check does not run until it is enabled."
+      fi
+    elif systemctl enable --now "$f"; then
       log "Enabled and started $f (first install)."
     else
       log "WARNING: could not enable $f; its check does not run until it is enabled."

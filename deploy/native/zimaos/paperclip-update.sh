@@ -261,6 +261,9 @@ if [[ "$build_rc" -ne 0 ]]; then
   exit "$build_rc"
 fi
 
+log "== Pause heartbeat pings (TOM-782) =="
+pause_heartbeat
+
 log "== Switch current and restart =="
 UPDATE_PHASE="switched"
 run "Point current at $RELEASES_DIR/$COMMIT" -- ln -sfn "$RELEASES_DIR/$COMMIT" "$PAPERCLIP_CURRENT"
@@ -270,12 +273,14 @@ run "Restart paperclip-native.service" -- systemctl restart paperclip-native.ser
 if [[ "$DRY_RUN" == "1" ]]; then
   log "[dry-run] would wait for $HEALTH_URL to become healthy (up to $((HEALTH_CHECK_ATTEMPTS * HEALTH_CHECK_DELAY))s)"
   log "[dry-run] on failure: switch current back to $prev_commit, restart, and (migration_ran=$migration_ran) restore the DB snapshot"
+  log "[dry-run] on success and after a healthy rollback: start the heartbeat timer again"
   log "[dry-run] on success: prune releases beyond the last $KEEP_RELEASES"
   exit 0
 fi
 
 if wait_for_health; then
   UPDATE_PHASE="done"
+  resume_heartbeat
   log "Update to $COMMIT succeeded."
   log "Pruning releases beyond the last $KEEP_RELEASES..."
   # Release dir names are git commit SHAs (safe charset); ls|grep is fine here.
@@ -300,6 +305,7 @@ if [[ "$migration_ran" == "1" && -d "$SNAPSHOT_DIR/db" ]]; then
   systemctl start paperclip-native.service
 fi
 if wait_for_health; then
+  resume_heartbeat
   die "Update to $COMMIT failed and was rolled back to $prev_commit successfully."
 else
   die "Update to $COMMIT failed AND the rollback to $prev_commit did not pass its health check. Manual intervention required."

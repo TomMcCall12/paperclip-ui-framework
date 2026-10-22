@@ -313,9 +313,10 @@ done
 for f in paperclip-native-heartbeat.service paperclip-native-heartbeat.timer; do
   [[ -f "$WORKDIR/etc-systemd/$f" ]] || fail "G: $f was not installed"
 done
-grep -qx 'systemctl enable --now paperclip-native-heartbeat.timer' "$STUB_DIR/sysctl.log" || fail "G: the heartbeat timer was not enabled on its first install: $(cat "$STUB_DIR/sysctl.log")"
+grep -qx 'systemctl enable paperclip-native-heartbeat.timer' "$STUB_DIR/sysctl.log" || fail "G: the heartbeat timer was not enabled (without --now) on its first install: $(cat "$STUB_DIR/sysctl.log")"
 grep -qF "ExecStart=\"$INSTALL_ROOT/recovery/scripts/paperclip-heartbeat.sh\"" "$WORKDIR/etc-systemd/paperclip-native-heartbeat.service" \
   || fail "G: the heartbeat unit was not rendered for this root: $(cat "$WORKDIR/etc-systemd/paperclip-native-heartbeat.service")"
+grep -q 'heartbeat.timer.*--now\|--now.*heartbeat.timer' "$STUB_DIR/sysctl.log" && fail "G: the heartbeat timer was started on first install (TOM-782)"
 grep -q 'restart paperclip-native' "$STUB_DIR/sysctl.log" && fail "G: install_safety_net restarted the server"
 rm -f "$STUB_DIR/sysctl.log"
 install_once
