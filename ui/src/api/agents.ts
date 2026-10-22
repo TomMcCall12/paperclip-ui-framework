@@ -29,6 +29,7 @@ import type {
   AgentConfigRevision,
   ClearAgentErrorResponse,
   AgentApiKeyScope,
+  AgentQueueStatus,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
@@ -197,6 +198,8 @@ export const agentsApi = {
     api.delete<{ ok: true }>(agentPath(agentId, companyId, `/keys/${encodeURIComponent(keyId)}`)),
   runtimeState: (id: string, companyId?: string) =>
     api.get<AgentRuntimeState>(agentPath(id, companyId, "/runtime-state")),
+  queueStatus: (id: string, companyId?: string) =>
+    api.get<AgentQueueStatus>(agentPath(id, companyId, "/queue-status")),
   taskSessions: (id: string, companyId?: string) =>
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>

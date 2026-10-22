@@ -1480,5 +1480,95 @@ export function agentService(db: Db) {
       }
       return { agent: null, ambiguous: false } as const;
     },
+
+    /**
+     * Per-agent queue visibility: running vs. maxConcurrentRuns, how many
+     * assigned todo/in_progress issues are waiting for a free slot, and the
+     * longest-waiting one. "Waiting since" uses the issue's updatedAt as a
+     * proxy for when it last became ready to run, since there is no
+     * dedicated queued-at timestamp.
+     */
+    getQueueStatus: async (companyId: string, options?: { agentIds?: string[] }) => {
+      const agentFilter = options?.agentIds && options.agentIds.length > 0 ? options.agentIds : null;
+
+      const agentRows = await db
+        .select({ id: agents.id, runtimeConfig: agents.runtimeConfig })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            agentFilter ? inArray(agents.id, agentFilter) : undefined,
+          ),
+        );
+
+      const runningRows = await db
+        .select({ agentId: heartbeatRuns.agentId, count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.status, "running"),
+            agentFilter ? inArray(heartbeatRuns.agentId, agentFilter) : undefined,
+          ),
+        )
+        .groupBy(heartbeatRuns.agentId);
+      const runningByAgent = new Map(runningRows.map((row) => [row.agentId, Number(row.count ?? 0)]));
+
+      const waitingIssueRows = await db
+        .select({
+          agentId: issues.assigneeAgentId,
+          issueId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          updatedAt: issues.updatedAt,
+          runStatus: heartbeatRuns.status,
+        })
+        .from(issues)
+        .leftJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            sql`${issues.assigneeAgentId} is not null`,
+            inArray(issues.status, ["todo", "in_progress"]),
+            sql`${issues.hiddenAt} is null`,
+            agentFilter ? inArray(issues.assigneeAgentId, agentFilter) : undefined,
+          ),
+        );
+
+      const waitingByAgent = new Map<
+        string,
+        { count: number; oldest: { issueId: string; identifier: string | null; title: string; waitingSinceAt: Date } | null }
+      >();
+      for (const row of waitingIssueRows) {
+        if (row.runStatus === "running" || row.runStatus === "queued") continue;
+        const agentId = row.agentId as string;
+        const entry = waitingByAgent.get(agentId) ?? { count: 0, oldest: null };
+        entry.count += 1;
+        if (!entry.oldest || row.updatedAt < entry.oldest.waitingSinceAt) {
+          entry.oldest = { issueId: row.issueId, identifier: row.identifier, title: row.title, waitingSinceAt: row.updatedAt };
+        }
+        waitingByAgent.set(agentId, entry);
+      }
+
+      const now = Date.now();
+      return agentRows.map((agent) => {
+        const runtimeConfig = isPlainRecord(agent.runtimeConfig) ? agent.runtimeConfig : {};
+        const heartbeatConfig = isPlainRecord(runtimeConfig.heartbeat) ? runtimeConfig.heartbeat : {};
+        const maxConcurrentRuns = parseFiniteNumberLike(heartbeatConfig.maxConcurrentRuns) ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+        const waiting = waitingByAgent.get(agent.id);
+        return {
+          agentId: agent.id,
+          runningCount: runningByAgent.get(agent.id) ?? 0,
+          maxConcurrentRuns,
+          waitingCount: waiting?.count ?? 0,
+          oldestWaitSeconds: waiting?.oldest
+            ? Math.max(0, Math.round((now - waiting.oldest.waitingSinceAt.getTime()) / 1000))
+            : null,
+          oldestWaitIssueId: waiting?.oldest?.issueId ?? null,
+          oldestWaitIssueIdentifier: waiting?.oldest?.identifier ?? null,
+          oldestWaitIssueTitle: waiting?.oldest?.title ?? null,
+        };
+      });
+    },
   };
 }

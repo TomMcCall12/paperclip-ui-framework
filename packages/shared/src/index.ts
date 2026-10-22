@@ -119,6 +119,7 @@ export {
   type AgentOrgChainInvalidReason,
   type AgentWorkEligibility,
 } from "./agent-eligibility.js";
+export { type AgentQueueStatus } from "./agent-queue-status.js";
 export {
   computePipelineHealth,
   groupWarningsByStage,

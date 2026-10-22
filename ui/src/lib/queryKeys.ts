@@ -217,6 +217,7 @@ export const queryKeys = {
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
     runtimeState: (id: string) => ["agents", "runtime-state", id] as const,
+    queueStatus: (id: string) => ["agents", "queue-status", id] as const,
     taskSessions: (id: string) => ["agents", "task-sessions", id] as const,
     skills: (id: string) => ["agents", "skills", id] as const,
     instructionsBundle: (id: string) =>

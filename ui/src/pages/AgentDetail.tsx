@@ -109,6 +109,7 @@ import {
   type HeartbeatRun,
   type HeartbeatRunEvent,
   type AgentRuntimeState,
+  type AgentQueueStatus,
   type Issue,
   type LiveEvent,
   type WorkspaceOperation,
@@ -915,6 +916,13 @@ export function AgentDetail() {
     enabled: Boolean(resolvedAgentId) && needsOverviewData,
   });
 
+  const { data: queueStatus } = useQuery({
+    queryKey: queryKeys.agents.queueStatus(resolvedAgentId ?? routeAgentRef),
+    queryFn: () => agentsApi.queueStatus(resolvedAgentId!, resolvedCompanyId ?? undefined),
+    enabled: Boolean(resolvedAgentId) && needsOverviewData,
+    refetchInterval: 30_000,
+  });
+
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
     queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
@@ -1395,6 +1403,7 @@ export function AgentDetail() {
           runs={heartbeats ?? []}
           assignedIssues={assignedIssues}
           runtimeState={runtimeState}
+          queueStatus={queueStatus}
           reportsToAgent={reportsToAgent}
           directReportCount={directReports.length}
           skillNames={overviewSkillNames}
@@ -1708,6 +1717,7 @@ export function AgentOverview({
   runs,
   assignedIssues,
   runtimeState,
+  queueStatus,
   reportsToAgent,
   directReportCount,
   skillNames,
@@ -1717,6 +1727,7 @@ export function AgentOverview({
   runs: HeartbeatRun[];
   assignedIssues: Issue[];
   runtimeState?: AgentRuntimeState;
+  queueStatus?: AgentQueueStatus;
   reportsToAgent?: Agent;
   directReportCount: number;
   skillNames: string[];
@@ -1770,6 +1781,39 @@ export function AgentOverview({
               <span className="text-sm">{lastRun ? `${lastRun.status} · ${relativeTime(lastRun.createdAt)}` : "No runs"}</span>
             </SummaryRow>
           </div>
+        </section>
+
+        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-queue-heading">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h3 id="agent-queue-heading" className="text-sm font-medium">Queue</h3>
+            {queueStatus && queueStatus.waitingCount > 0 && queueStatus.runningCount >= queueStatus.maxConcurrentRuns ? (
+              <Badge variant="destructive">Backed up</Badge>
+            ) : null}
+          </div>
+          {queueStatus ? (
+            <div className="space-y-3">
+              <SummaryRow label="Running">
+                <span className="text-sm tabular-nums">{queueStatus.runningCount} / {queueStatus.maxConcurrentRuns}</span>
+              </SummaryRow>
+              <SummaryRow label="Waiting">
+                <span className="text-sm tabular-nums">{queueStatus.waitingCount} task{queueStatus.waitingCount === 1 ? "" : "s"}</span>
+              </SummaryRow>
+              <SummaryRow label="Oldest wait">
+                {queueStatus.oldestWaitIssueId && queueStatus.oldestWaitSeconds != null ? (
+                  <Link
+                    className="text-sm hover:underline"
+                    to={`/issues/${queueStatus.oldestWaitIssueIdentifier ?? queueStatus.oldestWaitIssueId}`}
+                  >
+                    {relativeTime(new Date(Date.now() - queueStatus.oldestWaitSeconds * 1000))}
+                  </Link>
+                ) : (
+                  <span className="text-sm text-muted-foreground">None</span>
+                )}
+              </SummaryRow>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Loading queue status...</p>
+          )}
         </section>
 
         <section className="rounded-lg border border-border p-4" aria-labelledby="agent-capabilities-heading">

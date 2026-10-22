@@ -4106,6 +4106,13 @@ export function agentRoutes(
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
   });
 
+  router.get("/companies/:companyId/agents/queue-status", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const statuses = await svc.getQueueStatus(companyId);
+    res.json(statuses);
+  });
+
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
     assertInstanceAdmin(req);
 
@@ -4338,6 +4345,26 @@ export function agentRoutes(
       return;
     }
     res.json(await buildAgentDetail(agent));
+  });
+
+  router.get("/agents/:id/queue-status", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    if (!(await assertAgentReadAllowed(req, res, agent))) return;
+    const [status] = await svc.getQueueStatus(agent.companyId, { agentIds: [agent.id] });
+    res.json(
+      status ?? {
+        agentId: agent.id,
+        runningCount: 0,
+        maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+        waitingCount: 0,
+        oldestWaitSeconds: null,
+        oldestWaitIssueId: null,
+        oldestWaitIssueIdentifier: null,
+        oldestWaitIssueTitle: null,
+      },
+    );
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
