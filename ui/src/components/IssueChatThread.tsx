@@ -2195,7 +2195,7 @@ function IssueChatUserMessage({
           {!deleted ? (
             <button
               type="button"
-              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground pointer-coarse:size-11"
               title="Copy message"
               aria-label="Copy message"
               onClick={() => {
