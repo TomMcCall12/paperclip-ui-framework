@@ -54,7 +54,7 @@ export function BubbleCopyButton({ copyText }: { copyText: string }) {
   return (
     <button
       type="button"
-      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground pointer-coarse:size-11"
       title={label}
       aria-label={label}
       onClick={() => {
@@ -257,7 +257,7 @@ export function IssueChatFeedbackButtons({
         type="button"
         disabled={isSaving}
         className={cn(
-          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors pointer-coarse:size-11",
           visibleVote === "up"
             ? "text-green-600 dark:text-green-400"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -274,7 +274,7 @@ export function IssueChatFeedbackButtons({
             type="button"
             disabled={isSaving}
             className={cn(
-              "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+              "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors pointer-coarse:size-11",
               visibleVote === "down"
                 ? "text-amber-600 dark:text-amber-400"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",

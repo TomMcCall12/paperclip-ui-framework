@@ -1594,7 +1594,10 @@
   color: var(--foreground);
 }
 
-@media (min-width: 768px) {
+/* TOM-804: gated on pointer type, not width alone — a landscape phone
+   (e.g. 844px wide) still reports a coarse pointer, and iOS zooms the whole
+   page on focus below 16px. Width keeps the desktop-mouse case at 14px. */
+@media (min-width: 768px) and (pointer: fine) {
   .paperclip-mdxeditor-scope,
   .paperclip-mdxeditor {
     font-size: 0.875rem;
@@ -2554,6 +2557,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-70vh: 70vh; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-h-[70vh]). */
   --sz-calc-7: calc(100% - 0.5rem); /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[calc(100%-0.5rem)]). */
   --sz-28dvh: 28dvh; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-h-[28dvh]). */
+  --sz-34dvh: 34dvh; /* Composer overall-height cap (TaskChatComposer.tsx) — keeps the whole dock, including attachments, at roughly a third of the screen on short/landscape viewports. */
   --sz-72px: 72px; /* Extracted from ui/src/components/IssueChatThread.test.tsx (min-h-[72px]). */
   --sz-15px: 15px; /* Extracted from ui/src/components/IssueChatThread.test.tsx (p-[15px]). */
   --sz-calc-8: calc(env(safe-area-inset-bottom) + 20px); /* Extracted from ui/src/components/IssueChatThread.test.tsx (bottom-[calc(env(safe-area-inset-bottom)+20px)]). */
