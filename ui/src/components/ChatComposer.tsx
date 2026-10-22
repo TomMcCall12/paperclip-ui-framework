@@ -228,7 +228,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       data-tone={tone}
       data-surface={surface}
       className={cn(
-        "relative rounded-xl border px-3 pt-2.5 pb-2 transition-colors duration-150 focus-within:border-muted-foreground/40",
+        "relative max-h-(--sz-34dvh) overflow-y-auto rounded-xl border px-3 pt-2.5 pb-2 transition-colors duration-150 focus-within:border-muted-foreground/40",
         // Surface: opaque card vs the task glass recipe (IssueChatThread.tsx shell).
         surface === "translucent"
           ? "border-border/70 bg-background/95 shadow-(--shadow-extract-4) backdrop-blur supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)"
@@ -271,7 +271,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         rows={1}
         wrap={singleLine ? "off" : "soft"}
         className={cn(
-          "block min-h-(--sz-22px) w-full resize-none border-0 bg-transparent p-0 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground focus:outline-none focus:ring-0",
+          "block min-h-(--sz-22px) w-full resize-none border-0 bg-transparent p-0 text-sm pointer-coarse:text-base leading-6 text-foreground outline-none placeholder:text-muted-foreground focus:outline-none focus:ring-0",
           singleLine
             ? "max-h-(--sz-22px) overflow-x-auto whitespace-nowrap"
             : "max-h-(--sz-200px) overflow-y-auto",
@@ -344,7 +344,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               disabled={disabled || attaching}
               aria-label="Attach files"
               title="Attach files"
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:size-11"
             >
               {attaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
             </button>
@@ -366,7 +366,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           aria-label={sendLabel}
           title={sendLabel}
           className={cn(
-            "grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors duration-150 disabled:cursor-not-allowed",
+            "grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors duration-150 disabled:cursor-not-allowed pointer-coarse:size-11",
             canSend
               ? "bg-foreground text-background hover:opacity-90"
               : "bg-accent text-muted-foreground",

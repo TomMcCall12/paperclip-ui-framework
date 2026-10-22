@@ -154,7 +154,12 @@ describe("BreadcrumbBar", () => {
     expect(identifier?.textContent).toBe("TES-3");
     expect(identifier?.previousElementSibling?.textContent).toBe("Hire your first engineer and create a hiring plan");
     expect(identifier?.previousElementSibling?.className).toContain("truncate");
-    expect(container.querySelector('button[aria-label="Open sidebar"]')).not.toBeNull();
+    const openSidebar = container.querySelector('button[aria-label="Open sidebar"]');
+    expect(openSidebar).not.toBeNull();
+    // TOM-804: icon-sm (36px) is excluded from the global pointer-coarse 44px
+    // floor for dense-row icon buttons elsewhere, but this standalone nav
+    // toggle needs its own touch-sized target regardless of that exclusion.
+    expect(openSidebar?.className).toContain("pointer-coarse:size-11");
   });
 
   it("renders a page toolbar in the same persistent row as the task breadcrumb", async () => {
