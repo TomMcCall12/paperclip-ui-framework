@@ -117,6 +117,12 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
+import {
+  IDLE_TODO_TASK_IDLE_THRESHOLD_MS,
+  IDLE_TODO_TASK_WAKE_COOLDOWN_MS,
+  IDLE_TODO_TASK_WAKE_REASON,
+  buildIdleTodoTaskWakeIdempotencyKey,
+} from "../idle-todo-task-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
@@ -177,6 +183,7 @@ const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX =
   "agent_wakeup_requests_disposition_repair_idempotency_uq";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
+const IDLE_TODO_TASK_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
 
 // GGU-809: when a stranded `in_progress` issue would otherwise hit the
 // `isRepeatedProductiveContinuationRecovery` escalation path, exempt the
@@ -218,6 +225,12 @@ type ResolvedDependencyWakeBackstopOptions = {
   companyId?: string | null;
   blockerIssueId?: string | null;
   source?: ResolvedDependencyWakeBackstopSource;
+};
+
+type IdleTodoTaskWakeBackstopOptions = {
+  runId?: string | null;
+  companyId?: string | null;
+  now?: Date;
 };
 
 type LatestIssueRun =
@@ -932,6 +945,7 @@ export function recoveryService(
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
+  let idleTodoTaskWakeBackstopCandidateCursor: string | null = null;
 
   async function getAgent(agentId: string) {
     return db
@@ -1148,6 +1162,32 @@ export function recoveryService(
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  // At-most-once-per-hour dedup for the idle-todo-task backstop. Per
+  // server-internals.md, `enqueueWakeup` does not deduplicate on
+  // `idempotencyKey` itself — it only stores it — so the backstop looks for an
+  // existing non-skipped wake with this reason for the same issue inside the
+  // cooldown window before it queues another one.
+  async function findRecentIdleTodoTaskWake(input: {
+    companyId: string;
+    issueId: string;
+    since: Date;
+  }) {
+    return db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.reason, IDLE_TODO_TASK_WAKE_REASON),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+          not(eq(agentWakeupRequests.status, "skipped")),
+          gte(agentWakeupRequests.requestedAt, input.since),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   /**
@@ -5814,6 +5854,174 @@ export function recoveryService(
     return result;
   }
 
+  // Periodic backstop for TOM-798: a `todo` task with an invokable
+  // (non-paused) assignee and no live execution path for more than
+  // `IDLE_TODO_TASK_IDLE_THRESHOLD_MS` gets its assignee woken, at most once
+  // per issue per `IDLE_TODO_TASK_WAKE_COOLDOWN_MS`. This covers the case the
+  // event-driven wakes (reassignment, status reaching `todo`, blocker
+  // resolution) cannot: nothing changed on the issue after it became ready,
+  // so no PATCH ever fires the wake in the first place.
+  async function reconcileIdleTodoTaskWakeBackstop(
+    opts?: IdleTodoTaskWakeBackstopOptions,
+  ) {
+    const result = {
+      checked: 0,
+      healed: 0,
+      existingWakeSkipped: 0,
+      livePathSkipped: 0,
+      interactionSkipped: 0,
+      nonInvokableSkipped: 0,
+      candidateLimitSkipped: 0,
+      enqueueFailed: 0,
+      issueIds: [] as string[],
+    };
+
+    const now = opts?.now ?? new Date();
+    const idleCutoff = new Date(now.getTime() - IDLE_TODO_TASK_IDLE_THRESHOLD_MS);
+    const useCursor = !opts?.companyId;
+
+    const queryCandidates = (afterIssueId: string | null) => {
+      const filters = [
+        eq(issues.status, "todo"),
+        sql`${issues.assigneeAgentId} is not null`,
+        visibleIssueCondition(),
+        sql`${issues.updatedAt} <= ${idleCutoff.toISOString()}::timestamptz`,
+      ];
+      if (opts?.companyId) filters.push(eq(issues.companyId, opts.companyId));
+      if (afterIssueId) filters.push(gt(issues.id, afterIssueId));
+
+      return db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
+          totalCount: sql<number>`count(*) over()::int`,
+        })
+        .from(issues)
+        .where(and(...filters))
+        .orderBy(asc(issues.id))
+        .limit(IDLE_TODO_TASK_WAKE_BACKSTOP_CANDIDATE_LIMIT);
+    };
+
+    let candidateRows = await queryCandidates(
+      useCursor ? idleTodoTaskWakeBackstopCandidateCursor : null,
+    );
+    if (
+      useCursor &&
+      candidateRows.length === 0 &&
+      idleTodoTaskWakeBackstopCandidateCursor
+    ) {
+      idleTodoTaskWakeBackstopCandidateCursor = null;
+      candidateRows = await queryCandidates(null);
+    }
+    const totalCandidateCount = candidateRows[0]?.totalCount ?? 0;
+    const candidates = candidateRows.map(
+      ({ totalCount: _totalCount, ...candidate }) => candidate,
+    );
+    result.checked = candidates.length;
+    result.candidateLimitSkipped = Math.max(
+      0,
+      totalCandidateCount - candidates.length,
+    );
+    const lastCandidate = candidates[candidates.length - 1] ?? null;
+    if (useCursor) {
+      idleTodoTaskWakeBackstopCandidateCursor =
+        result.candidateLimitSkipped > 0 && lastCandidate
+          ? lastCandidate.id
+          : null;
+    }
+
+    for (const candidate of candidates) {
+      const agentId = candidate.assigneeAgentId;
+      if (!agentId) continue;
+
+      if (await hasActiveExecutionPath(candidate.companyId, candidate.id, agentId)) {
+        result.livePathSkipped += 1;
+        continue;
+      }
+      if (await hasPendingWakeInteraction(candidate.companyId, candidate.id)) {
+        result.interactionSkipped += 1;
+        continue;
+      }
+
+      const agent = await getAgent(agentId);
+      if (!(await isAgentInvokable(agent))) {
+        result.nonInvokableSkipped += 1;
+        continue;
+      }
+
+      const recentWake = await findRecentIdleTodoTaskWake({
+        companyId: candidate.companyId,
+        issueId: candidate.id,
+        since: new Date(now.getTime() - IDLE_TODO_TASK_WAKE_COOLDOWN_MS),
+      });
+      if (recentWake) {
+        result.existingWakeSkipped += 1;
+        continue;
+      }
+
+      const idempotencyKey = buildIdleTodoTaskWakeIdempotencyKey(
+        candidate.id,
+        now.toISOString(),
+      );
+      try {
+        const wake = await deps.enqueueWakeup(agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: IDLE_TODO_TASK_WAKE_REASON,
+          payload: {
+            issueId: candidate.id,
+            backstop: "idle_todo_task_backstop",
+          },
+          idempotencyKey,
+          requestedByActorType: "system",
+          requestedByActorId: "idle_todo_task_backstop",
+          contextSnapshot: {
+            issueId: candidate.id,
+            taskId: candidate.id,
+            wakeReason: IDLE_TODO_TASK_WAKE_REASON,
+            source: "idle_todo_task.backstop",
+          },
+        });
+        if (!wake) continue;
+
+        result.healed += 1;
+        result.issueIds.push(candidate.id);
+
+        await logActivity(db, {
+          companyId: candidate.companyId,
+          actorType: "system",
+          actorId: "idle_todo_task_backstop",
+          agentId,
+          runId: opts?.runId ?? null,
+          action: "issue.idle_todo_task_wake_emitted",
+          entityType: "issue",
+          entityId: candidate.id,
+          details: {
+            source: "idle_todo_task.backstop",
+            wakeupRunId: wake.id,
+            idempotencyKey,
+          },
+        });
+      } catch (err) {
+        result.enqueueFailed += 1;
+        logger.warn(
+          { err, issueId: candidate.id, agentId, idempotencyKey },
+          "failed to enqueue idle todo-task wake from backstop",
+        );
+      }
+    }
+
+    if (result.healed > 0) {
+      logger.warn(
+        { healed: result.healed, issueIds: result.issueIds },
+        "idle todo-task backstop woke idle assignees",
+      );
+    }
+
+    return result;
+  }
+
   function readRecoveryTimerIntervalMs(raw: unknown, fallback: number) {
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
@@ -6245,6 +6453,7 @@ export function recoveryService(
     legacyRepairDispatchBlock,
     sweepStaleIssueLocks,
     reconcileResolvedDependencyWakeBackstop,
+    reconcileIdleTodoTaskWakeBackstop,
     readRecoveryTimerIntervalMs,
   };
 }

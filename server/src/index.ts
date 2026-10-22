@@ -1571,6 +1571,14 @@ async function startServerWithDatabaseTeardown(
           );
         }
 
+        const idleTodoTasksReconciled = await heartbeat.reconcileIdleTodoTaskWakes();
+        if (idleTodoTasksReconciled.healed > 0) {
+          logger.warn(
+            { ...idleTodoTasksReconciled },
+            "startup idle todo-task backstop woke idle assignees",
+          );
+        }
+
         const scanned = await heartbeat.scanSilentActiveRuns();
         if (scanned.created > 0 || scanned.escalated > 0) {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
@@ -1807,6 +1815,12 @@ async function startServerWithDatabaseTeardown(
               const reconciled = await heartbeat.reconcileTaskWatchdogs();
               if (reconciled.triggered > 0) {
                 logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
+              }
+            })
+            .then(async () => {
+              const reconciled = await heartbeat.reconcileIdleTodoTaskWakes();
+              if (reconciled.healed > 0) {
+                logger.warn({ ...reconciled }, "periodic idle todo-task backstop woke idle assignees");
               }
             })
             .then(async () => {

@@ -19789,6 +19789,14 @@ export function heartbeatService(
     return recovery.reconcileResolvedDependencyWakeBackstop(opts);
   }
 
+  async function reconcileIdleTodoTaskWakes(opts?: {
+    runId?: string | null;
+    companyId?: string | null;
+    now?: Date;
+  }) {
+    return recovery.reconcileIdleTodoTaskWakeBackstop(opts);
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -30034,6 +30042,7 @@ export function heartbeatService(
     sweepStaleIssueLocks,
 
     reconcileResolvedDependencyWakes,
+    reconcileIdleTodoTaskWakes,
 
     scanSilentActiveRuns,
 
