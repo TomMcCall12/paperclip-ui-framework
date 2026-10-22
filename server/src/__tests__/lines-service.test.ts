@@ -147,6 +147,27 @@ suite("Line membership", () => {
     expect(namer.adapterConfig).toMatchObject({ model: "claude-haiku-4-5" });
   });
 
+  it("self-heals a pre-existing Line Namer left on a disallowed adapter type with a stale non-empty model", async () => {
+    const companyId = await company();
+    const root = await issue(companyId);
+    const staleAgentId = randomUUID();
+    await db.insert(agents).values({ id: staleAgentId, companyId, name: "Line Namer", role: "general", status: "idle",
+      adapterType: "codex_local", adapterConfig: { model: "gpt-5.4-mini" },
+      metadata: withBuiltInAgentMarker(null, { key: "line-namer", featureKeys: ["line-naming"] }) });
+    // hasCompleteAdapterConfig() only checks for a non-empty model string, so
+    // this stale row (left on the pre-TOM-707 OpenAI/Codex adapter) reads as
+    // fully "ready" even though its adapter type is no longer allowed.
+    expect((await builtInAgentService(db).get(companyId, "line-namer")).status).toBe("ready");
+    const { line } = await lineService(db).ensure(companyId, root, { type: "system" });
+    const first = await lineNamingService(db).start(companyId, line.id, { type: "system" });
+    expect(first.queued).toBe(true);
+    const [task] = await db.select().from(issues).where(eq(issues.id, first.namingIssueId!));
+    expect(task.assigneeAgentId).toBe(staleAgentId);
+    const [namer] = await db.select().from(agents).where(eq(agents.id, staleAgentId));
+    expect(namer.adapterType).toBe("claude_local");
+    expect(namer.adapterConfig).toMatchObject({ model: "claude-haiku-4-5" });
+  });
+
   it("accepts only the current Claude task run and ignores a stale result", async () => {
     const companyId = await company();
     const root = await issue(companyId);

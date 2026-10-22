@@ -34,14 +34,32 @@ export function lineNamingService(db: Db) {
 
   async function ensureNamingAgent(companyId: string) {
     const existing = await builtIns.get(companyId, LINE_NAMER_KEY);
-    // Only a row that is already usable (`ready`) or deliberately held
-    // (`paused`, `pending_approval`) should be left untouched. A row stuck on
-    // an incomplete adapter config (`needs_setup` — e.g. left behind by an
-    // adapter swap like the OpenAI-to-Claude migration in TOM-707) must still
-    // go through ensure() so it self-heals onto the current definition.
-    if (existing.status === "ready" || existing.status === "paused" || existing.status === "pending_approval") return existing;
+    // A row deliberately held (`paused`, `pending_approval`) is left
+    // untouched regardless of its adapter.
+    if (existing.status === "paused" || existing.status === "pending_approval") return existing;
+    // `ready` only means `hasCompleteAdapterConfig()` found a non-empty model
+    // string — it never checks the adapter type itself. A row left on an
+    // adapter the current definition no longer allows (e.g. still
+    // `codex_local` with its old model string, from before the
+    // OpenAI-to-Claude swap in TOM-707) still reads `ready` and would
+    // otherwise never reach ensure(). Treat that case the same as
+    // `needs_setup`/`not_provisioned`: fall through to ensure().
+    const adapterAllowed = !existing.agent
+      || !existing.definition.allowedAdapterTypes
+      || existing.definition.allowedAdapterTypes.includes(existing.agent.adapterType);
+    if (existing.status === "ready" && adapterAllowed) return existing;
     try {
-      return await builtIns.ensure(companyId, LINE_NAMER_KEY);
+      // ensure() preserves any already-"complete" adapter config untouched
+      // when called with no input, so a mismatched adapter type must be
+      // overridden explicitly to force the migration.
+      return await builtIns.ensure(
+        companyId,
+        LINE_NAMER_KEY,
+        adapterAllowed ? undefined : {
+          adapterType: existing.definition.defaultAdapterType,
+          adapterConfig: existing.definition.defaultAdapterConfig,
+        },
+      );
     } catch {
       // Provisioning failed (e.g. the model is not yet in the adapter's
       // catalog). Leave the Line on its actionable error code; reconcile()
