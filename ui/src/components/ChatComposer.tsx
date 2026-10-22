@@ -323,7 +323,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       data-tone={tone}
       data-surface={surface}
       className={cn(
-        "relative min-w-0 rounded-xl border px-3 pt-2.5 pb-2 transition-colors duration-150 focus-within:border-muted-foreground/40",
+        "relative max-h-(--sz-34dvh) min-w-0 overflow-y-auto rounded-xl border px-3 pt-2.5 pb-2 transition-colors duration-150 focus-within:border-muted-foreground/40",
         // Surface: opaque card vs the task glass recipe (IssueChatThread.tsx shell).
         surface === "translucent"
           ? "border-border/70 bg-background shadow-(--shadow-extract-4) dark:shadow-(--shadow-extract-5)"

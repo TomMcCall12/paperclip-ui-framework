@@ -2435,7 +2435,7 @@ function IssueChatAssistantMessage({
     <div className="mt-2 flex items-center gap-1">
       <button
         type="button"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground pointer-coarse:size-11"
         title="Copy message"
         aria-label="Copy message"
         onClick={() => {
@@ -2836,7 +2836,7 @@ function IssueChatFeedbackButtons({
         type="button"
         disabled={isSaving}
         className={cn(
-          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors pointer-coarse:size-11",
           visibleVote === "up"
             ? "text-green-600 dark:text-green-400"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -2853,7 +2853,7 @@ function IssueChatFeedbackButtons({
             type="button"
             disabled={isSaving}
             className={cn(
-              "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+              "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors pointer-coarse:size-11",
               visibleVote === "down"
                 ? "text-amber-600 dark:text-amber-400"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -5335,7 +5335,7 @@ const IssueChatComposer = forwardRef<
       data-testid="issue-chat-composer"
       data-pending-work-mode={pendingWorkMode}
       className={cn(
-        "relative rounded-md border border-border/70 bg-background/95 p-(--sz-15px) shadow-(--shadow-extract-4) backdrop-blur transition-(--tp-border-color-background-color-box-shadow) duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)",
+        "relative max-h-(--sz-34dvh) overflow-y-auto rounded-md border border-border/70 bg-background/95 p-(--sz-15px) shadow-(--shadow-extract-4) backdrop-blur transition-(--tp-border-color-background-color-box-shadow) duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)",
         pendingWorkModeMeta.classes.container,
         isDragOver &&
           "border-primary/45 bg-background shadow-(--shadow-extract-7)",
@@ -5520,6 +5520,7 @@ const IssueChatComposer = forwardRef<
                     type="button"
                     variant="ghost"
                     size="icon-sm"
+                    className="pointer-coarse:size-11"
                     aria-label={`Remove ${attachment.name}`}
                     disabled={!!uncertainSubmission}
                     onClick={() =>

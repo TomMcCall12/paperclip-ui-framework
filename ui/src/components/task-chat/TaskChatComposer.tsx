@@ -1177,6 +1177,12 @@ export function TaskChatComposer({
   return (
     <div
       className={cn(
+        // The editor's own text area caps at 28dvh, but attachments, the mode
+        // takeover, and chrome stack outside that cap — without an overall
+        // bound the whole dock could still grow past a third of a short
+        // (landscape phone) viewport. This caps the complete composer,
+        // including attachments, and scrolls internally past that point.
+        "max-h-(--sz-34dvh) overflow-y-auto",
         streamlined
           ? "paperclip-task-chat-composer rounded-(--radius-task-composer) border border-border bg-card p-(--sz-18px) shadow-(--shadow-task-composer) dark:border-0 dark:bg-muted dark:shadow-none"
           : "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
@@ -1379,11 +1385,11 @@ export function TaskChatComposer({
               onDropFile={canAcceptFiles ? attachNonImageFile : undefined}
               bordered={false}
               className={cn(disabled && "opacity-60")}
-              contentClassName={
-                mobile
-                  ? "max-h-(--tc-editor-max-h) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
-                  : "max-h-(--tc-editor-max-h) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-sm scrollbar-auto-hide"
-              }
+              // Font size is NOT set here: the unlayered
+              // `.paperclip-mdxeditor-content { font-size: inherit }` rule (index.css)
+              // beats any `text-*` utility on this element, so it inherits from
+              // `.paperclip-mdxeditor-scope`, gated on pointer type there (TOM-804).
+              contentClassName="max-h-(--tc-editor-max-h) min-h-(--sz-48px) overflow-y-auto px-1 py-1 scrollbar-auto-hide"
             />
           </div>
 
@@ -1452,6 +1458,7 @@ export function TaskChatComposer({
                       <AttachmentAction
                         aria-label={`Remove ${attachment.name}`}
                         disabled={!!uncertainSubmission}
+                        className="pointer-coarse:size-11"
                         onClick={() =>
                           setAttachments((prev) =>
                             prev.filter((item) => item.id !== attachment.id),
@@ -1486,7 +1493,7 @@ export function TaskChatComposer({
                   disabled={disabled}
                   title="Attach file"
                   aria-label="Attach file"
-                  className="flex h-8 w-8 max-md:h-(--tc-touch-target) max-md:w-(--tc-touch-target) shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  className="flex h-8 w-8 max-md:h-(--tc-touch-target) pointer-coarse:h-(--tc-touch-target) max-md:w-(--tc-touch-target) pointer-coarse:w-(--tc-touch-target) shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
                   data-testid="task-chat-composer-attach"
                 >
                   <Plus className="h-4 w-4" aria-hidden />
@@ -1508,7 +1515,7 @@ export function TaskChatComposer({
                     disabled={disabled || !onWorkModeChange}
                     aria-keyshortcuts="Meta+Period Control+Period Shift+Tab"
                     className={cn(
-                      "flex h-8 max-md:h-(--tc-touch-target) shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium disabled:opacity-50",
+                      "flex h-8 max-md:h-(--tc-touch-target) pointer-coarse:h-(--tc-touch-target) shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium disabled:opacity-50",
                       streamlined
                         ? "status-chip border-0 transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none"
                         : "status-chip transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none",
@@ -1665,7 +1672,7 @@ export function TaskChatComposer({
                     : "Send"
               }
               className={cn(
-                "flex h-8 w-8 max-md:h-(--tc-touch-target) max-md:w-(--tc-touch-target) shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
+                "flex h-8 w-8 max-md:h-(--tc-touch-target) pointer-coarse:h-(--tc-touch-target) max-md:w-(--tc-touch-target) pointer-coarse:w-(--tc-touch-target) shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
                 streamlined
                   ? "bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
                   : "bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",

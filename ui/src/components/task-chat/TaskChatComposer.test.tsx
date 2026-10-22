@@ -2880,6 +2880,54 @@ describe("composer Stop", () => {
     expect(stopButton()).toBeNull();
     expect(sendButton().disabled).toBe(failed);
   });
+
+  // TOM-804: a landscape phone (e.g. 844x390) reads as "desktop width" under
+  // the layout's isMobile breakpoint, but it is still a touch screen — a
+  // 28px/32px control is too small to tap reliably. These must follow
+  // pointer type (pointer-coarse), never viewport width, and the
+  // mobile-width `isMobile` prop stays unrelated to them. (Editor text size
+  // is NOT set via a class on this element — see TaskChatComposerStyles.test.ts
+  // for the pointer-gated `.paperclip-mdxeditor-scope` rule that controls it,
+  // since this element's own `font-size: inherit` rule always wins over any
+  // `text-*` utility placed directly on it.)
+  it("sizes touch targets by pointer type, not by the mobile-width prop", () => {
+    render(
+      <TaskChatComposer
+        onAdd={vi.fn()}
+        workMode="standard"
+        onAttachImage={vi.fn().mockResolvedValue(undefined)}
+        onWorkModeChange={vi.fn()}
+      />,
+    );
+
+    const attach = container.querySelector('[data-testid="task-chat-composer-attach"]');
+    expect(attach?.classList.contains("pointer-coarse:h-(--tc-touch-target)")).toBe(true);
+
+    const mode = container.querySelector('[data-testid="task-chat-composer-mode"]');
+    expect(mode?.classList.contains("pointer-coarse:h-(--tc-touch-target)")).toBe(true);
+
+    expect(sendButton().classList.contains("pointer-coarse:h-(--tc-touch-target)")).toBe(true);
+  });
+
+  it("caps the whole composer dock (editor + attachments + chrome), not just the editor text, to a bounded viewport fraction", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
+    const dock = container.querySelector(".paperclip-task-chat-composer");
+    expect(dock?.classList.contains("max-h-(--sz-34dvh)")).toBe(true);
+    expect(dock?.classList.contains("overflow-y-auto")).toBe(true);
+  });
+
+  it("gives the attachment chip's remove button a touch-sized target", async () => {
+    const onAttachImage = vi.fn().mockResolvedValue({
+      id: "a1",
+      contentPath: "/notes.txt",
+      originalFilename: "notes.txt",
+    });
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onAttachImage={onAttachImage} />);
+    pasteFiles([new File(["notes"], "notes.txt", { type: "text/plain" })]);
+    await flushAsync();
+    const remove = container.querySelector('[aria-label="Remove notes.txt"]');
+    expect(remove?.classList.contains("pointer-coarse:size-11")).toBe(true);
+  });
 });
 
 describe("TaskChatComposer shared host commands", () => {
