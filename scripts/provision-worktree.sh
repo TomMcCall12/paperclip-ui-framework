@@ -54,14 +54,24 @@ if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
   # state this workspace cannot rewrite.
   source_config_path="${PAPERCLIP_CONFIG:-$paperclip_home/instances/$paperclip_instance_id/config.json}"
 fi
-if [[ ! -f "$source_config_path" || -L "$source_config_path" ]]; then
+# A control plane configured only through its environment (no config file at
+# PAPERCLIP_CONFIG or under PAPERCLIP_HOME) has no seed source to copy. Agents in
+# the worktree still need its dependencies, so skip only the isolated Paperclip
+# instance setup. A link or other non-file at that path is still refused below.
+skip_instance_setup=0
+if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
+  echo "No registered Paperclip config file at $source_config_path (environment-configured control plane); skipping isolated Paperclip instance setup for this worktree." >&2
+  skip_instance_setup=1
+elif [[ ! -f "$source_config_path" || -L "$source_config_path" ]]; then
   echo "Registered Paperclip seed source config is missing or is not a canonical file: $source_config_path" >&2
   exit 1
 fi
-canonical_source_dir="$(cd "$(dirname "$source_config_path")" && pwd -P)"
-if [[ "$canonical_source_dir/config.json" != "$source_config_path" ]]; then
-  echo "Registered Paperclip seed source config uses a symlink alias: $source_config_path" >&2
-  exit 1
+if [[ "$skip_instance_setup" -eq 0 ]]; then
+  canonical_source_dir="$(cd "$(dirname "$source_config_path")" && pwd -P)"
+  if [[ "$canonical_source_dir/config.json" != "$source_config_path" ]]; then
+    echo "Registered Paperclip seed source config uses a symlink alias: $source_config_path" >&2
+    exit 1
+  fi
 fi
 source_env_path="$(dirname "$source_config_path")/.env"
 
@@ -610,7 +620,9 @@ main().catch((error) => {
 EOF
 }
 
-if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]] && existing_worktree_config_is_usable; then
+if [[ "$skip_instance_setup" -eq 1 ]]; then
+  :
+elif [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]] && existing_worktree_config_is_usable; then
   echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
 else
   if [[ -e "$worktree_config_path" || -e "$worktree_env_path" ]]; then
@@ -644,7 +656,9 @@ fi
 # source, and older/fallback CLI writers may default this field independently.
 # Reconcile it after either create or reuse so the final guest config always
 # carries the source's deployment/auth contract without replacing its database.
-reconcile_worktree_deployment_mode
+if [[ "$skip_instance_setup" -eq 0 ]]; then
+  reconcile_worktree_deployment_mode
+fi
 
 if [[ "$created_worktree_config" -eq 1 && ! -e "$seed_manifest_path" && ! -e "$seed_pending_marker_path" && ! -e "$seed_complete_marker_path" ]]; then
   write_seed_pending_manifest

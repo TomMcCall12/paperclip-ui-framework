@@ -25,10 +25,12 @@ function makeTempDir(prefix) {
  * A control plane's own instance home. A managed project checkout carries no
  * instance config of its own, so this is the seed source the scripts fall back to.
  */
-function makeInstanceHome() {
+function makeInstanceHome({ withConfig = true } = {}) {
   const home = makeTempDir("paperclip-provision-instance-home-");
   fs.mkdirSync(path.join(home, "instances", "default"), { recursive: true });
-  fs.writeFileSync(path.join(home, "instances", "default", "config.json"), "{}\n");
+  if (withConfig) {
+    fs.writeFileSync(path.join(home, "instances", "default", "config.json"), "{}\n");
+  }
   return home;
 }
 
@@ -102,11 +104,11 @@ process.exit(0);
   return baseCwd;
 }
 
-function runProvision(baseCwd, { pathPrefix, setupWorktree, existingWorktree } = {}) {
+function runProvision(baseCwd, { pathPrefix, setupWorktree, existingWorktree, withInstanceConfig = true } = {}) {
   const worktreeCwd = existingWorktree ?? makeTempDir("paperclip-provision-worktree-");
   setupWorktree?.(worktreeCwd);
   const worktreesHome = makeTempDir("paperclip-provision-home-");
-  const paperclipHome = makeInstanceHome();
+  const paperclipHome = makeInstanceHome({ withConfig: withInstanceConfig });
   const result = spawnSync("bash", [script], {
     cwd: worktreeCwd,
     encoding: "utf8",
@@ -191,6 +193,19 @@ test("rejects a dangling base workspace config symlink instead of falling back",
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /is missing or is not a canonical file/);
+});
+
+test("skips isolated instance setup when the control plane has no config file", () => {
+  // An environment-configured control plane (for example a native systemd
+  // install) has no config.json at PAPERCLIP_CONFIG or under PAPERCLIP_HOME.
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const { result, worktreeCwd } = runProvision(baseCwd, { withInstanceConfig: false });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /environment-configured control plane\); skipping isolated Paperclip instance setup/);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "config.json")), false);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json")), false);
 });
 
 test("rejects a dangling base workspace .paperclip symlink instead of falling back", () => {
