@@ -67,6 +67,10 @@ export const agentRuntimeConfigSchema = z.object({
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
+  // Per-agent override for the per-run cross-issue write cap (see
+  // server/src/services/cross-issue-influence-limit.ts). Omit to use the
+  // role-based default: 100 for the "ceo" role, 20 for everyone else.
+  crossIssueInfluenceCap: z.number().int().min(1).max(1000).optional(),
 }).catchall(z.unknown()).superRefine((value, ctx) => {
   if (Object.prototype.hasOwnProperty.call(value, "modelProfiles")) {
     ctx.addIssue({

@@ -1,12 +1,38 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, agents, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
+// Default per-run budget for every agent. The CEO role gets a higher default
+// (a board clean-up run otherwise needs several rounds and wakes just to
+// clear the per-run cap), and either default can be overridden per agent via
+// `runtimeConfig.crossIssueInfluenceCap`.
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
+export const CROSS_ISSUE_INFLUENCE_CEO_LIMIT = 100;
 export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.000Z");
+
+function readCrossIssueInfluenceCapOverride(runtimeConfig: unknown): number | null {
+  if (!runtimeConfig || typeof runtimeConfig !== "object" || Array.isArray(runtimeConfig)) return null;
+  const value = (runtimeConfig as Record<string, unknown>).crossIssueInfluenceCap;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return null;
+  return value;
+}
+
+/**
+ * Resolves the per-run cross-issue write cap for one agent: an explicit
+ * `runtimeConfig.crossIssueInfluenceCap` override wins, otherwise the CEO
+ * role gets the higher default and every other role keeps the base cap.
+ */
+export function resolveCrossIssueInfluenceCap(agent?: {
+  role?: string | null;
+  runtimeConfig?: unknown;
+} | null): number {
+  const override = readCrossIssueInfluenceCapOverride(agent?.runtimeConfig);
+  if (override !== null) return override;
+  return agent?.role === "ceo" ? CROSS_ISSUE_INFLUENCE_CEO_LIMIT : CROSS_ISSUE_INFLUENCE_LIMIT;
+}
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
 const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap_rejected";
@@ -45,16 +71,18 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
 
 export function evaluateCrossIssueInfluenceLimit(input: {
   priorCount: number;
+  cap?: number;
   now?: Date;
 }): CrossIssueInfluenceDecision {
   const now = input.now ?? new Date();
+  const cap = input.cap ?? CROSS_ISSUE_INFLUENCE_LIMIT;
   const mode = now >= CROSS_ISSUE_INFLUENCE_ENFORCE_AT ? "enforce" : "log_only";
   const nextCount = input.priorCount + 1;
   return {
-    allowed: mode === "log_only" || nextCount <= CROSS_ISSUE_INFLUENCE_LIMIT,
+    allowed: mode === "log_only" || nextCount <= cap,
     mode,
     count: nextCount,
-    cap: CROSS_ISSUE_INFLUENCE_LIMIT,
+    cap,
     enforceAt: CROSS_ISSUE_INFLUENCE_ENFORCE_AT.toISOString(),
   };
 }
@@ -118,6 +146,13 @@ export async function observeCrossIssueInfluence(
       return null;
     }
 
+    const agentRow = await tx
+      .select({ role: agents.role, runtimeConfig: agents.runtimeConfig })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    const cap = resolveCrossIssueInfluenceCap(agentRow);
+
     const priorCount = await tx
       .select({ count: count() })
       .from(activityLog)
@@ -127,7 +162,7 @@ export async function observeCrossIssueInfluence(
         eq(activityLog.action, CROSS_ISSUE_INFLUENCE_ACTIVITY),
       ))
       .then((rows) => Number(rows[0]?.count ?? 0));
-    const decision = evaluateCrossIssueInfluenceLimit({ priorCount, now: input.now });
+    const decision = evaluateCrossIssueInfluenceLimit({ priorCount, cap, now: input.now });
 
     await tx.insert(activityLog).values({
       companyId: input.companyId,
