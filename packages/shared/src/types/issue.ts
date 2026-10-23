@@ -45,6 +45,9 @@ import type {
   TrustAuthorizationPolicy,
 } from "../trust-policy.js";
 
+
+/** "ai" is written only by the server's task naming service. */
+export type IssueTitleSource = "explicit" | "derived" | "ai";
 export type { IssueWorkMode };
 
 export interface IssueAncestorProject {
@@ -871,6 +874,8 @@ export interface Issue {
   originFingerprint?: string | null;
   /** Server-derived from "S<n>:" step titles under a parent; never client-writable. */
   stepKey?: string | null;
+  /** Who chose the title: typed ("explicit"), cut from the description ("derived") or AI-named ("ai"). */
+  titleSource?: IssueTitleSource;
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;

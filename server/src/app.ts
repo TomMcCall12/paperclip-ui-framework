@@ -55,6 +55,8 @@ import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { folderRoutes } from "./routes/folders.js";
 import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { lineRoutes } from "./routes/lines.js";
+import { taskNamingRoutes, wakeTaskNamer } from "./routes/task-naming.js";
+import { taskNamingService } from "./services/task-naming.js";
 import { lineNamingService } from "./services/line-naming.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
@@ -677,6 +679,7 @@ export async function createApp(
   api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));
   api.use(lineRoutes(db));
+  api.use(taskNamingRoutes(db));
   api.use(statusCardRoutes(db));
   api.use(commandRoutes(db, commandDispatcher));
   api.use(teamsCatalogRoutes(db));
@@ -1216,6 +1219,7 @@ export async function createApp(
   chatPublicationTimer.unref?.();
   chatReconciliation.reconcile();
   const naming = lineNamingService(db);
+  const taskNaming = taskNamingService(db);
   const namingHeartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
   let lineNamingReconciling = false;
   const reconcileLineNaming = async () => {
@@ -1228,6 +1232,10 @@ export async function createApp(
         if (task) await queueIssueAssignmentWakeup({ heartbeat: namingHeartbeat, issue: { id: issueId, ...task }, reason: "line_naming_reconcile", mutation: "line.naming.reconcile", contextSource: "line.naming", requestedByActorType: "system", taskKey: `line-naming:${companyId}:${issueId}` });
       });
     } catch (err) { logger.error({ err }, "Line naming reconciliation failed"); }
+    try {
+      await taskNaming.reconcile((companyId, issueId) => wakeTaskNamer(db, namingHeartbeat, companyId, issueId,
+        { reason: "task_naming_reconcile", mutation: "task.naming.reconcile", requestedByActorType: "system" }));
+    } catch (err) { logger.error({ err }, "Task naming reconciliation failed"); }
     finally { lineNamingReconciling = false; }
   };
   let lineNamingTimer: ReturnType<typeof setInterval> | null = setInterval(() => { void reconcileLineNaming(); }, 60_000);

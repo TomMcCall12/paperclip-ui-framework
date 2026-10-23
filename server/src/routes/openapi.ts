@@ -36,6 +36,8 @@ import {
   updateLineSchema,
   retryLineNamingSchema,
   lineNamingResultSchema,
+  issueTitleNamingResultSchema,
+  retryIssueTitleNamingSchema,
   listLinesQuerySchema,
   createStatusCardSchema,
   patchStatusCardSchema,
@@ -3002,6 +3004,20 @@ for (const [method, path, summary, body] of [
       ...(body ? { body: jsonBody(body) } : {}),
     },
     responses: { 200: r.ok(), 201: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+  });
+}
+
+for (const [path, summary, body] of [
+  ["/api/issues/{issueId}/title-naming/retry", "Start a board-requested AI task title generation", retryIssueTitleNamingSchema],
+  ["/api/issues/{issueId}/title-naming/result", "Submit a run-bound Claude task title", issueTitleNamingResultSchema],
+] as const) {
+  registry.registerPath({
+    method: "post",
+    path,
+    tags: ["issues"],
+    summary,
+    request: { params: z.object({ issueId: z.string().uuid() }), body: jsonBody(body) },
+    responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
   });
 }
 

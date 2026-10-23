@@ -172,6 +172,7 @@ import {
   issueThreadInteractions,
   issues,
   lines,
+  issueTitleNamings,
   issueWorkProducts,
   nativeRunFinalizations,
   projects,
@@ -618,6 +619,7 @@ import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import { lineNamingPrompt } from "./line-naming-prompt.js";
+import { taskNamingPrompt } from "./task-naming-prompt.js";
 import {
   clearHeartbeatRunRuntimeStatus,
   getHeartbeatRunRuntimeStatus,
@@ -654,6 +656,8 @@ import {
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
 
+// Hidden naming tasks run with an isolated prompt and resolved-model provenance.
+const NAMING_ORIGIN_KINDS = new Set(["line_naming", "task_naming"]);
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
@@ -20819,9 +20823,22 @@ export function heartbeatService(
               issueContext.executionWorkspacePreference,
           }
         : null;
+      // Naming runs (Lines and tasks) get an isolated prompt, no runtime tools
+      // and no managed MCP; the context snapshot keys stay the Line ones.
       const isLineNamingRun = issueContext?.originKind === "line_naming";
       const namingLineId = isLineNamingRun ? issueContext?.originId : null;
-      const isolatedLineNamingPrompt = namingLineId && issueRef
+      const namingTargetIssueId = issueContext?.originKind === "task_naming" ? issueContext?.originId : null;
+      const isolatedLineNamingPrompt = namingTargetIssueId && issueRef
+        ? await (async () => {
+            const [naming] = await db.select({ namingVersion: issueTitleNamings.namingVersion, namingIssueId: issueTitleNamings.namingIssueId, status: issueTitleNamings.status })
+              .from(issueTitleNamings).where(and(eq(issueTitleNamings.companyId, agent.companyId), eq(issueTitleNamings.issueId, namingTargetIssueId)));
+            if (!naming || naming.namingIssueId !== issueRef.id || naming.status !== "generating") throw new Error("Task naming generation is no longer current");
+            const [target] = await db.select({ title: issues.title, description: issues.description }).from(issues)
+              .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, namingTargetIssueId)));
+            if (!target) throw new Error("Task naming target is missing");
+            return taskNamingPrompt(namingTargetIssueId, naming.namingVersion, target, issueRef.id);
+          })()
+        : namingLineId && issueRef
         ? await (async () => {
             const [line] = await db.select({ rootIssueId: lines.rootIssueId, namingVersion: lines.namingVersion, namingIssueId: lines.namingIssueId })
               .from(lines).where(and(eq(lines.companyId, agent.companyId), eq(lines.id, namingLineId)));
@@ -21692,7 +21709,7 @@ export function heartbeatService(
         });
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
-      if (issueContext?.originKind === "line_naming") {
+      if (issueContext?.originKind && NAMING_ORIGIN_KINDS.has(issueContext.originKind)) {
         const resolvedNaming = {
           lineNamingResolvedAdapterType: agent.adapterType,
           lineNamingResolvedModel: configuredModel,

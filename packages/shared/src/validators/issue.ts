@@ -686,6 +686,17 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(
   }, schema);
 }
 
+export const issueTitleSourceSchema = z.enum(["explicit", "derived", "ai"]);
+export const clientIssueTitleSourceSchema = z.enum(["explicit", "derived"]);
+export const retryIssueTitleNamingSchema = z.object({}).strict();
+/** The caller's run ID is checked against authenticated runtime context, never trusted on its own. */
+export const issueTitleNamingResultSchema = z.object({
+  namingVersion: z.number().int().nonnegative(),
+  namingIssueId: z.string().uuid(),
+  runId: z.string().uuid(),
+  title: z.unknown(),
+}).strict();
+
 const createIssueBaseSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   projectWorkspaceId: z.string().guid().optional().nullable(),
@@ -706,6 +717,8 @@ const createIssueBaseSchema = z.object({
     .nullable(),
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
   title: z.string().min(1),
+  // "ai" is server-only: clients may only say whether they typed or derived the title.
+  titleSource: clientIssueTitleSourceSchema.optional(),
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
@@ -857,6 +870,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     createdByUserId: true,
     responsibleUserId: true,
     watchdog: true,
+    titleSource: true,
   }),
 )
   .partial()

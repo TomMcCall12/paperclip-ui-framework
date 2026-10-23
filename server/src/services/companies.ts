@@ -16,6 +16,7 @@ import {
   heartbeatRuns,
   runIdentityContexts,
   heartbeatRunEvents,
+  issueTitleNamings,
   costEvents,
   financeEvents,
   issueReadStates,
@@ -543,6 +544,7 @@ export function companyService(db: Db) {
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.companyId, id));
 
+        await tx.delete(issueTitleNamings).where(eq(issueTitleNamings.companyId, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         if (companyRunIds.length > 0) {
           await tx

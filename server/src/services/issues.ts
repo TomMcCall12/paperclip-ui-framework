@@ -69,6 +69,7 @@ import {
   toolActionDeliveries,
   toolInvocations,
   issues,
+  issueTitleNamings,
   lines,
   labels,
   projectWorkspaces,
@@ -287,6 +288,24 @@ export async function executeIssuePostCommitActions(
       );
     }
   }
+}
+
+/**
+ * Stops an unfinished AI task-title naming for one issue: the row becomes
+ * `skipped` with the given code and its hidden naming task is cancelled.
+ */
+export async function skipActiveTaskTitleNaming(dbOrTx: any, companyId: string, issueId: string, errorCode: string) {
+  const skipped: Array<{ namingIssueId: string | null }> = await dbOrTx.update(issueTitleNamings)
+    .set({ status: "skipped", lastErrorCode: errorCode, nextAttemptAt: null, updatedAt: new Date() })
+    .where(and(eq(issueTitleNamings.companyId, companyId), eq(issueTitleNamings.issueId, issueId),
+      inArray(issueTitleNamings.status, ["pending", "generating"])))
+    .returning({ namingIssueId: issueTitleNamings.namingIssueId });
+  for (const row of skipped) {
+    if (!row.namingIssueId) continue;
+    await dbOrTx.update(issues).set({ status: "cancelled", cancelledAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, row.namingIssueId), notInArray(issues.status, ["done", "cancelled"])));
+  }
+  return skipped.length > 0;
 }
 
 function wakeRequestTargetsIssue(issueId: string) {
@@ -4958,6 +4977,7 @@ const issueListSelect = {
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
   stepKey: issues.stepKey,
+  titleSource: issues.titleSource,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
@@ -10844,6 +10864,10 @@ export function issueService(db: Db) {
         );
         if (nextStepKey !== existing.stepKey) patch.stepKey = nextStepKey;
       }
+      // A typed title always wins over a derived or AI title (task naming).
+      if (issueData.title !== undefined && issueData.title !== existing.title) {
+        patch.titleSource = "explicit";
+      }
 
       const nextAssigneeAgentId =
         issueData.assigneeAgentId !== undefined
@@ -11151,6 +11175,9 @@ export function issueService(db: Db) {
             });
           });
         if (!updated) return null;
+        if (updated.title !== existing.title) {
+          await skipActiveTaskTitleNaming(tx, updated.companyId, updated.id, "title_changed");
+        }
         // An operator explicitly choosing a disposition owns that decision,
         // including choosing In Review while the conversation is Idle.
         if (actorUserId && issueData.status !== undefined) {

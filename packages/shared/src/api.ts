@@ -25,6 +25,8 @@ export const API = {
   line: `${API_PREFIX}/lines/:lineId`,
   lineNamingRetry: `${API_PREFIX}/lines/:lineId/naming/retry`,
   lineNamingResult: `${API_PREFIX}/lines/:lineId/naming/result`,
+  issueTitleNamingResult: `${API_PREFIX}/issues/:issueId/title-naming/result`,
+  issueTitleNamingRetry: `${API_PREFIX}/issues/:issueId/title-naming/retry`,
   stalledReviewDecision: `${API_PREFIX}/issues/:issueId/stalled-review-decision`,
   issueWatchdog: `${API_PREFIX}/issues/:issueId/watchdog`,
   issueTreeControl: `${API_PREFIX}/issues/:issueId/tree-control`,

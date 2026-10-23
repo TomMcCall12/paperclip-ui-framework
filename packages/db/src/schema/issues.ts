@@ -51,6 +51,9 @@ export const issues = pgTable(
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
     lineId: uuid("line_id"),
     title: text("title").notNull(),
+    // Who chose the title: "explicit" (typed by a person or agent), "derived"
+    // (cut from the description by the client) or "ai" (set by task naming).
+    titleSource: text("title_source").$type<"explicit" | "derived" | "ai">().notNull().default("explicit"),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
     statusVersion: bigint("status_version", { mode: "number" }).notNull().default(0),
@@ -116,6 +119,7 @@ export const issues = pgTable(
       and ${table.conversationState} in ('active', 'waiting')
       and ${table.status} not in ('done', 'cancelled')
     )`),
+    titleSourceCheck: check("issues_title_source_check", sql`${table.titleSource} in ('explicit', 'derived', 'ai')`),
     companyIdUq: unique("issues_company_id_uq").on(table.companyId, table.id),
     lineCompanyFk: lineCompanyForeignKey(table),
     companyLineIdx: index("issues_company_line_idx").on(table.companyId, table.lineId),

@@ -416,6 +416,10 @@ export {
 } from "./document-annotation.js";
 
 export {
+  issueTitleSourceSchema,
+  clientIssueTitleSourceSchema,
+  retryIssueTitleNamingSchema,
+  issueTitleNamingResultSchema,
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,

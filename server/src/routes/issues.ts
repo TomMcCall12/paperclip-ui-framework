@@ -1,4 +1,6 @@
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
+import { taskNamingService } from "../services/task-naming.js";
+import { wakeTaskNamer } from "./task-naming.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -3876,6 +3878,32 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+  const taskNamingSvc = taskNamingService(db);
+
+  // A task created without a typed title gets an AI title in the background.
+  // Best-effort: a naming failure never fails the create.
+  async function startTaskTitleNaming(
+    issue: { id: string; companyId: string; titleSource?: string | null },
+    actor: { actorType: "agent" | "user" | "system" | string; agentId?: string | null; actorId?: string | null; runId?: string | null },
+  ) {
+    if (issue.titleSource !== "derived") return;
+    const namingActor = {
+      type: actor.actorType === "agent" ? "agent" as const : "user" as const,
+      agentId: actor.actorType === "agent" ? actor.agentId ?? null : null,
+      userId: actor.actorType === "agent" ? null : actor.actorId ?? null,
+      runId: actor.runId ?? null,
+    };
+    try {
+      const generation = await taskNamingSvc.start(issue.companyId, issue.id, namingActor);
+      if (generation.queued && generation.namingIssueId)
+        await wakeTaskNamer(db, heartbeat, issue.companyId, generation.namingIssueId, {
+          reason: "task_naming_requested", mutation: "task.naming.start",
+          requestedByActorType: namingActor.type, requestedByActorId: namingActor.agentId ?? namingActor.userId,
+        });
+    } catch (err) {
+      logger.warn({ err, issueId: issue.id }, "task title naming start failed");
+    }
+  }
 
   async function queueTaskWatchdogEvaluation(
     issue: { id: string; companyId: string },
@@ -12385,6 +12413,7 @@ export function issueRoutes(
         });
       }
       await queueTaskWatchdogEvaluation(issue, actor.runId);
+      await startTaskTitleNaming(issue, actor);
 
       res.status(201).json({
         ...issue,
@@ -12635,6 +12664,7 @@ export function issueRoutes(
         currentChildIssueId: currentSerializedChild?.id ?? issue.id,
       });
       await queueTaskWatchdogEvaluation(issue, actor.runId);
+      await startTaskTitleNaming(issue, actor);
 
       res.status(201).json(issue);
     },

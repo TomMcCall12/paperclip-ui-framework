@@ -1,21 +1,17 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, heartbeatRunEvents, heartbeatRuns, issues, lines } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, lines } from "@paperclipai/db";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { builtInAgentService } from "./built-in-agents.js";
 import { issueService } from "./issues.js";
 import { lineService, lockLineTree, type LineActor } from "./lines.js";
 import { logActivity } from "./activity-log.js";
 import { lineNamingPrompt, sanitizeLineName } from "./line-naming-prompt.js";
+import { verifiedNamingRun } from "./naming-run-provenance.js";
 
 const MODEL = "claude-haiku-4-5";
 const MAX_AUTOMATIC_ATTEMPTS = 3;
 const TIMEOUT_MS = 15 * 60_000;
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
 
 function attribution(actor: LineActor) {
   return { actorType: actor.type, actorId: actor.agentId ?? actor.userId ?? "line_naming", agentId: actor.agentId ?? null, runId: actor.runId ?? null } as const;
@@ -27,46 +23,48 @@ function attribution(actor: LineActor) {
 // action — see TOM-707.
 const LINE_NAMER_KEY = "line-namer";
 
+export async function ensureLineNamerAgent(db: Db, companyId: string) {
+  const builtIns = builtInAgentService(db);
+  const existing = await builtIns.get(companyId, LINE_NAMER_KEY);
+  // A row deliberately held (`paused`, `pending_approval`) is left
+  // untouched regardless of its adapter.
+  if (existing.status === "paused" || existing.status === "pending_approval") return existing;
+  // `ready` only means `hasCompleteAdapterConfig()` found a non-empty model
+  // string — it never checks the adapter type itself. A row left on an
+  // adapter the current definition no longer allows (e.g. still
+  // `codex_local` with its old model string, from before the
+  // OpenAI-to-Claude swap in TOM-707) still reads `ready` and would
+  // otherwise never reach ensure(). Treat that case the same as
+  // `needs_setup`/`not_provisioned`: fall through to ensure().
+  const adapterAllowed = !existing.agent
+    || !existing.definition.allowedAdapterTypes
+    || existing.definition.allowedAdapterTypes.includes(existing.agent.adapterType);
+  if (existing.status === "ready" && adapterAllowed) return existing;
+  try {
+    // ensure() preserves any already-"complete" adapter config untouched
+    // when called with no input, so a mismatched adapter type must be
+    // overridden explicitly to force the migration.
+    return await builtIns.ensure(
+      companyId,
+      LINE_NAMER_KEY,
+      adapterAllowed ? undefined : {
+        adapterType: existing.definition.defaultAdapterType,
+        adapterConfig: existing.definition.defaultAdapterConfig,
+      },
+    );
+  } catch {
+    // Provisioning failed (e.g. the model is not yet in the adapter's
+    // catalog). Leave the Line on its actionable error code; reconcile()
+    // retries once the built-in agent becomes ready.
+    return existing;
+  }
+}
+
 export function lineNamingService(db: Db) {
   const lineSvc = lineService(db);
   const issuesSvc = issueService(db);
-  const builtIns = builtInAgentService(db);
 
-  async function ensureNamingAgent(companyId: string) {
-    const existing = await builtIns.get(companyId, LINE_NAMER_KEY);
-    // A row deliberately held (`paused`, `pending_approval`) is left
-    // untouched regardless of its adapter.
-    if (existing.status === "paused" || existing.status === "pending_approval") return existing;
-    // `ready` only means `hasCompleteAdapterConfig()` found a non-empty model
-    // string — it never checks the adapter type itself. A row left on an
-    // adapter the current definition no longer allows (e.g. still
-    // `codex_local` with its old model string, from before the
-    // OpenAI-to-Claude swap in TOM-707) still reads `ready` and would
-    // otherwise never reach ensure(). Treat that case the same as
-    // `needs_setup`/`not_provisioned`: fall through to ensure().
-    const adapterAllowed = !existing.agent
-      || !existing.definition.allowedAdapterTypes
-      || existing.definition.allowedAdapterTypes.includes(existing.agent.adapterType);
-    if (existing.status === "ready" && adapterAllowed) return existing;
-    try {
-      // ensure() preserves any already-"complete" adapter config untouched
-      // when called with no input, so a mismatched adapter type must be
-      // overridden explicitly to force the migration.
-      return await builtIns.ensure(
-        companyId,
-        LINE_NAMER_KEY,
-        adapterAllowed ? undefined : {
-          adapterType: existing.definition.defaultAdapterType,
-          adapterConfig: existing.definition.defaultAdapterConfig,
-        },
-      );
-    } catch {
-      // Provisioning failed (e.g. the model is not yet in the adapter's
-      // catalog). Leave the Line on its actionable error code; reconcile()
-      // retries once the built-in agent becomes ready.
-      return existing;
-    }
-  }
+  const ensureNamingAgent = (companyId: string) => ensureLineNamerAgent(db, companyId);
 
   async function markFailure(companyId: string, lineId: string, version: number, errorCode: string, actor: LineActor, allowReady = false) {
     await db.transaction(async (tx) => {
@@ -153,30 +151,9 @@ export function lineNamingService(db: Db) {
       if (line.namingStatus !== "generating" || line.namingVersion !== input.namingVersion || line.namingIssueId !== input.namingIssueId)
         throw conflict("Stale Line naming result");
       const [task] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, input.namingIssueId), eq(issues.lineId, lineId)));
-      const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.agentId, agentId)));
-      const dispatch = record(run?.contextSnapshot);
-      const override = record(task?.assigneeAdapterOverrides);
-      const config = record(override.adapterConfig);
-      const usage = record(run?.usageJson);
-      const providerMessages = run ? await tx.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload, sourceEventId: heartbeatRunEvents.sourceEventId })
-        .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, run.id),
-          inArray(heartbeatRunEvents.eventType, ["item.completed", "line.naming.provider_message"]))) : [];
+      const run = await verifiedNamingRun(tx, { companyId, agentId, runId: input.runId, task, originKind: "line_naming", originId: lineId, submitted: input.name, model: MODEL });
       const name = sanitizeLineName(input.name);
-      const submittedName = typeof input.name === "string" ? input.name.trim() : null;
-      const observedName = submittedName !== null && providerMessages.some((event) => {
-        if (event.eventType === "line.naming.provider_message")
-          return record(event.payload).textSha256 === createHash("sha256").update(submittedName).digest("hex");
-        if (!event.sourceEventId) return false;
-        const providerEvent = record(record(event.payload).prpEvent);
-        const message = record(providerEvent.payload);
-        return (message.kind === "agentMessage" || message.kind === "assistant_message") &&
-          typeof message.text === "string" && message.text.trim() === submittedName;
-      });
-      const resolvedAdapter = dispatch.lineNamingResolvedAdapterType;
-      if (!task || task.originKind !== "line_naming" || task.originId !== lineId || task.assigneeAgentId !== agentId || !run || run.status !== "running" || run.finishedAt || dispatch.issueId !== task.id || !run.startedAt ||
-          (task.checkoutRunId !== run.id && task.executionRunId !== run.id) ||
-          resolvedAdapter !== "claude_local" || dispatch.lineNamingResolvedModel !== MODEL || override.adapterType !== "claude_local" || config.model !== MODEL ||
-          (usage.provider !== undefined && usage.provider !== "anthropic") || (usage.model !== undefined && usage.model !== MODEL) || !observedName)
+      if (!task || !run)
         throw forbidden("Verified Claude naming provenance required");
       if (!name) {
         const attempts = line.namingAttempts + 1;

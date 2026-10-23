@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveIssueTitle, fallbackIssueTitle } from "./issue-title";
+import { decodeHtmlEntities, deriveIssueTitle, fallbackIssueTitle } from "./issue-title";
 
 describe("deriveIssueTitle", () => {
   it("uses the first sentence of the first line", () => {
@@ -44,6 +44,16 @@ describe("deriveIssueTitle", () => {
     expect(title.length).toBeLessThanOrEqual(81);
     expect(title.endsWith("…")).toBe(true);
     expect(longLine.startsWith(title.slice(0, -1).trim())).toBe(true);
+  });
+
+  it("decodes HTML entities such as &#x20; before deriving the title", () => {
+    expect(deriveIssueTitle("Fix the login&#x20;bug&#x20;\nMore")).toBe("Fix the login bug");
+    expect(deriveIssueTitle("Tom&#39;s Lab &amp; Macro Chef")).toBe("Tom's Lab & Macro Chef");
+    expect(deriveIssueTitle("Use &lt;b&gt; tags&nbsp;please.")).toBe("Use <b> tags please.");
+  });
+
+  it("leaves unknown or invalid entities alone", () => {
+    expect(decodeHtmlEntities("a &bogus; b &#0; c")).toBe("a &bogus; b &#0; c");
   });
 
   it("falls back to a dated title when the description has no usable text", () => {

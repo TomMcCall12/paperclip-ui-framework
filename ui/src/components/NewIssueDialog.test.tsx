@@ -1362,6 +1362,43 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("sends titleSource derived only when the title box is empty", async () => {
+    const submit = async () => {
+      const submitButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Create Task"));
+      expect(submitButton).not.toBeUndefined();
+      await vi.waitFor(() => {
+        expect(submitButton?.hasAttribute("disabled")).toBe(false);
+      });
+      await act(async () => {
+        submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+    };
+
+    const empty = renderDialog(container);
+    await flush();
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    await typeTextareaValue(descriptionInput!, "Fix the login bug on mobile");
+    await submit();
+    expect(mockIssuesApi.create).toHaveBeenLastCalledWith(
+      "company-1",
+      expect.objectContaining({ title: "Fix the login bug on mobile", titleSource: "derived" }),
+    );
+    act(() => empty.root.unmount());
+
+    mockIssuesApi.create.mockClear();
+    dialogState.newIssueDefaults = { title: "Typed title", description: "Fix the login bug on mobile" };
+    const typed = renderDialog(container);
+    await flush();
+    await submit();
+    expect(mockIssuesApi.create).toHaveBeenCalledTimes(1);
+    const [, payload] = mockIssuesApi.create.mock.calls[0]!;
+    expect(payload).toMatchObject({ title: "Typed title" });
+    expect(payload).not.toHaveProperty("titleSource");
+    act(() => typed.root.unmount());
+  });
+
   it("shows the create-task loading state only in the submit button", async () => {
     mockIssuesApi.create.mockReturnValue(new Promise(() => undefined));
     dialogState.newIssueDefaults = { title: "Pending task", description: "Pending task description" };

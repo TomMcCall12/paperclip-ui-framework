@@ -652,6 +652,7 @@ export type {
 export type {
   CompactIssue,
   Issue,
+  IssueTitleSource,
   IssueCreateDeduplicationReason,
   IssueChangeReceiptEntry,
   IssueChanges,

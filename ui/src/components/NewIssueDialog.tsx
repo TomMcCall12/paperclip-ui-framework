@@ -1145,7 +1145,8 @@ export function NewIssueDialog() {
   function handleSubmit() {
     const currentDescription = descriptionRef.current.trim();
     if (!effectiveCompanyId || !currentDescription || createIssue.isPending) return;
-    const currentTitle = titleRef.current.trim() || deriveIssueTitle(currentDescription);
+    const typedTitle = titleRef.current.trim();
+    const currentTitle = typedTitle || deriveIssueTitle(currentDescription);
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       taskAdapterType,
@@ -1195,6 +1196,9 @@ export function NewIssueDialog() {
         }
         : null,
       title: currentTitle,
+      // An empty title box means the title was cut from the description, so the
+      // server may replace it with a short AI title.
+      ...(typedTitle ? {} : { titleSource: "derived" as const }),
       description: currentDescription || undefined,
       status,
       priority: priority || "medium",

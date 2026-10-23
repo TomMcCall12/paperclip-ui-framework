@@ -1103,6 +1103,7 @@ export type {
   ExternalObjectSummaryItem,
   CompactIssue,
   Issue,
+  IssueTitleSource,
   IssueCreateDeduplicationReason,
   IssueChangeReceiptEntry,
   IssueChanges,
@@ -1971,6 +1972,10 @@ export {
   COMPANY_SEARCH_MAX_TOKENS,
   type CompanySearchExtractQuery,
   type CompanySearchQuery,
+  issueTitleSourceSchema,
+  clientIssueTitleSourceSchema,
+  retryIssueTitleNamingSchema,
+  issueTitleNamingResultSchema,
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,
@@ -2823,7 +2828,7 @@ export { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "./retired
 
 export * from "./slack-tools.js";
 
-export { deriveIssueStepKey } from "./issue-step-key.js";
+export { deriveIssueStepKey, isIssueStepTitle } from "./issue-step-key.js";
 
 export { MEMORY_CONNECTOR_IDS, isMemoryConnectorId, type MemoryConnectorId } from "./memory-connectors.js";
 export * from "./connection-routing.js";

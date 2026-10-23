@@ -9,6 +9,11 @@
  */
 const STEP_TITLE_PATTERN = /^S(\d{1,3}[a-z]?)(?:-r(\d{1,3}))?\s*:/;
 
+/** True when the trimmed title starts with a step prefix such as "S3:" or "S5e:". */
+export function isIssueStepTitle(title: string | null | undefined): boolean {
+  return !!title && STEP_TITLE_PATTERN.test(title.trim());
+}
+
 /**
  * Returns `<parentId>:S<n>` or `<parentId>:S<n>-r<k>` when the issue has a
  * parent and its trimmed title starts with a step prefix (capital S,

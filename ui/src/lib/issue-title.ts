@@ -20,9 +20,24 @@ function stripInlineMarkdownAndMentions(text: string): string {
     .replace(/`+/g, "");
 }
 
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " ",
+};
+
+/** Decodes numeric (`&#x20;`, `&#32;`) and common named HTML entities. */
+export function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (entity, body: string) => {
+    if (body[0] === "#") {
+      const code = body[1] === "x" || body[1] === "X" ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? entity;
+  });
+}
+
 function firstUsableLine(description: string): string {
   for (const rawLine of description.split(/\r?\n/)) {
-    const line = stripInlineMarkdownAndMentions(stripLinePrefixMarkers(rawLine.trim())).trim();
+    const line = stripInlineMarkdownAndMentions(stripLinePrefixMarkers(decodeHtmlEntities(rawLine).trim())).trim();
     if (line.length > 0) return line;
   }
   return "";

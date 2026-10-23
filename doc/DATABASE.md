@@ -447,3 +447,9 @@ Migration `0287_busy_the_hood.sql` adds the nullable `issues.step_key` column an
 The migration does not backfill. Existing open duplicates (same title prefix under one parent) would make a backfill fail, so old rows keep `step_key = NULL` and only new or renamed issues get a key. A rename or reparent that would give two open siblings one key fails with HTTP `409`, not a database error.
 
 Application rollback retains the column and index. Older application SQL can read and write issues without supplying `step_key`, and a null key never conflicts. Do not drop the column or index as an application rollback step.
+
+## Task title source and naming migration and rollback
+
+Migration `0288_tough_stranger.sql` adds `issues.title_source` (`text not null default 'explicit'`, check `issues_title_source_check` for `explicit`, `derived` and `ai`) and the table `issue_title_namings`: one row per target issue (unique `issue_id`) with `status` (`pending`, `generating`, `ready`, `failed`, `skipped`), `naming_version`, `naming_issue_id`, `naming_run_id`, `attempts`, `next_attempt_at`, `last_error_code`, `model`, `title_at_start` and `named_at`. The target, naming task and naming run foreign keys include the company ID; the target foreign key cascades on delete. The index on `(status, next_attempt_at)` serves the reconcile loop. Company deletion removes the company's rows first. See [SPEC-implementation](SPEC-implementation.md) "Task title source and AI task naming".
+
+The migration does not backfill: every existing issue becomes `explicit`, so no old task is renamed. Application rollback retains the column and table; older application SQL reads and writes issues without `title_source` and gets the default. Do not drop the column or table as an application rollback step.
