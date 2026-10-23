@@ -114,6 +114,9 @@ export function taskNamingService(db: Db) {
       return { ...idle, failureCode: "claude_override_unavailable" };
     }
     return db.transaction(async (tx) => {
+      // Lock order matches the issue update path: target issue, then naming row.
+      const [current] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
+      if (!current) throw notFound("Issue not found");
       const [row] = await tx.select().from(issueTitleNamings)
         .where(and(eq(issueTitleNamings.companyId, companyId), eq(issueTitleNamings.issueId, issueId))).for("update");
       if (!row) throw notFound("Issue not found");
@@ -121,8 +124,6 @@ export function taskNamingService(db: Db) {
       if (!manual && (row.status === "ready" || row.status === "skipped" || row.attempts >= MAX_AUTOMATIC_ATTEMPTS ||
           (row.nextAttemptAt && row.nextAttemptAt > new Date())))
         return { ...idle, namingIssueId: row.namingIssueId };
-      const [current] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
-      if (!current) throw notFound("Issue not found");
       if (!manual && current.titleSource !== "derived") {
         await tx.update(issueTitleNamings).set({ status: "skipped", lastErrorCode: "title_changed", nextAttemptAt: null, updatedAt: new Date() })
           .where(and(eq(issueTitleNamings.companyId, companyId), eq(issueTitleNamings.id, row.id)));
@@ -166,11 +167,12 @@ export function taskNamingService(db: Db) {
     const agentId = actor.agentId;
     const publications: ActivityPublication[] = [];
     const output = await db.transaction(async (tx) => {
+      // Lock order matches the issue update path: target issue, then naming row.
+      const [target] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
+      if (!target) throw notFound("Issue not found");
       const [row] = await tx.select().from(issueTitleNamings)
         .where(and(eq(issueTitleNamings.companyId, companyId), eq(issueTitleNamings.issueId, issueId))).for("update");
       if (!row) throw notFound("Issue not found");
-      const [target] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
-      if (!target) throw notFound("Issue not found");
       const title = sanitizeTaskTitle(input.title);
       if (row.status === "ready" && row.namingVersion === input.namingVersion && row.namingIssueId === input.namingIssueId &&
           row.namingRunId === input.runId && title !== null && target.title === title) return { kind: "ok" as const };
